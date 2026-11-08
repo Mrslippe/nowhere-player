@@ -2967,6 +2967,16 @@ mod tests {
         assert_eq!(api.calls(), vec![Call::QueueList]);
     }
 
+    #[test]
+    fn library_alias_runs_the_same_subcommand() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "lib stat");
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert_eq!(library.calls(), vec![LibraryCall::Stats]);
+    }
+
     // ---- 扫描进度（节流 + 块状态） ----
 
     fn event_observer(now: Arc<AtomicU64>, emitted: Arc<Mutex<Vec<Block>>>) -> EventObserver {
@@ -3098,6 +3108,29 @@ mod tests {
         let block = blocks.last().expect("failure block");
         assert_eq!(block.status, BlockStatus::Error);
         assert_eq!(error_fields(block).0, "E_LIB_IO");
+    }
+
+    #[test]
+    fn scan_started_block_is_running_with_the_expected_id() {
+        let block = scan_started_block("blk-scan", "library scan --full", true);
+
+        assert_eq!(block.id, "blk-scan");
+        assert_eq!(block.input, "library scan --full");
+        assert_eq!(block.status, BlockStatus::Running);
+        assert!(text_of_block(&block).contains("扫描已开始"));
+        assert!(text_of_block(&block).contains("全量扫描"));
+    }
+
+    #[test]
+    fn cmd_error_payload_omits_a_missing_hint() {
+        let reply = CmdErrorPayload::from(CmdError::new("E_BUSY", "已有扫描在进行中"));
+
+        match tauri::ipc::IpcResponse::body(reply).expect("reply body") {
+            tauri::ipc::InvokeResponseBody::Json(json) => {
+                assert_eq!(json, r#"{"code":"E_BUSY","message":"已有扫描在进行中"}"#);
+            }
+            tauri::ipc::InvokeResponseBody::Raw(_) => panic!("expected a JSON body"),
+        }
     }
 
     fn table_of_block(block: &Block) -> (Vec<&str>, Vec<Vec<&str>>) {
