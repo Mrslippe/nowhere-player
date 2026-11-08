@@ -5,7 +5,9 @@ pub mod player;
 pub mod queue;
 pub mod terminal;
 
-pub use command::{CommandErrorCode, ParseError};
+pub use command::{
+    ArgKind, ArgSpec, CommandErrorCode, CommandSpec, FlagSpec, ParseError, Registry, SubcommandSpec,
+};
 pub use player::{
     AudioFailure, POSITION_TICK_MS, PlaybackMachine, PlaybackMode, PlaybackState, PlaybackStatus,
     PlayerCommand, PlayerError, PlayerErrorCode, PlayerEvent, PositionTick, RepeatMode,

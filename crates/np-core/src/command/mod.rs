@@ -16,10 +16,12 @@
 //! `vol 999`、`seek 1:30` 都会解析成功；取值范围、当前状态是否允许执行等
 //! 语义判断留给执行层。参数个数、整数/位置格式、枚举取值属于形状，在这里校验。
 
+mod registry;
 mod tokenizer;
 
 use std::fmt;
 
+pub use registry::{ArgKind, ArgSpec, CommandSpec, FlagSpec, Registry, SubcommandSpec, registry};
 pub(crate) use tokenizer::{Token, tokenize};
 
 /// 命令解析错误码闭集，与 [`crate::PlayerErrorCode`] 同构（`E_` 前缀即 IPC 字符串）。
