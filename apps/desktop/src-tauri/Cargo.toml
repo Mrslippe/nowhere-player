@@ -22,7 +22,7 @@ np-audio = { path = "../../../crates/np-audio" }
 np-core = { path = "../../../crates/np-core" }
 np-library = { path = "../../../crates/np-library" }
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2.12", features = ["tray-icon"] }
+tauri = { version = "2.12", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-single-instance = "2"

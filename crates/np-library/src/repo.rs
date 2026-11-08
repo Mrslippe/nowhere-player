@@ -251,6 +251,20 @@ pub(crate) fn search(conn: &Connection, keyword: &str, limit: usize) -> Result<V
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// 按绝对路径精确查一首曲目；不存在返回 `None`。
+///
+/// 播放器窗只拿得到 `PlaybackState.track_id`（本地文件即绝对路径），
+/// 封面等元数据要经这条查询回库取（T-0025）。
+pub(crate) fn track_by_path(conn: &Connection, path: &str) -> Result<Option<Track>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {TRACK_COLUMNS} FROM tracks WHERE kind = 'local' AND path = ?1"
+    ))?;
+    let track = statement
+        .query_row([path], row_to_track)
+        .optional()?;
+    Ok(track)
+}
+
 /// 最近入库的曲目（`added_at DESC`）。
 pub(crate) fn list_recent(conn: &Connection, limit: usize) -> Result<Vec<Track>> {
     let mut statement = conn.prepare(&format!(
@@ -588,6 +602,28 @@ mod tests {
         let tracks = list_recent(db.conn(), 10).expect("recent");
         assert_eq!(tracks[0].title, "Newer");
         assert_eq!(tracks[1].title, "Older");
+    }
+
+    #[test]
+    fn track_by_path_matches_exact_path_and_returns_none_when_missing() {
+        let db = Database::open_in_memory().expect("memory db");
+        let mut track = sample("/music/a.wav");
+        track.cover_key = Some("0123456789abcdef".to_string());
+        insert(&db, &track, 100);
+
+        let found = track_by_path(db.conn(), "/music/a.wav")
+            .expect("lookup")
+            .expect("track");
+        assert_eq!(found.path, "/music/a.wav");
+        assert_eq!(found.cover_key.as_deref(), Some("0123456789abcdef"));
+
+        assert!(track_by_path(db.conn(), "/music/b.wav")
+            .expect("missing")
+            .is_none());
+        assert!(track_by_path(db.conn(), "/music/A.wav")
+            .expect("case sensitive")
+            .is_none());
+        assert!(track_by_path(db.conn(), "").expect("empty").is_none());
     }
 
     #[test]

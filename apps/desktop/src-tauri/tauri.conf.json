@@ -10,7 +10,13 @@
     "frontendDist": "../../web/dist"
   },
   "app": {
-    "windows": []
+    "windows": [],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/covers/**"]
+      }
+    }
   },
   "bundle": {
     "active": true,

@@ -99,6 +99,14 @@ impl Database {
         repo::search(&self.conn, keyword, limit)
     }
 
+    /// 按绝对路径精确查一首曲目；不存在返回 `None`。
+    ///
+    /// 播放器只持有文件路径（`PlaybackState.trackId`），封面等媒体库
+    /// 元数据经这条查询回库取（T-0025）。
+    pub fn track_by_path(&self, path: &str) -> Result<Option<Track>> {
+        repo::track_by_path(&self.conn, path)
+    }
+
     /// 最近入库的曲目。
     pub fn list_recent(&self, limit: usize) -> Result<Vec<Track>> {
         repo::list_recent(&self.conn, limit)

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use np_core::{PlaybackMode, PlaybackState, PlayerError, QueueView};
 use np_library::{Stats, Track};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::command_exec::{
     CmdErrorPayload, EventObserver, LibraryApi, LibraryHandle, LibraryObserver, MAX_SEARCH_RESULTS,
@@ -199,8 +199,69 @@ pub(crate) fn library_stats(library: State<'_, LibraryHandle>) -> Result<Stats, 
     library.stats().map_err(CmdErrorPayload::from)
 }
 
+/// `library.coverUrl`：把封面 key 换成前端可加载的绝对路径。
+///
+/// 只接受 16 位**小写**十六进制。含 `/`、`\`、`..`、空串、大写或长度不符
+/// 一律在拼路径之前拒绝，避免路径穿越（T-0025 §6.1）。
+#[tauri::command(rename = "library.coverUrl")]
+pub(crate) fn library_cover_url(
+    library: State<'_, LibraryHandle>,
+    key: String,
+) -> Result<String, CmdErrorPayload> {
+    let file = cover_file_name(&key)?;
+    library
+        .covers_dir()
+        .join(file)
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| CmdErrorPayload {
+            code: "E_LIB_IO".to_owned(),
+            message: "封面路径不是有效的 UTF-8".to_owned(),
+            hint: None,
+        })
+}
+
+/// `library.trackByPath`：播放器只持文件路径，经它回库取元数据（含 `coverKey`）。
+#[tauri::command(rename = "library.trackByPath")]
+pub(crate) fn library_track_by_path(
+    library: State<'_, LibraryHandle>,
+    path: String,
+) -> Result<Option<Track>, CmdErrorPayload> {
+    if path.is_empty() {
+        return Err(CmdErrorPayload {
+            code: "E_CMD_ARG".to_owned(),
+            message: "曲目路径不能为空".to_owned(),
+            hint: None,
+        });
+    }
+    library.track_by_path(&path).map_err(CmdErrorPayload::from)
+}
+
+/// `cover_key` 的长度：16 位小写十六进制（ARCH-003 §3）。
+const COVER_KEY_LEN: usize = 16;
+
+/// 把封面 key 变成文件名；不合法时返回 `E_CMD_ARG`，且**不算出任何路径**。
+fn cover_file_name(key: &str) -> Result<String, CmdErrorPayload> {
+    let valid = key.len() == COVER_KEY_LEN
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+
+    if !valid {
+        return Err(CmdErrorPayload {
+            code: "E_CMD_ARG".to_owned(),
+            message: "封面 key 非法".to_owned(),
+            hint: Some("封面 key 必须是 16 位小写十六进制".to_owned()),
+        });
+    }
+
+    Ok(format!("{key}.jpg"))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::cover_file_name;
+
     #[test]
     fn command_names_keep_the_dotted_contract() {
         assert_eq!(__tauri_command_name_player_snapshot!(), "player.snapshot");
@@ -221,5 +282,42 @@ mod tests {
         assert_eq!(__tauri_command_name_library_list!(), "library.list");
         assert_eq!(__tauri_command_name_library_search!(), "library.search");
         assert_eq!(__tauri_command_name_library_stats!(), "library.stats");
+        assert_eq!(
+            __tauri_command_name_library_cover_url!(),
+            "library.coverUrl"
+        );
+        assert_eq!(
+            __tauri_command_name_library_track_by_path!(),
+            "library.trackByPath"
+        );
+    }
+
+    #[test]
+    fn cover_file_name_accepts_a_normalized_key() {
+        assert_eq!(
+            cover_file_name("0123456789abcdef").expect("valid key"),
+            "0123456789abcdef.jpg"
+        );
+    }
+
+    #[test]
+    fn cover_file_name_rejects_traversal_and_odd_keys() {
+        for key in [
+            "",
+            "..",
+            "../../covers/x",
+            "0123456789abcde/",
+            "0123456789abcde\\",
+            "0123456789abcde.",
+            "0123456789ABCDEF",
+            "0123456789abcdeF",
+            "0123456789abcde",
+            "0123456789abcdef0",
+            "0123456789abcde ",
+            "0123456789abcdég",
+        ] {
+            let error = cover_file_name(key).expect_err(key);
+            assert_eq!(error.code, "E_CMD_ARG", "key accepted: {key:?}");
+        }
     }
 }

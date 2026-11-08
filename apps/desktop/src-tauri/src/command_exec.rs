@@ -1399,6 +1399,21 @@ impl LibraryHandle {
         }
     }
 
+    /// 封面缓存目录，与 [`Database::open`] 的默认约定一致：
+    /// `<db 所在目录>/covers`（ARCH-003 §3）。不打开数据库也能算。
+    pub(crate) fn covers_dir(&self) -> PathBuf {
+        self.inner
+            .db_path
+            .parent()
+            .map(|parent| parent.join("covers"))
+            .unwrap_or_else(|| PathBuf::from("covers"))
+    }
+
+    /// 按绝对路径精确查一首曲目；不存在返回 `None`。
+    pub(crate) fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
+        self.with_db(|db| db.track_by_path(path))
+    }
+
     /// 懒打开（必要时建库）主线程连接；单测不经过这里。
     fn with_db<T>(
         &self,
