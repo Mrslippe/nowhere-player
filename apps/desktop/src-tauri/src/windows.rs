@@ -14,13 +14,14 @@ const APP_ENTRY: &str = "index.html";
 ///
 /// 外壳参数（T-0032）：
 /// - `decorations(false)`：桌面挂件不需要系统标题栏。
-/// - `resizable(false)`：产品不需要改宽高。Win32 层同时去掉 `WS_THICKFRAME`
-///   （tao 的 `WM_NCHITTEST` 只在 `RESIZABLE` 时处理边缘拖拽），边缘 resize
-///   热区因此消失；Windows 11 的 1px 亮边/圆角是否随之消失，需真机确认。
-/// - `shadow(false)`：无边框窗不要 DWM 阴影，避免阴影内缩带来的视觉描边。
+/// - `shadow(false)`：**P2 白边的正解**。Tauri 文档明确写着：无边框窗
+///   `shadow: true` 会画 1px 白边，Windows 11 上还会带圆角；`false` 才去掉。
+/// - `resizable(false)`：产品不需要改宽高（P3）。Win32 层同时去掉
+///   `WS_THICKFRAME`，tao 也只在 `RESIZABLE` 时于 `WM_NCHITTEST` 里给边缘
+///   resize 热区；两者一起消失。
 ///
-/// 这里**没有**启用 `transparent`：透明窗有合成开销与点击穿透风险，先按
-/// 「`resizable(false)` 已移除 THICKFRAME」验证；真机若仍有 1px 亮边再加。
+/// 因此这里**不启用** `transparent`：白边根因是 shadow，不是窗口不透明；
+/// 透明窗的合成开销与点击穿透风险都不必承担。
 pub(crate) fn create_player(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, PLAYER_LABEL, WebviewUrl::App(APP_ENTRY.into()))
         .title("Nowhere Player")
@@ -109,6 +110,7 @@ fn create_terminal(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .title("Nowhere Player — Terminal")
         .inner_size(880.0, 560.0)
         // T-0032 §6.4：系统标题栏太突兀，改由页内顶栏自绘（34px）。
+        // shadow(false) 同样是必须的：无边框窗开阴影会带 1px 白边（同播放器窗）。
         .decorations(false)
         .shadow(false)
         .visible(false)
