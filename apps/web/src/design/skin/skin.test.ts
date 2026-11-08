@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 /*
- * 结构层契约（T-0027）。
+ * 结构层契约（T-0027 / T-0028）。
  *
  * 与 tokens.test.ts 同一套做法：Node 内置模块动态导入，
  * 不给 apps/web 加 @types/node（红线：不新增依赖）。
@@ -48,8 +48,17 @@ const STRUCTURE_TOKENS = [
 /** 结构层引用颜色 token 是允许的，但不允许自己定义颜色字面量。 */
 const COLOR_LITERAL = /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/;
 
-const baseCss = fs.readFileSync(path.join(SKIN_DIR, "base.css"), "utf8");
-const plainCss = fs.readFileSync(path.join(SKIN_DIR, "plain.css"), "utf8");
+function readSkinFile(name: string): string {
+  return fs.readFileSync(path.join(SKIN_DIR, name), "utf8");
+}
+
+const baseCss = readSkinFile("base.css");
+const plainCss = readSkinFile("plain.css");
+const phosphorCss = readSkinFile("phosphor.css");
+const themesCss = fs.readFileSync(
+  path.join(SRC_DIR, "design", "themes.css"),
+  "utf8",
+);
 
 function declarationsOf(css: string, token: string): number {
   return css.match(new RegExp(`${token}\\s*:`, "g"))?.length ?? 0;
@@ -61,6 +70,56 @@ function valuesOf(css: string, property: string): string[] {
   );
 }
 
+/** 取某个声明的第一个值（用于断言 skin 覆盖值）。 */
+function valueOf(css: string, token: string): string | undefined {
+  return valuesOf(css, token)[0];
+}
+
+/** 抽取 `selector { ... }` 的声明块；selector 里含引号与方括号。 */
+function ruleBlock(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`));
+  return match?.[1] ?? "";
+}
+
+function parseHexColor(value: string): [number, number, number] | null {
+  const match = value.match(/^#([0-9a-f]{6})$/i);
+  if (!match) {
+    return null;
+  }
+
+  const hex = match[1];
+  return [
+    Number.parseInt(hex.slice(0, 2), 16),
+    Number.parseInt(hex.slice(2, 4), 16),
+    Number.parseInt(hex.slice(4, 6), 16),
+  ];
+}
+
+function relativeLuminance([r, g, b]: [number, number, number]): number {
+  const channel = (value: number): number => {
+    const normalized = value / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/** WCAG 2.x 对比度。 */
+function contrastRatio(a: string, b: string): number {
+  const first = parseHexColor(a);
+  const second = parseHexColor(b);
+  if (first === null || second === null) {
+    throw new Error(`不是 6 位十六进制颜色：${a} / ${b}`);
+  }
+
+  const la = relativeLuminance(first);
+  const lb = relativeLuminance(second);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
 const COMPONENT_CSS = [
   path.join(SRC_DIR, "design", "components", "components.css"),
   path.join(SRC_DIR, "features", "player", "player.css"),
@@ -69,10 +128,11 @@ const COMPONENT_CSS = [
 ];
 
 describe("结构层（skin）", () => {
-  it("base.css 与 plain.css 各自声明全部结构变量", () => {
+  it("base.css / plain.css / phosphor.css 各自声明全部结构变量", () => {
     for (const [name, css] of [
       ["base.css", baseCss],
       ["plain.css", plainCss],
+      ["phosphor.css", phosphorCss],
     ] as const) {
       const missing = STRUCTURE_TOKENS.filter(
         (token) => declarationsOf(css, token) === 0,
@@ -84,6 +144,7 @@ describe("结构层（skin）", () => {
   it("skin 文件只定义结构，不定义颜色字面量", () => {
     expect(baseCss).not.toMatch(COLOR_LITERAL);
     expect(plainCss).not.toMatch(COLOR_LITERAL);
+    expect(phosphorCss).not.toMatch(COLOR_LITERAL);
   });
 
   it("plain.css 只含 --np-* 结构变量声明", () => {
@@ -94,6 +155,58 @@ describe("结构层（skin）", () => {
     expect(properties.length).toBeGreaterThan(0);
     expect(properties.filter((property) => !property.startsWith("--np-"))).toEqual(
       [],
+    );
+  });
+
+  it("phosphor 的结构覆盖符合 T-0028 §6.1", () => {
+    // 圆角全部归零，只有状态点是圆的。
+    for (const token of [
+      "--np-radius-card",
+      "--np-radius-inner",
+      "--np-radius-control",
+      "--np-radius-control-sm",
+      "--np-radius-tag",
+      "--np-radius-micro",
+      "--np-radius-pill",
+    ]) {
+      expect(valueOf(phosphorCss, token), token).toBe("0");
+    }
+    expect(valueOf(phosphorCss, "--np-radius-circle")).toBe("50%");
+
+    // 无投影、无卡片边框；控件仍靠 1px 细线分隔。
+    expect(valueOf(phosphorCss, "--np-shadow-card")).toBe("none");
+    expect(valueOf(phosphorCss, "--np-shadow-float")).toBe("none");
+    expect(valueOf(phosphorCss, "--np-border-card")).toBe("none");
+
+    // 全出血 + 等宽 UI + 1.45 行高。
+    expect(valueOf(phosphorCss, "--np-bleed")).toBe("1");
+    expect(valueOf(phosphorCss, "--np-density-line")).toBe("1.45");
+    expect(valueOf(phosphorCss, "--np-font-ui")).toBe("var(--np-font-mono)");
+  });
+
+  it("phosphor 不做 CRT 装饰（扫描线 / 辉光留给 M6）", () => {
+    expect(phosphorCss).not.toMatch(/repeating-linear-gradient/);
+    expect(phosphorCss).not.toMatch(/text-shadow/);
+  });
+
+  it("phosphor 主题的 --fg 对 --bg 对比度 ≥ 7:1", () => {
+    const block = ruleBlock(themesCss, '[data-theme="phosphor"]');
+    const fg = valueOf(block, "--fg");
+    const bg = valueOf(block, "--bg");
+
+    expect(fg, "--fg").toBeDefined();
+    expect(bg, "--bg").toBeDefined();
+    expect(contrastRatio(fg as string, bg as string)).toBeGreaterThanOrEqual(7);
+  });
+
+  it("phosphor 主题的 --fg-muted 对 --bg 对比度 ≥ 4.5:1", () => {
+    const block = ruleBlock(themesCss, '[data-theme="phosphor"]');
+    const muted = valueOf(block, "--fg-muted");
+    const bg = valueOf(block, "--bg");
+
+    expect(muted, "--fg-muted").toBeDefined();
+    expect(contrastRatio(muted as string, bg as string)).toBeGreaterThanOrEqual(
+      4.5,
     );
   });
 
@@ -124,9 +237,10 @@ describe("结构层（skin）", () => {
     }
   });
 
-  it("窗口根元素挂了 data-skin=plain", () => {
+  it("窗口根元素挂了 data-skin=plain（生产默认值）", () => {
     const appSource = fs.readFileSync(path.join(SRC_DIR, "app", "App.tsx"), "utf8");
 
     expect(appSource).toContain('dataset.skin = "plain"');
+    expect(appSource).toContain('dataset.skin = "phosphor"');
   });
 });
