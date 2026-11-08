@@ -111,6 +111,8 @@ pub(crate) struct Renderer {
     channels: usize,
     /// Gain change per frame for a 12 ms full-scale ramp.
     step: f32,
+    /// Apply the `v^3` software volume (false = hardware owns the volume).
+    software_gain: bool,
     gain: f32,
     /// Last seek generation that was fully resumed.
     handled_epoch: u64,
@@ -119,13 +121,20 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
-    fn new(consumer: RingConsumer, shared: Arc<Shared>, channels: usize, sample_rate: u32) -> Self {
+    fn new(
+        consumer: RingConsumer,
+        shared: Arc<Shared>,
+        channels: usize,
+        sample_rate: u32,
+        software_gain: bool,
+    ) -> Self {
         let fade_frames = sample_rate as f32 * FADE_MS as f32 / 1000.0;
         Self {
             consumer,
             shared,
             channels,
             step: 1.0 / fade_frames,
+            software_gain,
             gain: 0.0,
             handled_epoch: 0,
             fade_epoch: None,
@@ -199,7 +208,11 @@ impl Renderer {
         let shared = &self.shared;
         let playing = shared.playing.load(Ordering::Relaxed);
         let target = if playing {
-            f32::from_bits(shared.gain.load(Ordering::Relaxed))
+            if self.software_gain {
+                f32::from_bits(shared.gain.load(Ordering::Relaxed))
+            } else {
+                1.0
+            }
         } else {
             0.0
         };
@@ -302,6 +315,7 @@ impl Engine {
             Arc::clone(&shared),
             output_format.frame_samples(),
             output_format.sample_rate,
+            plan.gain,
         );
         let mut sink: Box<dyn AudioSink> = Box::new(cpal_sink);
         sink.open(
@@ -600,9 +614,16 @@ mod tests {
     const FADE_FRAMES: usize = 576;
 
     fn renderer(capacity_frames: usize) -> (Renderer, RingProducer, Arc<Shared>) {
+        renderer_with_gain(capacity_frames, true)
+    }
+
+    fn renderer_with_gain(
+        capacity_frames: usize,
+        software_gain: bool,
+    ) -> (Renderer, RingProducer, Arc<Shared>) {
         let (producer, consumer) = ring::spsc(capacity_frames * CHANNELS);
         let shared = Arc::new(Shared::new());
-        let renderer = Renderer::new(consumer, Arc::clone(&shared), CHANNELS, RATE);
+        let renderer = Renderer::new(consumer, Arc::clone(&shared), CHANNELS, RATE, software_gain);
         (renderer, producer, shared)
     }
 
@@ -673,6 +694,19 @@ mod tests {
     fn posterity_ring_is_intact(producer: &mut RingProducer) {
         // 2000 - 700 (play) + 2000 - 576 (pause fade) = 2724 frames left.
         assert_eq!(producer.occupied(), 2724 * CHANNELS);
+    }
+
+    #[test]
+    fn hardware_volume_bypasses_software_gain() {
+        let (mut renderer, mut producer, shared) = renderer_with_gain(4096, false);
+        push(&mut producer, 1000);
+        shared.gain.store(0.0f32.to_bits(), Ordering::Release);
+        shared.playing.store(true, Ordering::Release);
+
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+        let last = out[699 * CHANNELS];
+        assert!((last - 1.0).abs() < 1e-6, "software volume leaked: {last}");
     }
 
     #[test]
