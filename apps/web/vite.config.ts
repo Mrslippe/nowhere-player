@@ -11,10 +11,12 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      // 多页入口：index.html 给 Tauri，design.html 只在开发期浏览 token 与组件。
+      // 多页入口：index.html 给 Tauri，design.html 只在开发期浏览 token 与组件，
+      // xterm-lab.html 是 T-0007 的 xterm 渲染器预览页。
       input: {
         index: "index.html",
         design: "design.html",
+        "xterm-lab": "xterm-lab.html",
       },
     },
   },
