@@ -12,7 +12,8 @@
 
 - 技术栈：Tauri v2 + React 19 + TypeScript + Rust（symphonia / cpal）+ SQLite。
 - 音源：本地库、网易云（匿名）、B 站、yt-dlp。
-- **当前阶段：M0 进行中**。已完成 T-0001 骨架、T-0002 双窗口壳（`tauri dev` 可起两个空窗口）；业务代码尚未开始。
+- **当前阶段：M0 已完成**（骨架、双窗口、设计系统、终端双方案、托盘常驻、CI，tag `v0.0.1-m0`）。**下一步 M1：音频引擎**。
+- 接手前先读 [`docs/30-计划/当前状态.md`](docs/30-计划/当前状态.md)（进度、欠账、恢复清单）。
 
 ---
 
@@ -25,7 +26,7 @@
 | `crates/np-library/` | 扫描 / 标签 / 封面 / SQLite | 空壳（T-0001） |
 | `crates/np-sources/` | 音源适配器 | 空壳（T-0001） |
 | `crates/np-system/` | 托盘 / 媒体键 / 单实例 / 自启 | 空壳（T-0001） |
-| `apps/desktop/` | Tauri 壳（`src-tauri/` 为 Rust crate，已在 workspace 内） | ✅ T-0002 |
+| `apps/desktop/` | Tauri 壳（窗口/托盘/单实例/快捷键） | ✅ T-0002 · T-0009 |
 | `apps/web/` | React 前端（两个窗口，按窗口 label 分流） | ✅ T-0002 |
 | `docs/` | 全部文档，入口见 `docs/README.md` | ✅ |
 | `scripts/` | 构建、发布、校验脚本 | ✅ |
