@@ -41,6 +41,8 @@ const TICK_INTERVAL: Duration = Duration::from_millis(POSITION_TICK_MS);
 const MAX_OPEN_ATTEMPTS: usize = 3;
 /// 设备探测周期（tick 数）：4 × 250 ms ≈ 1 秒（T-0016 §2.1）。
 const DEVICE_PROBE_TICKS: u32 = 4;
+/// 解码线程死亡的自动恢复次数上限（T-0016 §2.2）。
+const DECODE_MAX_RETRIES: u8 = 1;
 
 /// actor 的事件出口。生产实现是 Tauri 的 [`AppHandle`]。
 pub(crate) trait EventSink: Send + 'static {
@@ -251,6 +253,8 @@ struct PlayerActor<S: EventSink> {
     observed_device: Option<DeviceSignature>,
     /// tick 计数，用于把设备探测降到约 1 Hz。
     tick_count: u32,
+    /// 当前错误周期内已尝试的解码恢复次数（T-0016 §2.2）。
+    decode_retries: u8,
 }
 
 impl<S: EventSink> PlayerActor<S> {
@@ -268,6 +272,7 @@ impl<S: EventSink> PlayerActor<S> {
             devices,
             observed_device: None,
             tick_count: 0,
+            decode_retries: 0,
         }
     }
 
@@ -469,6 +474,7 @@ impl<S: EventSink> PlayerActor<S> {
 
         let event = self.machine.play(position);
         self.emit(event);
+        self.decode_retries = 0;
         Ok(self.machine.snapshot())
     }
 
@@ -605,6 +611,7 @@ impl<S: EventSink> PlayerActor<S> {
         let duration_ms = player.duration_ms();
         self.player = Some(player);
         self.observed_device = self.devices.default_output();
+        self.decode_retries = 0;
 
         self.sync_queue_state();
         let opened = self.machine.open(path, duration_ms);
@@ -723,7 +730,7 @@ impl<S: EventSink> PlayerActor<S> {
             return;
         }
         if let Some(message) = message {
-            self.fail(PlayerError::decode(message), position);
+            self.recover_decode(message, position);
             return;
         }
 
@@ -798,6 +805,35 @@ impl<S: EventSink> PlayerActor<S> {
         }
     }
 
+    /// 解码线程死亡：重开当前曲目并 seek 回原位置，最多重试 [`DECODE_MAX_RETRIES`] 次。
+    ///
+    /// 重试再失败（或预算已用尽）置 `E_DECODE`；成功时 [`Self::reopen_at`] 会
+    /// 清空错误状态并复位重试计数（T-0016 §2.2）。
+    fn recover_decode(&mut self, message: String, position_ms: u64) {
+        if self.machine.is_playing() && self.decode_retries < DECODE_MAX_RETRIES {
+            self.decode_retries += 1;
+            if let Some(index) = self.queue.position() {
+                eprintln!(
+                    "[player] decode error ({message}); recovery attempt {} at {position_ms} ms",
+                    self.decode_retries
+                );
+                match self.reopen_at(index, position_ms, true) {
+                    Ok(()) => return,
+                    Err(error) => {
+                        self.player = None;
+                        let failure = PlayerError::decode(format!(
+                            "decode failed: {message}; recovery failed: {}",
+                            error.message
+                        ));
+                        self.fail(failure, position_ms);
+                        return;
+                    }
+                }
+            }
+        }
+        self.fail(PlayerError::decode(message), position_ms);
+    }
+
     /// 释放旧 `Player`，用当前默认设备重开 `index`，seek 回 `position_ms`。
     ///
     /// 设备变化与解码恢复共用（T-0016 §2.1/§2.2）：始终先 `self.player = None`
@@ -827,6 +863,7 @@ impl<S: EventSink> PlayerActor<S> {
         self.player = Some(player);
 
         self.observed_device = self.devices.default_output();
+        self.decode_retries = 0;
         self.sync_queue_state();
 
         if resume_playing {
@@ -1124,6 +1161,40 @@ mod tests {
         assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Error);
     }
 
+    /// 解码错误触发一次重试；重试再失败落 `E_DECODE`，不会循环重试。
+    #[test]
+    fn decode_error_retries_once_then_reports_decode() {
+        let dir = temp_dir("decode-recovery");
+        let missing = dir.join("missing.wav").to_string_lossy().into_owned();
+
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::with_devices(
+            sink.clone(),
+            Box::new(FixedProbe::new(device("Speakers", 2))),
+        );
+        actor.queue_add(vec![missing.clone()]).unwrap();
+        actor.machine.open(&missing, Some(2_000));
+        actor.machine.play(0);
+
+        // 第一次错误：允许一次重开尝试；文件缺失 → 恢复失败，直接落 E_DECODE。
+        actor.recover_decode("decoder thread died".into(), 500);
+        assert_eq!(actor.decode_retries, DECODE_MAX_RETRIES);
+        assert!(actor.player.is_none());
+        let state = actor.machine.snapshot();
+        assert_eq!(state.status, PlaybackStatus::Error);
+        let error = state.error.expect("decode failure must carry an error");
+        assert_eq!(error.code, PlayerErrorCode::Decode);
+
+        // 再次进入错误处理：预算已用尽 / 状态已是 error，不再尝试第二次。
+        actor.recover_decode("decoder thread died".into(), 500);
+        assert_eq!(
+            actor.decode_retries, DECODE_MAX_RETRIES,
+            "recovery must be attempted at most once"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 设备变化恢复的成功路径：真实设备 + 临时 wav，位置不回零。
     /// 无音频设备的环境（CI）先探测再跳过（T-0016 §7 真机项）。
     #[test]
@@ -1160,6 +1231,53 @@ mod tests {
             state.position_ms
         );
         assert!(actor.player.is_some(), "recovery keeps a live player");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 解码恢复的成功路径：真实设备 + 临时 wav，恢复后清空错误并回到原位置。
+    /// 无音频设备的环境（CI）先探测再跳过。
+    #[test]
+    fn decode_recovery_reopens_at_the_previous_position() {
+        let dir = temp_dir("decode-success");
+        let track = dir.join("track.wav");
+        write_wav(&track, 2_000);
+        let track = track.to_string_lossy().into_owned();
+
+        match Player::open(&track) {
+            Ok(probe) => drop(probe),
+            Err(error) => {
+                eprintln!("[test] no audio device ({error}); skipping decode recovery test");
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+        }
+
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::with_devices(
+            sink.clone(),
+            Box::new(FixedProbe::new(device("Speakers", 2))),
+        );
+        actor.queue_add(vec![track.clone()]).unwrap();
+        actor.play(Some(track)).expect("track must open");
+        actor.seek(700).expect("seek must succeed");
+        let before = actor.machine.snapshot().position_ms;
+
+        actor.recover_decode("simulated decoder death".into(), before);
+
+        let state = actor.machine.snapshot();
+        assert_eq!(state.status, PlaybackStatus::Playing);
+        assert!(
+            state.error.is_none(),
+            "successful recovery clears the error"
+        );
+        assert_eq!(actor.decode_retries, 0);
+        assert!(actor.player.is_some(), "recovery keeps a live player");
+        assert!(
+            state.position_ms >= 650,
+            "position must not restart at 0 (got {})",
+            state.position_ms
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
