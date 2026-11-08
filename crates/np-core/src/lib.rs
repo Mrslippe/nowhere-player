@@ -6,8 +6,8 @@ pub mod queue;
 pub mod terminal;
 
 pub use command::{
-    ArgKind, ArgSpec, CommandErrorCode, CommandSpec, FlagSpec, ParseError, Parsed, Registry,
-    SubcommandSpec, parse,
+    ArgKind, ArgSpec, CommandErrorCode, CommandSpec, Completion, CompletionItem, CompletionKind,
+    FlagSpec, ParseError, Parsed, Registry, SubcommandSpec, complete, parse,
 };
 pub use player::{
     AudioFailure, POSITION_TICK_MS, PlaybackMachine, PlaybackMode, PlaybackState, PlaybackStatus,
