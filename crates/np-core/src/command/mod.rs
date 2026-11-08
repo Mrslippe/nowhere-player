@@ -16,11 +16,13 @@
 //! `vol 999`、`seek 1:30` 都会解析成功；取值范围、当前状态是否允许执行等
 //! 语义判断留给执行层。参数个数、整数/位置格式、枚举取值属于形状，在这里校验。
 
+mod parse;
 mod registry;
 mod tokenizer;
 
 use std::fmt;
 
+pub use parse::{Parsed, parse};
 pub use registry::{ArgKind, ArgSpec, CommandSpec, FlagSpec, Registry, SubcommandSpec, registry};
 pub(crate) use tokenizer::{Token, tokenize};
 
@@ -55,7 +57,7 @@ impl fmt::Display for CommandErrorCode {
 ///
 /// `message` 是一句短句；`usage` 只在能从命令表推出来时给出；`suggestion`
 /// 是规范命令名（而不是用户输入的别名/大小写），例如 `plya` → `play`。
-/// [`Display`] 会把三者拼成终端里可直接显示的多行文本。
+/// [`std::fmt::Display`] 会把三者拼成终端里可直接显示的多行文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
     /// 稳定错误码。
@@ -83,6 +85,84 @@ impl ParseError {
             CommandErrorCode::Arg,
             format!("引号未闭合：缺少结尾的 {quote}"),
         )
+    }
+
+    fn with_usage(mut self, usage: &'static str) -> Self {
+        self.usage = Some(usage.to_owned());
+        self
+    }
+
+    fn with_suggestion(mut self, suggestion: &'static str) -> Self {
+        self.suggestion = Some(suggestion.to_owned());
+        self
+    }
+
+    pub(crate) fn unknown_command(name: &str, suggestion: Option<&'static str>) -> Self {
+        let error = Self::new(
+            CommandErrorCode::Unknown,
+            if name.is_empty() {
+                "命令不能为空".to_owned()
+            } else {
+                format!("未识别的命令：{name}")
+            },
+        );
+        match suggestion {
+            Some(suggestion) => error.with_suggestion(suggestion),
+            None => error,
+        }
+    }
+
+    pub(crate) fn unknown_subcommand(
+        parent: &str,
+        name: &str,
+        suggestion: Option<&'static str>,
+        usage: &'static str,
+    ) -> Self {
+        let error = Self::new(
+            CommandErrorCode::Unknown,
+            format!("{parent} 没有子命令：{name}"),
+        )
+        .with_usage(usage);
+        match suggestion {
+            Some(suggestion) => error.with_suggestion(suggestion),
+            None => error,
+        }
+    }
+
+    pub(crate) fn missing_subcommand(parent: &str, usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, format!("{parent} 缺少子命令")).with_usage(usage)
+    }
+
+    pub(crate) fn missing_arg(name: &str, usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, format!("缺少参数：{name}")).with_usage(usage)
+    }
+
+    pub(crate) fn extra_arg(name: &str, usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, format!("多余的参数：{name}")).with_usage(usage)
+    }
+
+    pub(crate) fn invalid_arg(name: &str, expected: &str, got: &str, usage: &'static str) -> Self {
+        Self::new(
+            CommandErrorCode::Arg,
+            format!("参数 {name} 需要 {expected}，收到：{got}"),
+        )
+        .with_usage(usage)
+    }
+
+    pub(crate) fn empty_flag_name(usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, "标志名不能为空").with_usage(usage)
+    }
+
+    pub(crate) fn unknown_flag(name: &str, usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, format!("未知标志：--{name}")).with_usage(usage)
+    }
+
+    pub(crate) fn flag_missing_value(name: &str, usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, format!("标志 --{name} 缺少取值")).with_usage(usage)
+    }
+
+    pub(crate) fn flag_unexpected_value(name: &str, usage: &'static str) -> Self {
+        Self::new(CommandErrorCode::Arg, format!("标志 --{name} 不接受取值")).with_usage(usage)
     }
 }
 
