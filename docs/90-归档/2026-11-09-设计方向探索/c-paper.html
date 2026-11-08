@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方向 C · 纸与针 — Nowhere Player 视觉方向</title>
+<style>
+  :root{
+    --paper:#F2EFE8;
+    --surface:#E7E2D8;
+    --ink:#14110E;
+    --ink-2:rgba(20,17,14,.66);
+    --ink-3:rgba(20,17,14,.44);
+    --red:#C6402F;
+    --rule:rgba(20,17,14,.16);
+    --rule-2:rgba(20,17,14,.38);
+    --sans:"Helvetica Neue",Helvetica,Arial,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font:400 14px/1.65 var(--sans);
+    font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  a{color:inherit}
+
+  /* ---------- 页面：一张 880 宽的纸 ---------- */
+  .pg{max-width:928px;margin:0 auto;padding:58px 24px 46px}
+
+  .pg-top{display:flex;justify-content:space-between;align-items:baseline;font-size:10px;letter-spacing:.14em;color:var(--ink-2)}
+  .pg-top b{font-weight:400;color:var(--ink-3);letter-spacing:.14em}
+
+  .pg-mast{display:grid;grid-template-columns:1fr auto;align-items:end;gap:32px;margin-top:26px}
+  h1{font-size:92px;line-height:.92;font-weight:700;letter-spacing:-.045em;margin:0}
+  .pg-disc{
+    width:104px;height:104px;border-radius:50%;flex:0 0 auto;
+    background:
+      repeating-radial-gradient(circle at 50% 50%,transparent 0 3px,rgba(242,239,232,.20) 3px 3.8px),
+      var(--red);
+    position:relative;margin-bottom:6px;
+  }
+  .pg-disc::before{
+    content:"";position:absolute;inset:34px;border-radius:50%;
+    border:1px solid rgba(242,239,232,.55);
+  }
+  .pg-disc::after{
+    content:"";position:absolute;inset:calc(50% - 3px);border-radius:50%;
+    background:var(--paper);box-shadow:inset 0 0 0 1px rgba(20,17,14,.35);
+  }
+  .pg-rule{height:1px;background:var(--ink);margin-top:26px}
+
+  .pg-notes{margin-top:0}
+  .pg-note{display:grid;grid-template-columns:104px 1fr;gap:24px;padding:13px 0;border-bottom:1px solid var(--rule)}
+  .pg-note h2{margin:0;font-size:9.5px;font-weight:400;letter-spacing:.16em;color:var(--ink-3);padding-top:4px}
+  .pg-note p{margin:0;font-size:13.5px;line-height:1.75;max-width:700px}
+
+  .pg-nav{display:grid;grid-template-columns:repeat(4,1fr);margin-top:22px}
+  .pg-nav a{
+    text-decoration:none;padding:9px 0 8px 12px;border-left:1px solid var(--rule-2);border-bottom:1px solid var(--rule-2);
+    font-size:10.5px;letter-spacing:.06em;color:var(--ink-2);transition:color .12s ease;
+  }
+  .pg-nav a b{font-weight:400;color:var(--ink-3);margin-right:8px}
+  .pg-nav a:hover{color:var(--ink)}
+  .pg-nav a[aria-current]{color:var(--red);border-left-color:var(--red)}
+  .pg-nav a[aria-current] b{color:var(--red)}
+
+  .pg-stage{margin-top:42px}
+  .pg-blk + .pg-blk{margin-top:34px}
+  .pg-label{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin:0 0 7px;font-size:9.5px;letter-spacing:.16em;color:var(--ink-3);
+  }
+  .pg-label b{font-weight:400;letter-spacing:.1em}
+
+  /* ---------- 播放器 340×120 ---------- */
+  .pl{
+    width:340px;height:120px;box-sizing:border-box;
+    padding:12px 16px;border:1px solid var(--rule-2);background:var(--paper);
+  }
+  .pl-meta{display:flex;justify-content:space-between;align-items:baseline;height:12px;font-size:8.5px;letter-spacing:.18em;color:var(--ink-3)}
+  .pl-body{display:flex;align-items:center;gap:15px;margin-top:9px;height:72px}
+  .pl-disc{
+    flex:0 0 58px;width:58px;height:58px;border-radius:50%;
+    background:
+      repeating-radial-gradient(circle at 50% 50%,transparent 0 2.6px,rgba(242,239,232,.22) 2.6px 3.3px),
+      var(--red);
+    position:relative;
+  }
+  .pl-disc::before{content:"";position:absolute;inset:19px;border-radius:50%;border:1px solid rgba(242,239,232,.55)}
+  .pl-disc::after{content:"";position:absolute;inset:calc(50% - 2px);border-radius:50%;background:var(--paper)}
+  .pl-txt{flex:1 1 auto;min-width:0}
+  .pl-title{font-size:27px;line-height:30px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pl-sub{font-size:10px;line-height:14px;letter-spacing:.03em;color:var(--ink-2);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pl-groove{position:relative;height:9px;margin-top:6px;border-bottom:1px solid var(--rule-2)}
+  .pl-groove i{position:absolute;left:0;bottom:0;height:3px;background:var(--ink);width:var(--p)}
+  .pl-groove b{position:absolute;bottom:-4px;width:5px;height:9px;background:var(--red);left:calc(var(--p) - 2.5px)}
+  .pl-foot{display:flex;align-items:flex-end;gap:4px;margin-top:2px;font-size:9px;letter-spacing:.06em;color:var(--ink-2)}
+  .pl-foot s{text-decoration:none;color:var(--ink-3);margin:0 1px}
+  .pl-ctrl{margin-left:auto;display:flex;align-items:center;gap:9px;color:var(--ink);padding-bottom:1px}
+  .pl-ctrl button{
+    display:grid;place-items:center;width:13px;height:11px;padding:0;border:0;background:transparent;
+    color:var(--ink);cursor:pointer;opacity:.72;transition:opacity .12s ease;
+  }
+  .pl-ctrl button:hover{opacity:1}
+  .pl-ctrl svg{display:block;fill:currentColor}
+  .pl-ctrl button:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+
+  /* ---------- 终端 880×560 ---------- */
+  .tm{
+    width:880px;height:560px;box-sizing:border-box;
+    display:flex;flex-direction:column;overflow:hidden;
+    border:1px solid var(--rule-2);background:var(--paper);
+  }
+  .tm-bar{
+    flex:0 0 36px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 20px;border-bottom:1px solid var(--rule-2);
+    font-size:9.5px;letter-spacing:.16em;color:var(--ink-2);
+  }
+  .tm-stream{flex:1 1 auto;overflow:hidden;padding:14px 22px 0}
+  .tm-blk{margin:0 0 11px}
+  .tm-blk:last-child{margin-bottom:0}
+  .tm-cmd{display:flex;align-items:baseline;gap:9px;height:21px;font-size:12.5px;letter-spacing:.01em}
+  .tm-cmd .mk{color:var(--red)}
+  .tm-cmd .c{font-weight:700}
+  .tm-ms{margin-left:auto;font-size:9px;letter-spacing:.1em;color:var(--ink-3)}
+  .tm-run{margin-left:auto;font-size:9px;letter-spacing:.1em;color:var(--red)}
+
+  .tm-tbl{display:grid;grid-template-columns:184px 1fr;column-gap:20px;font-size:12px;line-height:18px;
+    border-top:1px solid var(--rule-2)}
+  .tm-tbl > div{border-bottom:1px solid rgba(20,17,14,.075);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tm-tbl .h{font-size:9px;letter-spacing:.16em;line-height:20px;color:var(--ink-3);border-bottom:1px solid var(--rule)}
+  .tm-tbl em{font-style:normal;color:var(--ink-3)}
+
+  .tm-search{display:grid;grid-template-columns:32px 106px 92px 92px 70px 1fr;column-gap:16px;font-size:12px;line-height:18px;
+    border-top:1px solid var(--rule-2)}
+  .tm-search > div{border-bottom:1px solid rgba(20,17,14,.075);white-space:nowrap}
+  .tm-search .h{font-size:9px;letter-spacing:.16em;line-height:20px;color:var(--ink-3);border-bottom:1px solid var(--rule)}
+  .tm-search .mk{color:var(--red)}
+  .tm-hint{margin-top:5px;font-size:11px;line-height:17px;color:var(--ink-3)}
+  .tm-hint code{font-family:var(--sans);color:var(--ink);border-bottom:1px solid var(--rule-2)}
+
+  .tm-err{display:inline-block;border:1px solid var(--red);padding:7px 14px 8px;margin-top:1px}
+  .tm-err .code{font-size:13px;font-weight:700;letter-spacing:.1em;color:var(--red)}
+  .tm-err .msg{font-size:12px;line-height:18px;margin-top:2px}
+  .tm-fix{font-size:11px;line-height:17px;color:var(--ink-2);margin:6px 0 0}
+  .tm-fix code{font-family:var(--sans);border-bottom:1px solid var(--rule-2);color:var(--ink)}
+
+  .tm-num{display:flex;align-items:baseline;gap:7px;margin-top:3px}
+  .tm-num b{font-size:21px;line-height:24px;font-weight:700;letter-spacing:-.02em}
+  .tm-num span{font-size:11px;color:var(--ink-2);letter-spacing:.04em}
+  .tm-num em{margin-left:auto;font-style:normal;font-size:11px;color:var(--ink-2);letter-spacing:.06em}
+  .tm-bar2{position:relative;height:11px;margin-top:6px;border-bottom:1px solid var(--rule-2)}
+  .tm-bar2 i{position:absolute;left:0;bottom:0;height:4px;background:var(--ink);width:var(--p)}
+  .tm-bar2 b{position:absolute;bottom:-3px;width:7px;height:11px;background:var(--red);left:calc(var(--p) - 3.5px)}
+
+  .tm-input{
+    flex:0 0 40px;display:flex;align-items:center;gap:9px;
+    padding:0 22px;border-top:1px solid var(--rule-2);
+  }
+  .tm-input .mk{color:var(--red);font-size:12.5px}
+  .tm-ph{font-size:12px;color:var(--ink-3)}
+  .tm-cur{width:7px;height:14px;background:var(--red)}
+  .tm-status{
+    flex:0 0 24px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 22px;border-top:1px solid var(--rule);
+    font-size:9px;letter-spacing:.1em;color:var(--ink-3);
+  }
+
+  .pg-foot{
+    margin-top:40px;padding-top:13px;border-top:1px solid var(--ink);
+    display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;font-size:11.5px;color:var(--ink-2);
+  }
+  .pg-foot b{font-weight:400;font-size:9.5px;letter-spacing:.16em;color:var(--ink)}
+  .pg-foot a{margin-left:auto;font-size:10px;letter-spacing:.08em;color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--rule-2)}
+  .pg-foot a:hover{color:var(--ink)}
+  :focus-visible{outline:2px solid var(--red);outline-offset:2px}
+
+  @media (max-width:760px){
+    .pg{padding:34px 18px}
+    h1{font-size:52px}
+    .pg-disc{width:64px;height:64px}
+    .pg-note{grid-template-columns:1fr;gap:2px}
+    .tm{width:100%;height:auto;min-height:560px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<main class="pg">
+
+  <div class="pg-top"><span>方向 C　视觉方向评审</span><b>2026-11</b></div>
+
+  <header class="pg-mast">
+    <h1>纸与针</h1>
+    <div class="pg-disc" aria-hidden="true"></div>
+  </header>
+
+  <div class="pg-rule"></div>
+
+  <section class="pg-notes" aria-label="设计说明">
+    <div class="pg-note">
+      <h2>核心主张</h2>
+      <p>播放器是印在纸上的一行字，不是一个发光的控件；唱片标签的那一点红，是整页唯一的彩色。</p>
+    </div>
+    <div class="pg-note">
+      <h2>视觉规则</h2>
+      <p>一切交给字号与留白：标题大过一切，分隔只用 1px 实线，没有圆角、没有投影、没有渐变。</p>
+    </div>
+    <div class="pg-note">
+      <h2>最大风险</h2>
+      <p>亮底窗口在夜里刺眼，长时间盯着看会累；纸感一旦做重（纹理、做旧、印刷网点）就会变成文创。</p>
+    </div>
+  </section>
+
+  <nav class="pg-nav" aria-label="四个方向">
+    <a href="a-late-night.html"><b>A</b>深夜电台</a>
+    <a href="b-phosphor.html"><b>B</b>磷光</a>
+    <a href="c-paper.html" aria-current="page"><b>C</b>纸与针</a>
+    <a href="d-hybrid.html"><b>D</b>混合</a>
+  </nav>
+
+  <section class="pg-stage">
+
+    <div class="pg-blk" style="width:340px">
+      <p class="pg-label"><span>播放器小窗</span><b>340 × 120</b></p>
+      <div class="pl">
+        <div class="pl-meta"><span>正在播放</span><span>队列 5</span></div>
+        <div class="pl-body">
+          <div class="pl-disc" aria-hidden="true"></div>
+          <div class="pl-txt">
+            <div class="pl-title">晴天</div>
+            <div class="pl-sub">周杰伦 / 叶惠美</div>
+            <div class="pl-groove" style="--p:30.9%" role="img" aria-label="进度 1 分 23 秒，共 4 分 29 秒">
+              <i></i><b></b>
+            </div>
+            <div class="pl-foot">
+              <span>01:23</span><s>/</s><span>04:29</span>
+              <span class="pl-ctrl">
+                <button type="button" aria-label="上一首"><svg width="11" height="10" viewBox="0 0 11 10" aria-hidden="true"><path d="M1 2h1.5v6H1zM10 2v6L4.6 5z"/></svg></button>
+                <button type="button" aria-label="暂停"><svg width="11" height="10" viewBox="0 0 11 10" aria-hidden="true"><path d="M3.6 2h1.4v6H3.6zM6 2h1.4v6H6z"/></svg></button>
+                <button type="button" aria-label="下一首"><svg width="11" height="10" viewBox="0 0 11 10" aria-hidden="true"><path d="M9.6 2H8.1v6h1.5zM1.6 2v6L7 5z"/></svg></button>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pg-blk" style="width:880px">
+      <p class="pg-label"><span>终端窗</span><b>880 × 560</b></p>
+      <div class="tm">
+        <div class="tm-bar"><span>终端</span><span>Ctrl+L 清屏</span></div>
+
+        <div class="tm-stream">
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="mk">›</span><span class="c">help</span><span class="tm-ms">12ms</span></div>
+            <div class="tm-tbl">
+              <div class="h">命令</div><div class="h">说明</div>
+              <div>play <em>&lt;关键词&gt;</em></div><div>播放队列中的曲目，或按路径播放</div>
+              <div>queue</div><div>查看或编辑播放队列</div>
+              <div>search <em>&lt;关键词&gt;</em></div><div>搜索本地库与在线音源</div>
+              <div>perm</div><div>查看并管理访问权限</div>
+              <div>library scan</div><div>扫描音乐目录并入库</div>
+              <div>clear</div><div>清空输出</div>
+            </div>
+          </div>
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="mk">›</span><span class="c">search 晴天</span><span class="tm-ms">38ms</span></div>
+            <div class="tm-search">
+              <div class="h">#</div><div class="h">曲目</div><div class="h">艺人</div><div class="h">专辑</div><div class="h">时长</div><div class="h">来源</div>
+              <div class="mk">›1</div><div>晴天</div><div>周杰伦</div><div>叶惠美</div><div>04:29</div><div>本地库</div>
+            </div>
+            <p class="tm-hint">已在队列第 1 位，输入 <code>1</code> 或 <code>play 1</code> 播放。</p>
+          </div>
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="mk">›</span><span class="c">perm</span><span class="tm-ms">5ms</span></div>
+            <div class="tm-err">
+              <div class="code">E_LIB_PERMISSION</div>
+              <div class="msg">库目录 E:\Music 拒绝访问，扫描与播放均已暂停。</div>
+            </div>
+            <p class="tm-fix">检查目录权限后重试，或用 <code>library add &lt;路径&gt;</code> 重新登记。</p>
+          </div>
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="mk">›</span><span class="c">library scan</span><span class="tm-run">运行中 2.4s</span></div>
+            <div class="tm-num"><b>1,284</b><span>/ 2,000</span><em>64% · 约 11 秒</em></div>
+            <div class="tm-bar2" style="--p:64.2%" role="img" aria-label="扫描进度 64%"><i></i><b></b></div>
+          </div>
+
+        </div>
+
+        <div class="tm-input"><span class="mk">›</span><span class="tm-ph">输入命令</span><i class="tm-cur" aria-hidden="true"></i></div>
+        <div class="tm-status"><span>队列 5 首 · 总时长 21:14</span><span>Tab 补全　↑↓ 历史　Ctrl+L 清屏</span></div>
+      </div>
+    </div>
+
+  </section>
+
+  <footer class="pg-foot">
+    <b>最像</b>
+    <span>ECM 与 Blue Note 的唱片封套排版，加上一份 1970 年代的印刷说明书。软件里没有对应的——这正是它的价值，也是它的代价。</span>
+    <a href="index.html">回到方向索引</a>
+  </footer>
+
+</main>
+</body>
+</html>

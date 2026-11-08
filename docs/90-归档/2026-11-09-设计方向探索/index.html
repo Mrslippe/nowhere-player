@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>四个方向 — Nowhere Player 视觉方向评审</title>
+<style>
+  :root{
+    --bg:#0E0D0C;
+    --fg:#E8E5DE;
+    --fg-2:#9B958A;
+    --fg-3:#6B665D;
+    --line:rgba(232,229,222,.13);
+    --line-2:rgba(232,229,222,.26);
+    --font:"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg);color:var(--fg);
+    font:400 14px/1.65 var(--font);
+    font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+  .pg{max-width:1080px;margin:0 auto;padding:56px 32px 44px}
+  .kicker{margin:0;font-size:10px;letter-spacing:.18em;color:var(--fg-3)}
+  h1{font-size:42px;line-height:1.1;font-weight:600;letter-spacing:-.015em;margin:14px 0 0}
+  .intro{margin:12px 0 0;font-size:13px;line-height:1.8;color:var(--fg-2);max-width:660px}
+
+  .list{list-style:none;margin:34px 0 0;padding:0;border-top:1px solid var(--line-2)}
+  .list li{border-bottom:1px solid var(--line)}
+  .list a{
+    display:grid;grid-template-columns:196px 1fr auto;gap:28px;align-items:center;
+    padding:18px 12px 18px 0;text-decoration:none;
+    transition:background .12s ease;
+  }
+  .list a:hover{background:rgba(232,229,222,.035)}
+  .list h2{margin:0;font-size:22px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:baseline;gap:12px}
+  .list h2 b{font-weight:400;font-size:10px;letter-spacing:.18em;color:var(--fg-3)}
+  .list p{margin:5px 0 0;font-size:12.5px;line-height:1.7;color:var(--fg-2);max-width:60ch}
+  .list .like{margin-top:4px;font-size:11px;color:var(--fg-3)}
+  .go{font-size:10px;letter-spacing:.16em;color:var(--fg-3);padding-right:2px}
+  .list a:hover .go{color:var(--fg)}
+
+  /* ---------- 缩略：按各方向配色的示意图，不是截图 ---------- */
+  .mini{
+    width:196px;height:132px;padding:9px;display:grid;grid-template-rows:34px 1fr;gap:8px;
+    background:var(--mbg);border:1px solid var(--mline);border-radius:var(--mr,3px);
+  }
+  .mini .mpl{
+    position:relative;display:flex;align-items:center;gap:7px;padding:0 8px;overflow:hidden;
+    background:var(--mpl);border:1px solid var(--mline);border-radius:inherit;
+  }
+  .mini .mk{width:11px;height:11px;flex:0 0 11px;border-radius:50%;background:var(--mdot)}
+  .mini .ml{height:1px;background:var(--mtx);flex:1 1 auto}
+  .mini .ml.s{flex:0 0 24%}
+  .mini .mprog{position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--mprog)}
+  .mini .mtm{
+    background:var(--mtm);border:1px solid var(--mline);border-radius:inherit;
+    padding:7px 8px;display:grid;gap:6px;align-content:start;
+  }
+  .mini .mtm .hr{height:1px;background:var(--mline);margin-bottom:2px}
+  .mini .ln{height:1px;background:var(--mtx);width:44%}
+  .mini .ln.w1{width:26%}
+  .mini .ln.w2{width:62%}
+  .mini .ln.w3{width:34%}
+  .mini .ln.acc{background:var(--macc)}
+
+  .m-a{--mbg:#14100E;--mline:rgba(232,220,200,.2);--mpl:#231D18;--mtm:#181410;--mtx:rgba(232,220,200,.3);--macc:#D98A3D;--mdot:#D98A3D;--mprog:repeating-linear-gradient(90deg,#D98A3D 0 2px,transparent 2px 4px);--mr:6px}
+  .m-b{--mbg:#0A0806;--mline:rgba(255,180,84,.34);--mpl:#0C0A07;--mtm:#0C0A07;--mtx:rgba(255,180,84,.5);--macc:#FFB454;--mdot:#FFB454;--mprog:repeating-linear-gradient(90deg,#FFB454 0 2px,transparent 2px 5px);--mr:1px}
+  .m-b .mtm,.m-d .mtm{background-image:repeating-linear-gradient(180deg,rgba(255,180,84,.05) 0 1px,transparent 1px 3px)}
+  .m-c{--mbg:#F2EFE8;--mline:rgba(20,17,14,.35);--mpl:#F2EFE8;--mtm:#F2EFE8;--mtx:rgba(20,17,14,.42);--macc:#C6402F;--mdot:#C6402F;--mprog:linear-gradient(90deg,#14110E 0 31%,rgba(20,17,14,.16) 31%);--mr:0px}
+  .m-d{--mbg:#0F0D0B;--mline:rgba(232,229,222,.2);--mpl:#F2EFE8;--mtm:#0A0806;--mtx:rgba(255,180,84,.5);--macc:#C6402F;--mdot:#C6402F;--mprog:linear-gradient(90deg,#14110E 0 31%,rgba(20,17,14,.16) 31%);--mr:2px}
+  .m-d .mpl{border-color:rgba(20,17,14,.45)}
+  .m-d .mtm{border-color:rgba(255,180,84,.28)}
+
+  /* ---------- 对比 ---------- */
+  .cmp{margin-top:40px}
+  .cmp h2{margin:0 0 12px;font-size:10px;font-weight:400;letter-spacing:.18em;color:var(--fg-3)}
+  table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}
+  th{font-weight:400;font-size:9.5px;letter-spacing:.16em;color:var(--fg-3);padding:0 12px 7px 0;border-bottom:1px solid var(--line-2)}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);color:var(--fg-2);vertical-align:top;line-height:1.6}
+  td:first-child{color:var(--fg);white-space:nowrap}
+  td b{font-weight:600;color:var(--fg)}
+
+  .rec{
+    margin-top:34px;padding:16px 18px;border:1px solid var(--line-2);
+    display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:baseline;
+  }
+  .rec em{font-style:normal;font-size:10px;letter-spacing:.18em;color:var(--fg-3)}
+  .rec p{margin:0;font-size:13px;line-height:1.75;color:var(--fg-2)}
+  .rec strong{font-weight:600;color:var(--fg)}
+  .rec a{color:var(--fg);text-decoration:none;border-bottom:1px solid var(--line-2)}
+
+  .foot{
+    margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
+    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    font-size:11px;color:var(--fg-3);
+  }
+  .foot a{text-decoration:none;border-bottom:1px solid var(--line-2)}
+  .foot a:hover{color:var(--fg)}
+  :focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+
+  @media (max-width:760px){
+    .pg{padding:34px 18px}
+    h1{font-size:32px}
+    .list a{grid-template-columns:1fr;gap:14px}
+    .mini{width:100%}
+    .go{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<main class="pg">
+
+  <header>
+    <p class="kicker">Nowhere Player　视觉方向评审　2026-11</p>
+    <h1>四个方向</h1>
+    <p class="intro">同一份内容、同一组尺寸：播放器 340×120、终端 880×560；曲目《晴天》、队列五首、四条命令（help / search / perm / library scan）。四页只有材质与规则不同；缩略图是按各自材质画的示意，真实渲染请点开看。</p>
+  </header>
+
+  <ol class="list">
+
+    <li>
+      <a href="a-late-night.html">
+        <div class="mini m-a" aria-hidden="true">
+          <div class="mpl"><i class="mk"></i><span class="ml s"></span><span class="ml"></span><span class="mprog"></span></div>
+          <div class="mtm"><span class="hr"></span><span class="ln w1"></span><span class="ln"></span><span class="ln w2"></span><span class="ln w3"></span><span class="ln acc w2"></span></div>
+        </div>
+        <div>
+          <h2>深夜电台<b>方向 A</b></h2>
+          <p>把播放器当设备做：细边框、刻度尺、一颗状态灯。没有投影，纵深只靠面板与底面的明度差。</p>
+          <p class="like">最像 Braun TG 60 面板 × OP-1</p>
+        </div>
+        <span class="go">打开</span>
+      </a>
+    </li>
+
+    <li>
+      <a href="b-phosphor.html">
+        <div class="mini m-b" aria-hidden="true">
+          <div class="mpl"><i class="mk"></i><span class="ml s"></span><span class="ml"></span><span class="mprog"></span></div>
+          <div class="mtm"><span class="hr"></span><span class="ln w1"></span><span class="ln"></span><span class="ln w2"></span><span class="ln w3"></span><span class="ln acc w2"></span></div>
+        </div>
+        <div>
+          <h2>磷光<b>方向 B</b></h2>
+          <p>两个窗口是同一块磷光屏的两个分区：等宽、全出血、无卡片，扫描线只在材质层里，不盖住字。</p>
+          <p class="like">最像 ncmpcpp × VT220 琥珀屏</p>
+        </div>
+        <span class="go">打开</span>
+      </a>
+    </li>
+
+    <li>
+      <a href="c-paper.html">
+        <div class="mini m-c" aria-hidden="true">
+          <div class="mpl"><i class="mk"></i><span class="ml s"></span><span class="ml"></span><span class="mprog"></span></div>
+          <div class="mtm"><span class="hr"></span><span class="ln w1"></span><span class="ln"></span><span class="ln w2"></span><span class="ln w3"></span><span class="ln acc w2"></span></div>
+        </div>
+        <div>
+          <h2>纸与针<b>方向 C</b></h2>
+          <p>唱片封套的排版逻辑：标题大过一切，分割线只有 1px，留白比内容多；终端也印在同一张纸上。</p>
+          <p class="like">最像 ECM / Blue Note 封套</p>
+        </div>
+        <span class="go">打开</span>
+      </a>
+    </li>
+
+    <li>
+      <a href="d-hybrid.html">
+        <div class="mini m-d" aria-hidden="true">
+          <div class="mpl"><i class="mk"></i><span class="ml s"></span><span class="ml"></span><span class="mprog"></span></div>
+          <div class="mtm"><span class="hr"></span><span class="ln w1"></span><span class="ln"></span><span class="ln w2"></span><span class="ln w3"></span><span class="ln acc w2"></span></div>
+        </div>
+        <div>
+          <h2>混合<b>方向 D　建议</b></h2>
+          <p>播放器取 C 的纸，终端取 B 的磷光；两者只共享 #C6402F 一个信号色，在纸上它是唱针，在屏上它是错误。</p>
+          <p class="like">最像 80 年代录音室的双屏工作台</p>
+        </div>
+        <span class="go">打开</span>
+      </a>
+    </li>
+
+  </ol>
+
+  <section class="cmp">
+    <h2>一句话对比</h2>
+    <table>
+      <thead>
+        <tr><th>方向</th><th>播放器</th><th>终端</th><th>判断</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>A 深夜电台</td><td>暖黑面板 + 刻度</td><td>同一套面板材质</td><td>最稳，长期挂在桌面不烦；个性最弱。</td></tr>
+        <tr><td>B 磷光</td><td>琥珀读数</td><td>琥珀等宽</td><td>最锋利，辨识度最高；但最挑环境光，也最像“主题”。</td></tr>
+        <tr><td>C 纸与针</td><td>唱片封套</td><td>亮底印刷</td><td>最美，但夜里刺眼；终端用亮底是真实代价。</td></tr>
+        <tr><td><b>D 混合</b></td><td>取 C 的纸</td><td>取 B 的磷光</td><td><b>两个窗口各自成立，红色把它们绑成一件事。</b></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="rec">
+    <em>建议</em>
+    <p><strong>走 D。</strong>它不是 A/B/C 的平均，而是把“播放器是物件、终端是机器”这个判断显式化：纸负责手里，磷光负责屏上，红负责在两者之间指路。<a href="d-hybrid.html">打开 D</a></p>
+  </section>
+
+  <footer class="foot">
+    <span>四页均为纯静态 HTML，无外部字体与图片引用；窗口尺寸按 340×120 / 880×560 实测。</span>
+    <span>评审标准：frontend-design 的“反模板化”清单　<a href="review.md">review.md</a></span>
+  </footer>
+
+</main>
+</body>
+</html>

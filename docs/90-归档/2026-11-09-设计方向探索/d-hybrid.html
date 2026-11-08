@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方向 D · 混合 — Nowhere Player 视觉方向</title>
+<style>
+  :root{
+    --bg:#0F0D0B;
+    --fg:#E6E0D4;
+    --fg-2:#9A9084;
+    --fg-3:#6D655A;
+    --red:#C6402F;
+    --amber:#FFB454;
+    --amber-2:rgba(255,180,84,.66);
+    --amber-3:rgba(255,180,84,.50);
+    --paper:#F2EFE8;
+    --ink:#14110E;
+    --ink-2:rgba(20,17,14,.66);
+    --ink-3:rgba(20,17,14,.42);
+    --rule:rgba(230,224,212,.14);
+    --rule-2:rgba(230,224,212,.28);
+    --sans:"Helvetica Neue",Helvetica,Arial,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    --mono:"Cascadia Mono",Consolas,"SF Mono",Menlo,"PingFang SC","Microsoft YaHei",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg);
+    color:var(--fg);
+    font:400 14px/1.65 var(--sans);
+    font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+
+  /* ---------- 页面 ---------- */
+  .pg{max-width:1332px;margin:0 auto;padding:54px 32px 44px}
+  .pg-kicker{display:flex;gap:12px;align-items:center;margin:0;font-size:10px;letter-spacing:.16em;color:var(--fg-3)}
+  .pg-kicker b{font-weight:400;color:var(--red)}
+  .pg-kicker i{font-style:normal;color:var(--red);letter-spacing:.16em}
+  .pg-mast{display:grid;grid-template-columns:1fr auto;align-items:end;gap:24px;margin-top:16px}
+  h1{font-size:58px;line-height:1.04;font-weight:700;letter-spacing:-.02em;margin:0}
+  .pg-tag{font-size:10px;letter-spacing:.18em;color:var(--fg-3);padding-bottom:10px}
+  .pg-sub{margin:12px 0 0;font-size:13px;line-height:1.7;color:var(--fg-2);max-width:660px}
+
+  .pg-notes{margin-top:26px;border-top:1px solid var(--rule);max-width:960px}
+  .pg-note{display:grid;grid-template-columns:92px 1fr;gap:20px;padding:10px 0;border-bottom:1px solid var(--rule)}
+  .pg-note h2{margin:0;font-size:9.5px;font-weight:400;letter-spacing:.18em;color:var(--fg-3);padding-top:3px}
+  .pg-note p{margin:0;font-size:12.5px;line-height:1.75;color:var(--fg-2);max-width:700px}
+  .pg-note:first-child p{color:var(--fg)}
+
+  .pg-nav{display:grid;grid-template-columns:repeat(4,1fr);margin-top:24px;max-width:1332px}
+  .pg-nav a{
+    text-decoration:none;padding:9px 0 8px 12px;border-left:1px solid var(--rule-2);border-bottom:1px solid var(--rule-2);
+    font-size:10.5px;letter-spacing:.06em;color:var(--fg-3);transition:color .12s ease;
+  }
+  .pg-nav a b{font-weight:400;margin-right:8px;color:var(--fg-3)}
+  .pg-nav a:hover{color:var(--fg)}
+  .pg-nav a[aria-current]{color:var(--fg);border-left-color:var(--red)}
+  .pg-nav a[aria-current] b{color:var(--red)}
+
+  .pg-stage{display:flex;flex-wrap:wrap;gap:44px;align-items:flex-start;margin-top:40px}
+  .pg-col{flex:0 0 auto}
+  .pg-label{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin:0 0 8px;font-size:9.5px;letter-spacing:.16em;color:var(--fg-3);
+  }
+  .pg-label b{font-weight:400;letter-spacing:.1em}
+  .pg-label b.papermark{color:var(--paper);opacity:.55}
+  .pg-label b.glassmark{color:var(--amber);opacity:.55}
+
+  /* ---------- 播放器：C 的纸 340×120 ---------- */
+  .pl{
+    width:340px;height:120px;box-sizing:border-box;
+    padding:12px 16px;border:1px solid rgba(20,17,14,.55);background:var(--paper);color:var(--ink);
+    font-family:var(--sans);
+  }
+  .pl-meta{display:flex;justify-content:space-between;align-items:baseline;height:12px;font-size:9px;letter-spacing:.16em;color:var(--ink-2)}
+  .pl-body{display:flex;align-items:center;gap:15px;margin-top:9px;height:72px}
+  .pl-disc{
+    flex:0 0 58px;width:58px;height:58px;border-radius:50%;
+    background:
+      repeating-radial-gradient(circle at 50% 50%,transparent 0 2.6px,rgba(242,239,232,.22) 2.6px 3.3px),
+      var(--red);
+    position:relative;
+  }
+  .pl-disc::before{content:"";position:absolute;inset:19px;border-radius:50%;border:1px solid rgba(242,239,232,.55)}
+  .pl-disc::after{content:"";position:absolute;inset:calc(50% - 2px);border-radius:50%;background:var(--paper)}
+  .pl-txt{flex:1 1 auto;min-width:0}
+  .pl-title{font-size:27px;line-height:30px;font-weight:700;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pl-sub{font-size:10px;line-height:14px;letter-spacing:.03em;color:var(--ink-2);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pl-groove{position:relative;height:9px;margin-top:6px;border-bottom:1px solid rgba(20,17,14,.38)}
+  .pl-groove i{position:absolute;left:0;bottom:0;height:3px;background:var(--ink);width:var(--p)}
+  .pl-groove b{position:absolute;bottom:-4px;width:5px;height:9px;background:var(--red);left:calc(var(--p) - 2.5px)}
+  .pl-foot{display:flex;align-items:flex-end;gap:4px;margin-top:2px;font-size:9px;letter-spacing:.06em;color:var(--ink-2)}
+  .pl-foot s{text-decoration:none;color:var(--ink-3);margin:0 1px}
+  .pl-ctrl{margin-left:auto;display:flex;align-items:center;gap:9px;color:var(--ink);padding-bottom:1px}
+  .pl-ctrl button{display:grid;place-items:center;width:13px;height:11px;padding:0;border:0;background:transparent;color:var(--ink);cursor:pointer;opacity:.72;transition:opacity .12s ease}
+  .pl-ctrl button:hover{opacity:1}
+  .pl-ctrl svg{display:block;fill:currentColor}
+
+  /* 信号色 */
+  .pg-signal{margin-top:26px;border-top:1px solid var(--rule);padding-top:14px;width:340px}
+  .pg-signal h2{margin:0;font-size:9.5px;font-weight:400;letter-spacing:.18em;color:var(--fg-3)}
+  .pg-signal .sw{display:flex;align-items:center;gap:12px;margin-top:10px}
+  .pg-signal .sw i{width:30px;height:30px;background:var(--red);border-radius:50%}
+  .pg-signal .sw code{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:var(--fg);background:none}
+  .pg-signal dl{margin:12px 0 0;display:grid;gap:7px}
+  .pg-signal dl + dl{margin-top:14px;padding-top:12px;border-top:1px solid var(--rule)}
+  .pg-signal div{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11px;line-height:1.6}
+  .pg-signal dt{color:var(--fg-3);letter-spacing:.08em}
+  .pg-signal dd{margin:0;color:var(--fg-2)}
+  .pg-signal dd b{font-weight:400;color:var(--red)}
+
+  /* ---------- 终端：B 的磷光 880×560 ---------- */
+  .tm{
+    width:880px;height:560px;box-sizing:border-box;
+    display:flex;flex-direction:column;overflow:hidden;
+    border:1px solid rgba(255,180,84,.26);border-radius:2px;
+    background-color:#0A0806;
+    background-image:repeating-linear-gradient(180deg,rgba(255,180,84,.022) 0 1px,transparent 1px 3px);
+    color:var(--amber);
+    font-family:var(--mono);
+  }
+  .tm-bar{
+    flex:0 0 34px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 18px;border-bottom:1px solid rgba(255,180,84,.16);
+    font-size:10px;letter-spacing:.14em;color:var(--amber-3);
+  }
+  .tm-bar span:first-child{color:var(--amber-2)}
+  .tm-stream{flex:1 1 auto;overflow:hidden;padding:16px 20px 0}
+  .tm-blk{margin:0 0 14px}
+  .tm-blk:last-child{margin-bottom:0}
+  .tm-cmd{display:flex;align-items:baseline;gap:9px;height:21px;font-size:12.5px;letter-spacing:.02em;color:var(--amber)}
+  .tm-cmd .p{color:var(--amber)}
+  .tm-ms{margin-left:auto;font-size:10px;color:var(--amber-3)}
+  .tm-run{margin-left:auto;font-size:10px;color:var(--amber-2)}
+  .tm-run::before{content:"·";color:var(--red);margin-right:6px}
+
+  .tm-tbl{display:grid;grid-template-columns:180px 1fr;column-gap:18px;font-size:12px;line-height:19px}
+  .tm-tbl > div{border-bottom:1px solid rgba(255,180,84,.075);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tm-tbl .h{font-size:10px;letter-spacing:.14em;line-height:19px;color:var(--amber-3);border-bottom:1px solid rgba(255,180,84,.26)}
+  .tm-tbl em{font-style:normal;color:var(--amber-3)}
+
+  .tm-search{display:grid;grid-template-columns:30px 104px 88px 88px 64px 1fr;column-gap:14px;font-size:12px;line-height:19px}
+  .tm-search > div{border-bottom:1px solid rgba(255,180,84,.075);white-space:nowrap}
+  .tm-search .h{font-size:10px;letter-spacing:.14em;line-height:19px;color:var(--amber-3);border-bottom:1px solid rgba(255,180,84,.26)}
+  .tm-search .mk{color:var(--red)}
+  .tm-hint{margin-top:5px;font-size:11px;line-height:17px;color:var(--amber-3)}
+  .tm-hint::before{content:"// ";color:rgba(255,180,84,.28)}
+  .tm-hint code{font-family:var(--mono);color:var(--amber-2)}
+
+  .tm-err{
+    display:flex;align-items:baseline;gap:10px;margin-top:1px;
+    border-left:3px solid var(--red);padding:2px 0 2px 11px;
+    background:linear-gradient(90deg,rgba(198,64,47,.10),transparent 72%);
+  }
+  .tm-err .bang{color:var(--red);font-weight:700;font-size:16px;line-height:1}
+  .tm-err .code{color:var(--amber);letter-spacing:.04em;font-weight:700}
+  .tm-err .msg{color:var(--amber-2)}
+  .tm-fix{margin:6px 0 0 15px;font-size:11px;line-height:17px;color:var(--amber-3)}
+  .tm-fix code{font-family:var(--mono);color:var(--amber-2)}
+
+  .tm-cells{position:relative;height:12px;margin:6px 0 5px;width:520px;
+    background:repeating-linear-gradient(90deg,rgba(255,180,84,.2) 0 7px,transparent 7px 10px)}
+  .tm-cells i{position:absolute;left:0;right:0;top:0;bottom:0;
+    background:repeating-linear-gradient(90deg,var(--amber) 0 7px,transparent 7px 10px);
+    clip-path:inset(0 calc(100% - var(--p)) 0 0)}
+  .tm-cells b{position:absolute;top:-1px;width:7px;height:14px;background:var(--red);left:calc(var(--p) - 3px)}
+  .tm-progmeta{display:flex;justify-content:space-between;width:520px;font-size:11px;line-height:16px}
+  .tm-progmeta span:first-child{color:var(--amber)}
+  .tm-progmeta span:last-child{color:var(--amber-2)}
+
+  .tm-input{
+    flex:0 0 38px;display:flex;align-items:center;gap:9px;
+    padding:0 20px;border-top:1px solid rgba(255,180,84,.16);
+  }
+  .tm-input .p{font-size:12.5px;color:var(--amber-2)}
+  .tm-ph{font-size:12px;color:var(--amber-2)}
+  .tm-cur{width:7px;height:13px;background:var(--red);opacity:.8}
+  .tm-status{
+    flex:0 0 24px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 20px;border-top:1px solid rgba(255,180,84,.16);
+    font-size:10px;letter-spacing:.06em;color:var(--amber-2);
+  }
+
+  .pg-foot{
+    margin-top:42px;padding-top:14px;border-top:1px solid var(--rule);
+    display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;
+    font-size:12px;color:var(--fg-2);max-width:1264px;
+  }
+  .pg-foot b{font-weight:400;font-size:9.5px;letter-spacing:.18em;color:var(--fg)}
+  .pg-foot a{margin-left:auto;font-size:10px;letter-spacing:.08em;color:var(--fg-3);text-decoration:none;border-bottom:1px solid var(--rule-2)}
+  .pg-foot a:hover{color:var(--fg)}
+  :focus-visible{outline:2px solid var(--red);outline-offset:2px}
+
+  @media (max-width:1335px){.pg-stage{gap:34px}}
+  @media (max-width:760px){
+    .pg{padding:32px 18px}
+    h1{font-size:36px}
+    .pg-note{grid-template-columns:1fr;gap:2px}
+    .tm{width:100%;height:auto;min-height:560px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<main class="pg">
+
+  <header>
+    <p class="pg-kicker"><b>方向 D</b>视觉方向评审 2026-11 <i class="rec">建议方案</i></p>
+    <div class="pg-mast">
+      <h1>混合</h1>
+      <div class="pg-tag">播放器取自 C　终端取自 B　信号色共有</div>
+    </div>
+    <p class="pg-sub">一台机器两种材质：手里拿的是纸，屏幕上跑的是磷光；红色是唯一的共同语言。</p>
+
+    <div class="pg-notes" aria-label="设计说明">
+      <div class="pg-note">
+        <h2>核心主张</h2>
+        <p>播放器是你“拿着”的东西，用纸；终端是你“看着”的东西，用屏幕。这不是妥协，是两个窗口各自的物理身份。</p>
+      </div>
+      <div class="pg-note">
+        <h2>视觉规则</h2>
+        <p>全页只有一个饱和色 #C6402F：纸上它是唱片标签与唱针，屏上是错误、当前项与进度针；其余颜色退到材质本身。</p>
+      </div>
+      <div class="pg-note">
+        <h2>最大风险</h2>
+        <p>两窗亮度差约 10 倍，来回切换会有“换了一台设备”的割裂感；红色若再多用一处，共享信号就会退化成装饰。</p>
+      </div>
+    </div>
+
+    <nav class="pg-nav" aria-label="四个方向">
+      <a href="a-late-night.html"><b>A</b>深夜电台</a>
+      <a href="b-phosphor.html"><b>B</b>磷光</a>
+      <a href="c-paper.html"><b>C</b>纸与针</a>
+      <a href="d-hybrid.html" aria-current="page"><b>D</b>混合</a>
+    </nav>
+  </header>
+
+  <section class="pg-stage">
+
+    <div class="pg-col" style="width:340px">
+      <p class="pg-label"><span>播放器小窗</span><b class="papermark">340 × 120</b></p>
+      <div class="pl">
+        <div class="pl-meta"><span>正在播放</span><span>队列 5</span></div>
+        <div class="pl-body">
+          <div class="pl-disc" aria-hidden="true"></div>
+          <div class="pl-txt">
+            <div class="pl-title">晴天</div>
+            <div class="pl-sub">周杰伦 / 叶惠美</div>
+            <div class="pl-groove" style="--p:30.9%" role="img" aria-label="进度 1 分 23 秒，共 4 分 29 秒">
+              <i></i><b></b>
+            </div>
+            <div class="pl-foot">
+              <span>01:23</span><s>/</s><span>04:29</span>
+              <span class="pl-ctrl">
+                <button type="button" aria-label="上一首"><svg width="11" height="10" viewBox="0 0 11 10" aria-hidden="true"><path d="M1 2h1.5v6H1zM10 2v6L4.6 5z"/></svg></button>
+                <button type="button" aria-label="暂停"><svg width="11" height="10" viewBox="0 0 11 10" aria-hidden="true"><path d="M3.6 2h1.4v6H3.6zM6 2h1.4v6H6z"/></svg></button>
+                <button type="button" aria-label="下一首"><svg width="11" height="10" viewBox="0 0 11 10" aria-hidden="true"><path d="M9.6 2H8.1v6h1.5zM1.6 2v6L7 5z"/></svg></button>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <section class="pg-signal" aria-label="共享信号色">
+        <h2>共享信号</h2>
+        <div class="sw"><i aria-hidden="true"></i><code>#C6402F</code></div>
+        <dl>
+          <div><dt>在纸上</dt><dd>唱片标签、唱针</dd></div>
+          <div><dt>在屏上</dt><dd>错误标记、当前项、进度针</dd></div>
+          <div><dt>不用在</dt><dd>正文、图标、悬停态 —— 它只指认，不阅读</dd></div>
+        </dl>
+        <dl>
+          <div><dt>纸材质</dt><dd>#F2EFE8 / #14110E　无圆角</dd></div>
+          <div><dt>屏材质</dt><dd>#0A0806 / #FFB454　2px 圆角</dd></div>
+        </dl>
+      </section>
+    </div>
+
+    <div class="pg-col">
+      <p class="pg-label"><span>终端窗</span><b class="glassmark">880 × 560</b></p>
+      <div class="tm">
+        <div class="tm-bar"><span>nowhere 0.0.1</span><span>ctrl+l 清屏</span></div>
+
+        <div class="tm-stream">
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="p">›</span><span>help</span><span class="tm-ms">12ms</span></div>
+            <div class="tm-tbl">
+              <div class="h">命令</div><div class="h">说明</div>
+              <div>play <em>&lt;关键词&gt;</em></div><div>播放队列中的曲目，或按路径播放</div>
+              <div>queue</div><div>查看或编辑播放队列</div>
+              <div>search <em>&lt;关键词&gt;</em></div><div>搜索本地库与在线音源</div>
+              <div>perm</div><div>查看并管理访问权限</div>
+              <div>library scan</div><div>扫描音乐目录并入库</div>
+              <div>clear</div><div>清空输出</div>
+            </div>
+          </div>
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="p">›</span><span>search 晴天</span><span class="tm-ms">38ms</span></div>
+            <div class="tm-search">
+              <div class="h">#</div><div class="h">曲目</div><div class="h">艺人</div><div class="h">专辑</div><div class="h">时长</div><div class="h">来源</div>
+              <div class="mk">›1</div><div>晴天</div><div>周杰伦</div><div>叶惠美</div><div>04:29</div><div>本地库</div>
+            </div>
+            <p class="tm-hint">已在队列第 1 位，输入 <code>1</code> 或 <code>play 1</code> 播放。</p>
+          </div>
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="p">›</span><span>perm</span><span class="tm-ms">5ms</span></div>
+            <div class="tm-err">
+              <span class="bang" aria-hidden="true">!</span>
+              <span class="code">E_LIB_PERMISSION</span>
+              <span class="msg">库目录 E:\Music 拒绝访问</span>
+            </div>
+            <p class="tm-fix">扫描与播放均已暂停。检查目录权限后重试，或用 <code>library add &lt;路径&gt;</code> 重新登记。</p>
+          </div>
+
+          <div class="tm-blk">
+            <div class="tm-cmd"><span class="p">›</span><span>library scan</span><span class="tm-run">运行中 2.4s</span></div>
+            <div class="tm-cells" style="--p:64.2%" role="img" aria-label="扫描进度 64%"><i></i><b></b></div>
+            <div class="tm-progmeta"><span>1,284 / 2,000</span><span>64% · 约 11 秒</span></div>
+          </div>
+
+        </div>
+
+        <div class="tm-input"><span class="p">›</span><span class="tm-ph">输入命令</span><i class="tm-cur" aria-hidden="true"></i></div>
+        <div class="tm-status"><span>队列 5 首 · 总时长 21:14</span><span>Tab 补全　↑↓ 历史　Ctrl+L 清屏</span></div>
+      </div>
+    </div>
+
+  </section>
+
+  <footer class="pg-foot">
+    <b>最像</b>
+    <span>一台 80 年代录音室：唱片封套摊在调音台上，琥珀色的监视器亮着。真实产品里最接近的是双屏工作台——但没有播放器这么做，这正是它的辨识度。</span>
+    <a href="index.html">回到方向索引</a>
+  </footer>
+
+</main>
+</body>
+</html>

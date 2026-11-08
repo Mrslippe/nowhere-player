@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方向 B · 磷光 — Nowhere Player 视觉方向</title>
+<style>
+  :root{
+    --bg:#0A0806;
+    --glass:#0C0A07;
+    --amber:#FFB454;
+    --amber-2:rgba(255,180,84,.68);
+    --amber-3:rgba(255,180,84,.50);
+    --line:rgba(255,180,84,.16);
+    --line-2:rgba(255,180,84,.30);
+    --red:#E05B3C;
+    --mono:"Cascadia Mono",Consolas,"SF Mono",Menlo,"PingFang SC","Microsoft YaHei",monospace;
+  }
+  *{box-sizing:border-box}
+  html{overflow-x:clip}
+  html,body{margin:0}
+  body{
+    background:var(--bg);
+    color:var(--amber);
+    font:400 13px/1.7 var(--mono);
+    font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:clip;
+  }
+  a{color:inherit}
+
+  /* ---------- 页面 ---------- */
+  .pg{max-width:1000px;margin:0 auto;padding:56px 40px 40px}
+  .bleed{
+    width:100vw;margin-left:calc(50% - 50vw);
+    height:1px;background:var(--line);border:0;
+  }
+  .pg-kicker{font-size:10.5px;letter-spacing:.22em;color:var(--amber-3);margin:0}
+  .pg-kicker b{font-weight:400;color:var(--amber-2)}
+  h1{font-size:58px;line-height:1.1;font-weight:600;letter-spacing:.03em;margin:14px 0 0;color:var(--amber)}
+  .pg-sub{margin:10px 0 0;font-size:11.5px;line-height:1.7;color:var(--amber-2)}
+
+  .pg-nav{display:grid;grid-template-columns:repeat(4,1fr);margin:26px 0 0}
+  .pg-nav a{
+    text-decoration:none;padding:10px 0 9px 13px;
+    border-left:1px solid var(--line-2);border-bottom:1px solid var(--line-2);
+    font-size:11px;letter-spacing:.06em;color:var(--amber-2);
+    transition:color .12s ease;
+  }
+  .pg-nav a b{font-weight:400;color:var(--amber-3);margin-right:8px}
+  .pg-nav a:hover{color:var(--amber)}
+  .pg-nav a[aria-current]{color:var(--amber);border-left-color:var(--amber);background:rgba(255,180,84,.05)}
+  .pg-nav a[aria-current] b{color:var(--amber)}
+
+  .pg-notes{margin:34px 0 0;max-width:78ch;border-left:1px solid var(--line);padding-left:0}
+  .pg-note{display:grid;grid-template-columns:68px 1fr;gap:16px;padding:9px 0 9px 16px}
+  .pg-note h2{margin:0;font-size:10.5px;font-weight:400;letter-spacing:.16em;color:var(--amber-3);padding-top:3px}
+  .pg-note p{margin:0;font-size:12.5px;line-height:1.85;color:var(--amber-2);max-width:660px}
+  .pg-note:first-child p{color:var(--amber)}
+
+  .pg-stage{margin:44px 0 0}
+  .pg-blk + .pg-blk{margin-top:30px}
+  .pg-label{
+    display:flex;justify-content:space-between;align-items:baseline;
+    margin:0 0 8px;font-size:10px;letter-spacing:.14em;color:var(--amber-3);
+  }
+  .pg-label b{font-weight:400;color:var(--amber-3)}
+
+  /* ---------- 播放器 340×120 ---------- */
+  .pl{
+    position:relative;overflow:hidden;
+    width:340px;height:120px;box-sizing:border-box;
+    padding:11px 14px 12px;border:1px solid var(--line-2);border-radius:2px;
+    background-color:var(--glass);
+    background-image:repeating-linear-gradient(180deg,rgba(255,180,84,.022) 0 1px,transparent 1px 3px);
+  }
+
+  .pl-top{display:flex;align-items:center;justify-content:space-between;height:13px}
+  .pl-state{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.12em;color:var(--amber-2)}
+  .pl-dot{width:5px;height:5px;background:var(--red);border-radius:50%}
+  .pl-q{font-size:10px;letter-spacing:.1em;color:var(--amber-3)}
+  .pl-title{font-size:20px;line-height:24px;margin-top:3px;letter-spacing:.06em;color:var(--amber)}
+  .pl-sub{font-size:10.5px;line-height:14px;color:var(--amber-2);letter-spacing:.04em}
+  .pl-bar{display:flex;align-items:center;gap:10px;margin-top:7px;height:14px}
+  .pl-cells{position:relative;flex:1 1 auto;height:11px;
+    background:repeating-linear-gradient(90deg,rgba(255,180,84,.22) 0 6px,transparent 6px 9px)}
+  .pl-cells i{
+    position:absolute;left:0;right:0;top:0;bottom:0;
+    background:repeating-linear-gradient(90deg,var(--amber) 0 6px,transparent 6px 9px);
+    clip-path:inset(0 calc(100% - var(--p)) 0 0);
+  }
+  .pl-cells b{position:absolute;top:-1px;width:6px;height:13px;background:var(--red);left:calc(var(--p) - 3px)}
+  .pl-time{font-size:10px;letter-spacing:.02em;color:var(--amber-2);white-space:nowrap}
+  .pl-time s{text-decoration:none;color:var(--amber-3)}
+  .pl-ctrl{display:flex;align-items:center;gap:14px;margin-top:4px;height:14px;font-size:9.5px;color:var(--amber-2);letter-spacing:.02em}
+  .pl-ctrl kbd{font:inherit;color:var(--amber-2)}
+  .pl-ctrl span.on{color:var(--amber)}
+  .pl-ctrl span.on kbd{color:var(--amber)}
+
+  /* ---------- 终端 880×560 ---------- */
+  .tm{
+    position:relative;overflow:hidden;
+    width:880px;height:560px;box-sizing:border-box;
+    display:flex;flex-direction:column;
+    border:1px solid var(--line-2);border-radius:2px;
+    background-color:var(--glass);
+    background-image:repeating-linear-gradient(180deg,rgba(255,180,84,.022) 0 1px,transparent 1px 3px);
+  }
+
+  .tm-bar{
+    flex:0 0 34px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 18px;border-bottom:1px solid var(--line);
+    font-size:10px;letter-spacing:.14em;color:var(--amber-3);
+  }
+  .tm-bar span:first-child{color:var(--amber-2)}
+  .tm-stream{flex:1 1 auto;overflow:hidden;padding:16px 20px 0}
+  .tm-blk{margin:0 0 14px}
+  .tm-blk:last-child{margin-bottom:0}
+  .tm-cmd{display:flex;align-items:baseline;gap:9px;height:21px;font-size:12.5px;letter-spacing:.02em;color:var(--amber)}
+  .tm-cmd .p{color:var(--amber)}
+  .tm-ms{margin-left:auto;font-size:10px;color:var(--amber-3)}
+  .tm-run{margin-left:auto;font-size:10px;color:var(--amber-2)}
+  .tm-run::before{content:"·";color:var(--red);margin-right:6px}
+
+  .tm-tbl{display:grid;grid-template-columns:180px 1fr;column-gap:18px;font-size:12px;line-height:19px}
+  .tm-tbl > div{border-bottom:1px solid rgba(255,180,84,.075);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tm-tbl .h{font-size:10px;letter-spacing:.14em;line-height:19px;color:var(--amber-3);border-bottom:1px solid var(--line-2)}
+  .tm-tbl em{font-style:normal;color:var(--amber-3)}
+
+  .tm-search{display:grid;grid-template-columns:30px 104px 88px 88px 64px 1fr;column-gap:14px;font-size:12px;line-height:19px}
+  .tm-search > div{border-bottom:1px solid rgba(255,180,84,.075);white-space:nowrap}
+  .tm-search .h{font-size:10px;letter-spacing:.14em;line-height:19px;color:var(--amber-3);border-bottom:1px solid var(--line-2)}
+  .tm-search .mk{color:var(--red)}
+  .tm-hint{margin-top:5px;font-size:11px;line-height:17px;color:var(--amber-3)}
+  .tm-hint::before{content:"// ";color:rgba(255,180,84,.3)}
+  .tm-hint code{font-family:var(--mono);color:var(--amber-2)}
+
+  .tm-err{display:flex;align-items:baseline;gap:10px;margin-top:1px;font-size:12px;line-height:19px}
+  .tm-err .bang{color:var(--red);font-weight:700;font-size:14px;line-height:1}
+  .tm-err .code{color:var(--red);letter-spacing:.04em}
+  .tm-err .msg{color:var(--amber)}
+  .tm-fix{margin:1px 0 0 24px;font-size:11px;line-height:17px;color:var(--amber-3)}
+  .tm-fix code{font-family:var(--mono);color:var(--amber-2)}
+
+  .tm-cells{position:relative;height:12px;margin:6px 0 5px;width:520px;
+    background:repeating-linear-gradient(90deg,rgba(255,180,84,.2) 0 7px,transparent 7px 10px)}
+  .tm-cells i{position:absolute;left:0;right:0;top:0;bottom:0;
+    background:repeating-linear-gradient(90deg,var(--amber) 0 7px,transparent 7px 10px);
+    clip-path:inset(0 calc(100% - var(--p)) 0 0)}
+  .tm-cells b{position:absolute;top:-1px;width:7px;height:14px;background:var(--red);left:calc(var(--p) - 3px)}
+  .tm-progmeta{display:flex;justify-content:space-between;width:520px;font-size:11px;line-height:16px}
+  .tm-progmeta span:first-child{color:var(--amber)}
+  .tm-progmeta span:last-child{color:var(--amber-2)}
+
+  .tm-input{
+    flex:0 0 38px;display:flex;align-items:center;gap:9px;
+    padding:0 20px;border-top:1px solid var(--line);
+  }
+  .tm-input .p{font-size:12.5px;color:var(--amber-2)}
+  .tm-ph{font-size:12px;color:var(--amber-2)}
+  .tm-cur{width:7px;height:13px;background:var(--amber);opacity:.5}
+  .tm-status{
+    flex:0 0 24px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 20px;border-top:1px solid var(--line);
+    font-size:10px;letter-spacing:.06em;color:var(--amber-2);
+  }
+
+  .pg-foot{
+    margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
+    display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;
+    font-size:12px;color:var(--amber-3);max-width:880px;
+  }
+  .pg-foot b{font-weight:400;letter-spacing:.16em;font-size:10px;color:var(--amber)}
+  .pg-foot a{margin-left:auto;font-size:11px;color:var(--amber-3);text-decoration:none;border-bottom:1px solid var(--line-2)}
+  .pg-foot a:hover{color:var(--amber)}
+  :focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+  @media (max-width:760px){
+    .pg{padding:34px 20px}
+    h1{font-size:40px}
+    .pg-note{grid-template-columns:1fr;gap:2px}
+    .tm{width:100%;height:auto;min-height:560px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<main class="pg">
+
+  <header>
+    <p class="pg-kicker">nowhere <b>/</b> visual-lab <b>/</b> direction <b>b</b></p>
+    <h1>磷光</h1>
+    <p class="pg-sub">amber on black —— 两个窗口共用同一块玻璃。</p>
+    <hr class="bleed" style="margin-top:26px">
+    <nav class="pg-nav" aria-label="四个方向">
+      <a href="a-late-night.html"><b>a</b>深夜电台</a>
+      <a href="b-phosphor.html" aria-current="page"><b>b</b>磷光</a>
+      <a href="c-paper.html"><b>c</b>纸与针</a>
+      <a href="d-hybrid.html"><b>d</b>混合</a>
+    </nav>
+  </header>
+
+  <section class="pg-notes" aria-label="设计说明">
+    <div class="pg-note">
+      <h2>核心主张</h2>
+      <p>两个窗口是同一块磷光屏的两个分区：没有卡片、没有圆角、没有投影，只有文字在亮。</p>
+    </div>
+    <div class="pg-note">
+      <h2>视觉规则</h2>
+      <p>结构由 13px 等宽字符的列宽决定——分隔靠空白和一条暗琥珀细线，不靠盒子；红只出现在“出错”和“当前”两处。</p>
+    </div>
+    <div class="pg-note">
+      <h2>最大风险</h2>
+      <p>磷光屏是“复古终端”最容易被滥用的皮：加一点辉光、让光标闪一下，就变成主题公园。</p>
+    </div>
+  </section>
+
+  <section class="pg-stage">
+    <div class="pg-blk" style="width:340px">
+      <p class="pg-label"><span>播放器小窗</span><b>340 × 120</b></p>
+      <div class="pl">
+      <div class="pl-top">
+        <span class="pl-state"><i class="pl-dot" aria-hidden="true"></i>正在播放</span>
+        <span class="pl-q">队列 5</span>
+      </div>
+      <div class="pl-title">晴天</div>
+      <div class="pl-sub">周杰伦 / 叶惠美</div>
+      <div class="pl-bar">
+        <span class="pl-cells" style="--p:30.9%" role="img" aria-label="进度 1 分 23 秒，共 4 分 29 秒"><i></i><b></b></span>
+        <span class="pl-time">01:23<s> / </s>04:29</span>
+      </div>
+      <div class="pl-ctrl">
+        <span><kbd>[←]</kbd> 上一首</span>
+        <span class="on"><kbd>[space]</kbd> 暂停</span>
+        <span><kbd>[→]</kbd> 下一首</span>
+      </div>
+      </div>
+    </div>
+
+    <div class="pg-blk" style="width:880px">
+    <p class="pg-label"><span>终端窗</span><b>880 × 560</b></p>
+    <div class="tm">
+      <div class="tm-bar"><span>nowhere 0.0.1</span><span>ctrl+l 清屏</span></div>
+
+      <div class="tm-stream">
+
+        <div class="tm-blk">
+          <div class="tm-cmd"><span class="p">›</span><span>help</span><span class="tm-ms">12ms</span></div>
+          <div class="tm-tbl">
+            <div class="h">命令</div><div class="h">说明</div>
+            <div>play <em>&lt;关键词&gt;</em></div><div>播放队列中的曲目，或按路径播放</div>
+            <div>queue</div><div>查看或编辑播放队列</div>
+            <div>search <em>&lt;关键词&gt;</em></div><div>搜索本地库与在线音源</div>
+            <div>perm</div><div>查看并管理访问权限</div>
+            <div>library scan</div><div>扫描音乐目录并入库</div>
+            <div>clear</div><div>清空输出</div>
+          </div>
+        </div>
+
+        <div class="tm-blk">
+          <div class="tm-cmd"><span class="p">›</span><span>search 晴天</span><span class="tm-ms">38ms</span></div>
+          <div class="tm-search">
+            <div class="h">#</div><div class="h">曲目</div><div class="h">艺人</div><div class="h">专辑</div><div class="h">时长</div><div class="h">来源</div>
+            <div class="mk">›1</div><div>晴天</div><div>周杰伦</div><div>叶惠美</div><div>04:29</div><div>本地库</div>
+          </div>
+          <p class="tm-hint">已在队列第 1 位，输入 <code>1</code> 或 <code>play 1</code> 播放。</p>
+        </div>
+
+        <div class="tm-blk">
+          <div class="tm-cmd"><span class="p">›</span><span>perm</span><span class="tm-ms">5ms</span></div>
+          <div class="tm-err">
+            <span class="bang" aria-hidden="true">!</span>
+            <span class="code">E_LIB_PERMISSION</span>
+            <span class="msg">库目录 E:\Music 拒绝访问</span>
+          </div>
+          <p class="tm-fix">扫描与播放均已暂停。检查目录权限后重试，或用 <code>library add &lt;路径&gt;</code> 重新登记。</p>
+        </div>
+
+        <div class="tm-blk">
+          <div class="tm-cmd"><span class="p">›</span><span>library scan</span><span class="tm-run">运行中 2.4s</span></div>
+          <div class="tm-cells" style="--p:64.2%" role="img" aria-label="扫描进度 64%"><i></i><b></b></div>
+          <div class="tm-progmeta"><span>1,284 / 2,000</span><span>64% · 约 11 秒</span></div>
+        </div>
+
+      </div>
+
+      <div class="tm-input"><span class="p">›</span><span class="tm-ph">输入命令</span><i class="tm-cur" aria-hidden="true"></i></div>
+      <div class="tm-status"><span>队列 5 首 · 总时长 21:14</span><span>Tab 补全　↑↓ 历史　Ctrl+L 清屏</span></div>
+    </div>
+    </div>
+  </section>
+
+  <footer class="pg-foot">
+    <b>最像</b>
+    <span>ncmpcpp 的块流排版 + VT220 的琥珀磷光屏。真实产品里没有把播放器放进同一块玻璃的，这一点是自己的。</span>
+    <a href="index.html">回到方向索引</a>
+  </footer>
+
+</main>
+</body>
+</html>

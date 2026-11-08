@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>四方向一览 — Nowhere Player 视觉方向评审</title>
+<style>
+  :root{
+    --bg:#0E0D0C;
+    --fg:#E8E5DE;
+    --fg-2:#9B958A;
+    --fg-3:#6B665D;
+    --line:rgba(232,229,222,.14);
+    --font:"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg);
+    color:var(--fg);
+    font:400 14px/1.65 var(--font);
+    font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+  .cs{width:1440px;margin:0 auto;padding:44px 40px 34px}
+  .k{margin:0;font-size:10px;letter-spacing:.2em;color:var(--fg-3)}
+  h1{font-size:30px;line-height:1.1;font-weight:600;letter-spacing:-.01em;margin:10px 0 0}
+  .note{margin:8px 0 0;font-size:11.5px;line-height:1.7;color:var(--fg-2);max-width:960px}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:30px 32px;align-items:start;margin-top:28px}
+  figure{margin:0}
+  figcaption{
+    display:flex;align-items:baseline;gap:9px;
+    padding:0 0 8px;border-bottom:1px solid var(--line);
+    font-size:12px;letter-spacing:.04em;
+  }
+  figcaption b{
+    font-weight:400;font-size:9.5px;letter-spacing:.14em;color:var(--fg-3);
+    border:1px solid var(--line);padding:1px 5px 2px;line-height:1;
+  }
+  figcaption span{margin-left:auto;font-size:9.5px;letter-spacing:.12em;color:var(--fg-3)}
+  figure img{
+    display:block;width:100%;height:auto;margin-top:9px;
+    outline:1px solid rgba(232,229,222,.2);outline-offset:-1px;
+  }
+
+  .foot{
+    margin-top:30px;padding-top:12px;border-top:1px solid var(--line);
+    display:flex;justify-content:space-between;gap:20px;
+    font-size:10px;letter-spacing:.06em;color:var(--fg-3);
+  }
+  .foot b{font-weight:400;color:var(--fg-2)}
+</style>
+</head>
+<body>
+<main class="cs">
+
+  <header>
+    <p class="k">Nowhere Player　视觉方向评审　contact sheet</p>
+    <h1>四方向一览</h1>
+    <p class="note">每格是该页 1440 宽的整页截图，等比缩放到 664 宽显示，未裁切。四页内容高度 1141–1375 不等，所以同一行底部不会齐平——那是页面长度，不是截图误差。</p>
+  </header>
+
+  <div class="grid">
+
+    <figure>
+      <figcaption><b>A</b>深夜电台<span>播放器 左　终端 右</span></figcaption>
+      <img src="shots/a.png" alt="方向 A 深夜电台的整页截图">
+    </figure>
+
+    <figure>
+      <figcaption><b>B</b>磷光<span>播放器 上　终端 下</span></figcaption>
+      <img src="shots/b.png" alt="方向 B 磷光的整页截图">
+    </figure>
+
+    <figure>
+      <figcaption><b>C</b>纸与针<span>播放器 上　终端 下</span></figcaption>
+      <img src="shots/c.png" alt="方向 C 纸与针的整页截图">
+    </figure>
+
+    <figure>
+      <figcaption><b>D</b>混合（建议）<span>播放器 左　终端 右</span></figcaption>
+      <img src="shots/d.png" alt="方向 D 混合的整页截图">
+    </figure>
+
+  </div>
+
+  <footer class="foot">
+    <span>原图：<b>a 1440×1146　b 1440×1375　c 1440×1368　d 1440×1141</b></span>
+    <span>1× PNG，未缩放未压缩　·　headless Edge / deviceScaleFactor 1</span>
+  </footer>
+
+</main>
+</body>
+</html>
