@@ -154,6 +154,18 @@ fn unknown_fields_and_variants_degrade() {
         }
         other => panic!("expected text output, got {}", other.kind()),
     }
+
+    let media: Output = serde_json::from_str(
+        r#"{"type":"media","kind":"poster","ref":"np://library/album/1/cover.jpg","size":48}"#,
+    )
+    .expect("unknown media kind must not fail");
+    assert!(matches!(
+        media,
+        Output::Media {
+            kind: MediaKind::Cover,
+            ..
+        }
+    ));
 }
 
 #[test]
