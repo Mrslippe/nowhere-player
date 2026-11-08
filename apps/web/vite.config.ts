@@ -9,6 +9,15 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  build: {
+    rollupOptions: {
+      // 多页入口：index.html 给 Tauri，design.html 只在开发期浏览 token 与组件。
+      input: {
+        index: "index.html",
+        design: "design.html",
+      },
+    },
+  },
   test: {
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],

@@ -1,0 +1,366 @@
+/*
+ * design.html 开发期 demo 样式。
+ * 只用于展示 token 与组件，不进生产路由；颜色全部引用变量。
+ */
+
+.demo {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-5) calc(var(--sp-6) * 2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.demo__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.demo__title {
+  font-size: var(--fs-20);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.demo__subtitle {
+  margin-top: var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.demo__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.demo__toolbar-label {
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.demo__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+}
+
+.demo__section-title {
+  font-size: var(--fs-15);
+  font-weight: 600;
+}
+
+.demo__section-note {
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.demo__subtitle {
+  margin-top: var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.demo__footer {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+  color: var(--fg-faint);
+  font-size: var(--fs-10);
+}
+
+/* ── 色板 ────────────────────────────────────────────── */
+.palette {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: var(--sp-3);
+}
+
+.palette__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.palette__chip {
+  position: relative;
+  display: block;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+.palette__fill {
+  position: absolute;
+  inset: 0;
+}
+
+.palette__token {
+  font-size: var(--fs-12);
+  color: var(--fg);
+}
+
+.palette__value {
+  font-size: var(--fs-10);
+  color: var(--fg-muted);
+}
+
+.contrast {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-12);
+}
+
+.contrast th,
+.contrast td {
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.contrast th {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+.contrast td {
+  color: var(--fg);
+}
+
+/* ── 字号与字体 ──────────────────────────────────────── */
+.type-scale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.type-scale__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.type-scale__sample {
+  color: var(--fg);
+}
+
+.type-scale__label {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+}
+
+.font-stack {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-12);
+}
+
+.font-stack dt {
+  color: var(--fg-muted);
+}
+
+.font-stack dd {
+  margin: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/* ── 间距 / 圆角 / 阴影 / 动效 ───────────────────────── */
+.space-list,
+.motion-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.space-row,
+.motion-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-12);
+}
+
+.space-row__name,
+.motion-row__name {
+  width: 96px;
+  color: var(--fg-muted);
+}
+
+.space-row__bar {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.space-row__value,
+.motion-row__value {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+}
+
+.radius-list,
+.shadow-list {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.radius-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.radius-item__box {
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--line-strong);
+  background: var(--accent-soft);
+}
+
+.radius-item__label {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+}
+
+.shadow-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 140px;
+  height: 64px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+}
+
+.shadow-card[data-shadow="1"] {
+  box-shadow: var(--shadow-1);
+}
+
+.shadow-card[data-shadow="2"] {
+  box-shadow: var(--shadow-2);
+}
+
+/* ── 组件陈列 ────────────────────────────────────────── */
+.component-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-4);
+}
+
+.component-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.component-cell__title {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  font-weight: 400;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.component-cell__label {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+}
+
+.component-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.progress-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.kbd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.kbd-row__text {
+  margin-left: var(--sp-1);
+}
+
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+
+.icon-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+}
+
+.icon-cell__name {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  text-align: center;
+}
+
+.motion-probe {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.motion-probe__title {
+  color: var(--fg);
+  font-size: var(--fs-13);
+}
+
+.motion-probe__value {
+  font-size: var(--fs-10);
+  overflow-wrap: anywhere;
+}
