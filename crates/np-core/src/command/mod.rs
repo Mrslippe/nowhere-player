@@ -16,12 +16,14 @@
 //! `vol 999`、`seek 1:30` 都会解析成功；取值范围、当前状态是否允许执行等
 //! 语义判断留给执行层。参数个数、整数/位置格式、枚举取值属于形状，在这里校验。
 
+mod completion;
 mod parse;
 mod registry;
 mod tokenizer;
 
 use std::fmt;
 
+pub use completion::{Completion, CompletionItem, CompletionKind, MAX_ITEMS, complete};
 pub use parse::{Parsed, parse};
 pub use registry::{ArgKind, ArgSpec, CommandSpec, FlagSpec, Registry, SubcommandSpec, registry};
 pub(crate) use tokenizer::{Token, tokenize};
