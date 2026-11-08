@@ -1,0 +1,237 @@
+/*
+ * 结构化块渲染器样式（T-0006）。
+ *
+ * 颜色一律引用 design token（apps/web/src/design/tokens.css），
+ * 本文件不出现任何色值字面量。
+ */
+
+.np-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  line-height: 1.6;
+}
+
+/* ── 块骨架 ─────────────────────────────────────────── */
+.np-blocks-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.np-blocks-item__input {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.np-blocks-item__prompt {
+  flex: none;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.np-blocks-item__command {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.np-blocks-item__status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.np-blocks-item[data-status="done"] .np-blocks-item__input,
+.np-blocks-item[data-status="error"] .np-blocks-item__input,
+.np-blocks-item[data-status="cancelled"] .np-blocks-item__input {
+  opacity: 0.55;
+}
+
+.np-blocks-item__outputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.np-blocks-item__footer {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+/* ── text ───────────────────────────────────────────── */
+.np-blocks-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.np-blocks-text[data-tone="accent"],
+.np-blocks-text__span[data-color="accent"] {
+  color: var(--accent);
+}
+
+.np-blocks-text[data-tone="danger"],
+.np-blocks-text__span[data-color="danger"] {
+  color: var(--danger);
+}
+
+.np-blocks-text[data-tone="warn"],
+.np-blocks-text__span[data-color="warn"] {
+  color: var(--warn);
+}
+
+.np-blocks-text[data-tone="success"],
+.np-blocks-text__span[data-color="success"] {
+  color: var(--success);
+}
+
+.np-blocks-text[data-tone="muted"],
+.np-blocks-text__span[data-color="muted"] {
+  color: var(--fg-muted);
+}
+
+.np-blocks-text__span[data-bold="true"] {
+  font-weight: 700;
+}
+
+.np-blocks-text__span[data-dim="true"] {
+  opacity: 0.6;
+}
+
+.np-blocks-text__span[data-italic="true"] {
+  font-style: italic;
+}
+
+/* ── table ──────────────────────────────────────────── */
+.np-blocks-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.np-blocks-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.np-blocks-table th {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-muted);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.np-blocks-table td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.np-blocks-table th:first-child,
+.np-blocks-table td:first-child {
+  padding-left: 0;
+}
+
+.np-blocks-table th:last-child,
+.np-blocks-table td:last-child {
+  padding-right: 0;
+}
+
+.np-blocks-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.np-blocks-table[data-selectable="true"] tbody tr {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.np-blocks-table[data-selectable="true"] tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+/* ── progress ───────────────────────────────────────── */
+.np-blocks-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.np-blocks-progress__label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.np-blocks-progress__bar {
+  flex: 1 1 80px;
+  min-width: 40px;
+}
+
+.np-blocks-progress__value {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── 窄窗口：表格降级为「每行一条」（ARCH-005 §3） ──── */
+@media (max-width: 640px) {
+  .np-blocks-table thead {
+    display: none;
+  }
+
+  .np-blocks-table,
+  .np-blocks-table tbody,
+  .np-blocks-table tr,
+  .np-blocks-table td {
+    display: block;
+  }
+
+  .np-blocks-table tr {
+    padding: var(--sp-1) 0;
+  }
+
+  .np-blocks-table tr + tr {
+    border-top: 1px solid var(--line);
+  }
+
+  .np-blocks-table td,
+  .np-blocks-table td:first-child,
+  .np-blocks-table td:last-child {
+    padding: 0;
+    border-bottom: 0;
+    white-space: normal;
+  }
+
+  .np-blocks-table td::before {
+    content: attr(data-label) ": ";
+    color: var(--fg-muted);
+  }
+}
+
+/* ── 动效降级 ───────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .np-blocks-table[data-selectable="true"] tbody tr {
+    transition: none;
+  }
+}
