@@ -16,10 +16,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use np_audio::{AudioError, Player, clamp_volume};
+use np_audio::{AudioError, CpalDevices, DeviceSignature, Player, clamp_volume};
 use np_core::{
     AudioFailure, POSITION_TICK_MS, PlaybackMachine, PlaybackMode, PlaybackState, PlaybackStatus,
-    PlayerCommand, PlayerError, PlayerEvent, Queue, QueueStep, QueueView,
+    PlayerCommand, PlayerError, PlayerEvent, Queue, QueueStep, QueueView, player::AdvanceReason,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -39,6 +39,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const TICK_INTERVAL: Duration = Duration::from_millis(POSITION_TICK_MS);
 /// 切歌时打开失败的连续跳过上限（T-0015 §6）。
 const MAX_OPEN_ATTEMPTS: usize = 3;
+/// 设备探测周期（tick 数）：4 × 250 ms ≈ 1 秒（T-0016 §2.1）。
+const DEVICE_PROBE_TICKS: u32 = 4;
 
 /// actor 的事件出口。生产实现是 Tauri 的 [`AppHandle`]。
 pub(crate) trait EventSink: Send + 'static {
@@ -65,6 +67,21 @@ pub(crate) enum ActorReply {
     State(PlaybackState),
     /// 队列视图。
     Queue(QueueView),
+}
+
+/// 默认输出设备的只读探测（T-0016 §2.1）。
+///
+/// 生产实现是 [`CpalDevices`]，单测注入固定签名、不依赖真实硬件；探测只在
+/// actor 的 tick 循环里跑，不新开线程（T-0016 §6）。
+pub(crate) trait DeviceProbe {
+    /// 当前默认输出设备签名（名称 + 通道数）；没有可用设备时为 `None`。
+    fn default_output(&self) -> Option<DeviceSignature>;
+}
+
+impl DeviceProbe for CpalDevices {
+    fn default_output(&self) -> Option<DeviceSignature> {
+        self.default_output_signature()
+    }
 }
 
 /// 桌面层持有的 actor 句柄（Tauri managed state）。
@@ -228,15 +245,29 @@ struct PlayerActor<S: EventSink> {
     machine: PlaybackMachine,
     queue: Queue,
     player: Option<Player>,
+    /// 默认输出设备探测器（生产 cpal，单测注入）。
+    devices: Box<dyn DeviceProbe>,
+    /// 上一次观察到的默认输出设备；`None` 表示还没建立基线（T-0016 §2.1）。
+    observed_device: Option<DeviceSignature>,
+    /// tick 计数，用于把设备探测降到约 1 Hz。
+    tick_count: u32,
 }
 
 impl<S: EventSink> PlayerActor<S> {
     fn new(sink: S) -> Self {
+        Self::with_devices(sink, Box::new(CpalDevices::new()))
+    }
+
+    /// 用可注入的设备探测器构造（单测不碰真实硬件，T-0016 §8）。
+    fn with_devices(sink: S, devices: Box<dyn DeviceProbe>) -> Self {
         Self {
             sink,
             machine: PlaybackMachine::new(),
             queue: Queue::new(),
             player: None,
+            devices,
+            observed_device: None,
+            tick_count: 0,
         }
     }
 
@@ -347,7 +378,9 @@ impl<S: EventSink> PlayerActor<S> {
             PlayerCommand::Snapshot => self.snapshot().map(ActorReply::State),
             PlayerCommand::Play { path } => self.play(path).map(ActorReply::State),
             PlayerCommand::Pause => self.pause().map(ActorReply::State),
-            PlayerCommand::Next => self.next_track().map(ActorReply::State),
+            PlayerCommand::Next => self
+                .next_track(AdvanceReason::Manual)
+                .map(ActorReply::State),
             PlayerCommand::Prev => self.prev_track().map(ActorReply::State),
             PlayerCommand::Seek { position_ms } => self.seek(position_ms).map(ActorReply::State),
             PlayerCommand::SetVolume { volume } => self.set_volume(volume).map(ActorReply::State),
@@ -487,23 +520,24 @@ impl<S: EventSink> PlayerActor<S> {
         Ok(self.machine.snapshot())
     }
 
-    /// 下一首。`repeat = off` 且已在最后一首时停在该曲目并置 `Ended`。
-    fn next_track(&mut self) -> Result<PlaybackState, PlayerError> {
+    /// 下一首。`reason` 决定 `repeat = one` 是否生效（T-0016 §2.3）；
+    /// `repeat = off` 且已在最后一首时停在该曲目并置 `Ended`。
+    fn next_track(&mut self, reason: AdvanceReason) -> Result<PlaybackState, PlayerError> {
         if self.queue.is_empty() {
             return Err(PlayerError::unsupported("队列为空，无法切歌"));
         }
-        match self.queue.next() {
+        match self.queue.next(reason) {
             QueueStep::Open(index) => self.switch_to(index, true),
             QueueStep::Exhausted => self.finish_queue(),
         }
     }
 
-    /// 上一首。`repeat = off` 时在首曲重播首曲，不越界。
+    /// 上一首。显式切歌忽略 `repeat = one`；`repeat = off` 时在首曲重播首曲，不越界。
     fn prev_track(&mut self) -> Result<PlaybackState, PlayerError> {
         if self.queue.is_empty() {
             return Err(PlayerError::unsupported("队列为空，无法切歌"));
         }
-        match self.queue.prev() {
+        match self.queue.prev(AdvanceReason::Manual) {
             QueueStep::Open(index) => self.switch_to(index, true),
             QueueStep::Exhausted => Ok(self.machine.snapshot()),
         }
@@ -570,6 +604,7 @@ impl<S: EventSink> PlayerActor<S> {
         player.set_volume(volume);
         let duration_ms = player.duration_ms();
         self.player = Some(player);
+        self.observed_device = self.devices.default_output();
 
         self.sync_queue_state();
         let opened = self.machine.open(path, duration_ms);
@@ -664,25 +699,37 @@ impl<S: EventSink> PlayerActor<S> {
         self.emit(PlayerEvent::StateChanged(state));
     }
 
-    /// 4 Hz tick：只在 `Playing` 时发位置；结束/错误立即发完整快照。
+    /// 4 Hz tick：设备探测、错误恢复、位置事件与自然播完切歌。
     ///
+    /// 设备探测每 4 次 tick（约 1 秒）比较一次默认输出设备签名（T-0016 §2.1）；
     /// 自然播完时先交给队列：`repeat = one` 重播、`repeat = all` 回绕、
     /// 否则进下一首；没有下一首才上报 `Ended`（T-0015 §6）。
     fn tick(&mut self) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+        if self.tick_count.is_multiple_of(DEVICE_PROBE_TICKS) {
+            self.check_device_change();
+        }
+
         let Some(player) = self.player.as_ref() else {
             return;
         };
+        let device_error = player.take_device_error();
         let message = player.last_error();
         let position = player.position_ms();
         let ended = player.is_ended();
 
+        if device_error {
+            self.recover_device_lost(position);
+            return;
+        }
         if let Some(message) = message {
             self.fail(PlayerError::decode(message), position);
             return;
         }
 
         if ended && self.machine.is_playing() {
-            match self.queue.next() {
+            // 自然播完：`repeat = one` 在这里生效（T-0016 §2.3）。
+            match self.queue.next(AdvanceReason::Natural) {
                 QueueStep::Open(index) => {
                     // 切歌自带状态推送；失败已按 error 状态上报。
                     let _ = self.switch_to(index, true);
@@ -695,6 +742,109 @@ impl<S: EventSink> PlayerActor<S> {
         if let Some(event) = self.machine.tick(position, ended) {
             self.emit(event);
         }
+    }
+
+    /// 默认输出设备是否变化：名称 + 通道数复合判断（T-0016 §2.1/§11）。
+    ///
+    /// 变化时按原位置重开当前曲目；重开失败置 `E_DEVICE_LOST`，队列保留。
+    fn check_device_change(&mut self) {
+        if self.machine.snapshot().status == PlaybackStatus::Idle {
+            return;
+        }
+        let Some(current) = self.devices.default_output() else {
+            // 拿不到默认设备签名：不在这里判死，交给设备错误标志与重开失败。
+            return;
+        };
+        let Some(previous) = self.observed_device.replace(current.clone()) else {
+            // 首次观察：只建立基线。
+            return;
+        };
+        if previous == current {
+            return;
+        }
+        let position = self
+            .player
+            .as_ref()
+            .map_or_else(|| self.machine.snapshot().position_ms, Player::position_ms);
+        println!(
+            "[player] default output device changed: {} ({} ch) -> {} ({} ch), reopening at {position} ms",
+            previous.name, previous.channels, current.name, current.channels
+        );
+        self.recover_device_lost(position);
+    }
+
+    /// 设备侧失败：先释放旧输出流，再用当前默认设备重开当前曲目并 seek 回原位。
+    ///
+    /// 成功保持原来的播放/暂停状态；失败置 `E_DEVICE_LOST`，队列保留，
+    /// 用户 `play` 可重试（T-0016 §2.1）。
+    fn recover_device_lost(&mut self, position_ms: u64) {
+        let was_playing = self.machine.is_playing();
+        let Some(index) = self.queue.position() else {
+            self.player = None;
+            return;
+        };
+        match self.reopen_at(index, position_ms, was_playing) {
+            Ok(()) => println!(
+                "[player] output device recovered, position {} ms",
+                self.machine.snapshot().position_ms
+            ),
+            Err(error) => {
+                self.player = None;
+                self.fail(
+                    PlayerError::device_lost(format!("output device lost: {}", error.message)),
+                    position_ms,
+                );
+            }
+        }
+    }
+
+    /// 释放旧 `Player`，用当前默认设备重开 `index`，seek 回 `position_ms`。
+    ///
+    /// 设备变化与解码恢复共用（T-0016 §2.1/§2.2）：始终先 `self.player = None`
+    /// 再 `Player::open`，两个 cpal 输出流不能同时在世（T-0015 §11）。
+    /// `seek` 失败不阻断恢复，继续播放（卡 §6）；位置钳制到 `duration_ms`（卡 §11）。
+    fn reopen_at(
+        &mut self,
+        index: usize,
+        position_ms: u64,
+        resume_playing: bool,
+    ) -> Result<(), PlayerError> {
+        let path = match self.queue.track_at(index) {
+            Some(path) => path.to_owned(),
+            None => return Err(PlayerError::decode("队列下标越界")),
+        };
+        let volume = self.machine.snapshot().volume;
+
+        self.player = None;
+        let player = Player::open(&path).map_err(map_audio_error)?;
+        player.set_volume(volume);
+        let duration_ms = player.duration_ms();
+        let target = duration_ms.map_or(position_ms, |duration| position_ms.min(duration));
+        if let Err(error) = player.seek(target) {
+            eprintln!("[player] recovery seek to {target} ms failed: {error}");
+        }
+        let actual = player.position_ms().min(duration_ms.unwrap_or(u64::MAX));
+        self.player = Some(player);
+
+        self.observed_device = self.devices.default_output();
+        self.sync_queue_state();
+
+        if resume_playing {
+            let result = self
+                .player
+                .as_ref()
+                .map_or(Ok(()), |player| player.play().map_err(map_audio_error));
+            if let Err(error) = result {
+                self.player = None;
+                return Err(error);
+            }
+            let event = self.machine.play(actual);
+            self.emit(event);
+        } else {
+            let event = self.machine.pause(actual);
+            self.emit(event);
+        }
+        Ok(())
     }
 
     fn fail(&mut self, error: PlayerError, position_ms: u64) {
@@ -737,7 +887,7 @@ fn map_audio_error(error: AudioError) -> PlayerError {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use np_audio::SampleFormat;
     use np_core::{PlayerErrorCode, RepeatMode};
@@ -765,6 +915,37 @@ mod tests {
                     PlayerEvent::StateChanged(state) => Some(state.clone()),
                     PlayerEvent::PositionTick(_) => None,
                 })
+        }
+    }
+
+    /// 固定签名的设备探测器：单测不依赖真实硬件（T-0016 §8）。
+    #[derive(Clone, Default)]
+    struct FixedProbe {
+        signature: Arc<Mutex<Option<DeviceSignature>>>,
+    }
+
+    impl FixedProbe {
+        fn new(signature: DeviceSignature) -> Self {
+            Self {
+                signature: Arc::new(Mutex::new(Some(signature))),
+            }
+        }
+
+        fn set(&self, signature: Option<DeviceSignature>) {
+            *self.signature.lock().expect("probe poisoned") = signature;
+        }
+    }
+
+    impl DeviceProbe for FixedProbe {
+        fn default_output(&self) -> Option<DeviceSignature> {
+            self.signature.lock().expect("probe poisoned").clone()
+        }
+    }
+
+    fn device(name: &str, channels: u16) -> DeviceSignature {
+        DeviceSignature {
+            name: name.into(),
+            channels,
         }
     }
 
@@ -875,11 +1056,112 @@ mod tests {
     #[test]
     fn next_and_prev_on_an_empty_queue_return_unsupported() {
         let mut actor = PlayerActor::new(RecordingSink::default());
-        for result in [actor.next_track(), actor.prev_track()] {
+        let next = actor.next_track(AdvanceReason::Natural);
+        let prev = actor.prev_track();
+        for result in [next, prev] {
             let error = result.expect_err("empty queue must not panic or succeed");
             assert_eq!(error.code, PlayerErrorCode::Unsupported);
             assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Idle);
         }
+    }
+
+    /// 设备变化触发重开（失败路径）：名称 + 通道数复合判断，失败落 `E_DEVICE_LOST`。
+    #[test]
+    fn device_change_reopens_and_reports_device_lost_on_failure() {
+        let dir = temp_dir("device-change");
+        let missing = dir.join("missing.wav").to_string_lossy().into_owned();
+
+        let probe = FixedProbe::new(device("Speakers", 2));
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::with_devices(sink.clone(), Box::new(probe.clone()));
+
+        actor.queue_add(vec![missing.clone()]).unwrap();
+        actor.machine.open(&missing, Some(1_000));
+        actor.machine.play(0);
+        actor.observed_device = Some(device("Speakers", 2));
+
+        // 同一设备：不触发恢复，状态保持 playing。
+        actor.check_device_change();
+        assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Playing);
+
+        // 名称相同、通道数不同 → 判为变化并尝试重开；文件缺失 → 重开失败。
+        probe.set(Some(device("Speakers", 6)));
+        actor.check_device_change();
+
+        let state = actor.machine.snapshot();
+        assert_eq!(state.status, PlaybackStatus::Error);
+        let error = state.error.expect("device loss must carry an error");
+        assert_eq!(error.code, PlayerErrorCode::DeviceLost);
+        assert!(
+            actor.player.is_none(),
+            "failed reopen must release the player"
+        );
+        assert_eq!(actor.queue.position(), Some(0), "queue is kept for a retry");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 设备探测复用 tick 循环，每 4 次（约 1 秒）才比较一次。
+    #[test]
+    fn device_probe_runs_every_fourth_tick() {
+        let probe = FixedProbe::new(device("Speakers", 2));
+        let mut actor =
+            PlayerActor::with_devices(RecordingSink::default(), Box::new(probe.clone()));
+        actor.queue_add(vec!["a".into()]).unwrap();
+        actor.machine.open("a", Some(1_000));
+        actor.machine.play(0);
+        actor.observed_device = Some(device("Speakers", 2));
+
+        // 第 1–3 次 tick 还没到探测周期，设备变化不应触发。
+        probe.set(Some(device("Headphones", 2)));
+        actor.tick();
+        actor.tick();
+        actor.tick();
+        assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Playing);
+
+        // 第 4 次 tick 探测到变化 → 尝试重开（"a" 不是真实文件 → 失败）。
+        actor.tick();
+        assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Error);
+    }
+
+    /// 设备变化恢复的成功路径：真实设备 + 临时 wav，位置不回零。
+    /// 无音频设备的环境（CI）先探测再跳过（T-0016 §7 真机项）。
+    #[test]
+    fn device_change_reopens_at_the_previous_position() {
+        let dir = temp_dir("device-success");
+        let track = dir.join("track.wav");
+        write_wav(&track, 2_000);
+        let track = track.to_string_lossy().into_owned();
+
+        match Player::open(&track) {
+            Ok(probe) => drop(probe),
+            Err(error) => {
+                eprintln!("[test] no audio device ({error}); skipping device recovery test");
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+        }
+
+        let probe = FixedProbe::new(device("current", 2));
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::with_devices(sink.clone(), Box::new(probe.clone()));
+        actor.queue_add(vec![track.clone()]).unwrap();
+        actor.play(Some(track)).expect("track must open");
+        actor.seek(700).expect("seek must succeed");
+        actor.observed_device = Some(device("stale", 1));
+
+        actor.check_device_change();
+
+        let state = actor.machine.snapshot();
+        assert_eq!(state.status, PlaybackStatus::Playing);
+        assert!(
+            state.position_ms >= 650,
+            "position must not restart at 0 (got {})",
+            state.position_ms
+        );
+        assert!(actor.player.is_some(), "recovery keeps a live player");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -957,7 +1239,9 @@ mod tests {
         assert_eq!(actor.queue.jump(1), Some(1));
 
         // 队列上没有打开过 player：`repeat = off` 的末尾不越界，置 ended。
-        let state = actor.next_track().expect("last track must not error");
+        let state = actor
+            .next_track(AdvanceReason::Natural)
+            .expect("last track must not error");
         assert_eq!(state.status, PlaybackStatus::Ended);
         assert_eq!(actor.queue.position(), Some(1), "cursor stays on the last");
         assert_eq!(state.queue_index, Some(1));
@@ -970,7 +1254,7 @@ mod tests {
                 shuffle: false,
             })
             .unwrap();
-        assert_eq!(actor.queue.next(), QueueStep::Open(0));
+        assert_eq!(actor.queue.next(AdvanceReason::Manual), QueueStep::Open(0));
         assert_eq!(actor.queue.position(), Some(0));
     }
 
