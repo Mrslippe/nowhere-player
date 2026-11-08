@@ -24,6 +24,10 @@ pub enum AudioError {
     DeviceLost,
     #[error("seek failed: {0}")]
     Seek(String),
+    #[error("resampling failed: {0}")]
+    Resample(String),
+    #[error("invalid argument: {0}")]
+    InvalidArgument(&'static str),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 }
