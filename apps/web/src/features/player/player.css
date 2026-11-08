@@ -57,10 +57,10 @@
   height: 100%;
   padding: var(--sp-4);
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-xl);
+  border: var(--np-border-card);
+  border-radius: var(--np-radius-card);
   background: var(--bg-elev);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--np-shadow-card);
   user-select: none;
 }
 
@@ -74,7 +74,7 @@
   width: 64px;
   height: 64px;
   overflow: hidden;
-  border-radius: var(--r-lg);
+  border-radius: var(--np-radius-inner);
   background-color: var(--bg-hover);
   background-size: cover;
   color: var(--fg);
@@ -106,10 +106,10 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-circle);
   background: var(--bg-elev);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--np-shadow-float);
 }
 
 /* ── 控制键：默认隐藏，卡片 hover 后 120ms 淡入 ──────── */
@@ -199,7 +199,7 @@
 .np-player-card__seek:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
-  border-radius: var(--r-sm);
+  border-radius: var(--np-radius-control-sm);
 }
 
 .np-player-card[data-seeking="true"] .np-player-card__seek {
@@ -229,7 +229,7 @@
   color: var(--fg-muted);
   font-size: var(--fs-10);
   font-variant-numeric: tabular-nums;
-  line-height: 1.4;
+  line-height: var(--np-density-line-dense);
   white-space: nowrap;
 }
 
@@ -251,7 +251,7 @@
   right: 10px;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--np-radius-circle);
   background: var(--danger);
   cursor: help;
 }
@@ -262,13 +262,13 @@
   top: 6px;
   right: 20px;
   padding: 1px var(--sp-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-control-sm);
   background: var(--bg-elev);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--np-shadow-float);
   color: var(--fg-muted);
   font-size: var(--fs-10);
-  line-height: 1.4;
+  line-height: var(--np-density-line-dense);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -281,13 +281,13 @@
   left: var(--sp-4);
   overflow: hidden;
   padding: 2px var(--sp-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-control-sm);
   background: var(--bg-elev);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--np-shadow-float);
   color: var(--fg-muted);
   font-size: var(--fs-10);
-  line-height: 1.4;
+  line-height: var(--np-density-line-dense);
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
