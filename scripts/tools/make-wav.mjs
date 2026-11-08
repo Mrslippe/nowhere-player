@@ -9,6 +9,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { argv } from "node:process";
+import { deflateSync } from "node:zlib";
 
 const arg = (n, d) => {
   const i = argv.indexOf(`--${n}`);
@@ -24,20 +25,61 @@ const prefix = arg("prefix", "测试");
 const RATE = 44100;
 const FREQ = 440;
 
-/** 生成一个最小的 24×24 JPEG（纯色 + 一条斜纹），够被解码即可。 */
-function tinyJpeg() {
-  // 用一张更简单的办法：直接给一段最小的基线 JPEG（灰底）。
-  // 这里用 1×1 的最小 JPEG，解码器会缩放；真实测试里封面尺寸不重要。
-  const base64 =
-    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a" +
-    "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA" +
-    "AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
-  return Buffer.from(base64, "base64");
+// ---- PNG 封面（手写编码，不引依赖）----
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+
+const crc32 = (buf) => {
+  let c = -1;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
+};
+
+const chunk = (type, data) => {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+};
+
+/** 生成 size×size 的 RGB PNG：对角渐变，足够区分曲目。 */
+function makeCoverPng(size = 128, seed = 0) {
+  const raw = Buffer.alloc(size * (1 + size * 3));
+  let p = 0;
+  for (let y = 0; y < size; y++) {
+    raw[p++] = 0; // filter: none
+    for (let x = 0; x < size; x++) {
+      const t = (x + y) / (2 * size);
+      raw[p++] = Math.round(60 + 180 * t);
+      raw[p++] = Math.round(40 + 150 * t * ((seed % 3) / 2 + 0.5));
+      raw[p++] = Math.round(200 - 140 * t);
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type RGB
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 /** ID3v2.3 头 + 一个 APIC 帧。 */
 function id3WithCover(jpeg) {
-  const mime = Buffer.from("image/jpeg\0", "binary");
+  const mime = Buffer.from("image/png\0", "binary");
   const payload = Buffer.concat([
     Buffer.from([0x00]), // text encoding: ISO-8859-1
     mime,
@@ -103,13 +145,11 @@ for (let i = 0; i < samples; i++) {
 }
 
 mkdirSync(outDir, { recursive: true });
-const cover = tinyJpeg();
-const id3 = id3WithCover(cover);
 
 for (let i = 1; i <= count; i++) {
   const name = `${prefix}-${String(i).padStart(2, "0")}.wav`;
   const base = wav(pcm, RATE, 1, 16);
-  const buf = i <= covers ? wavWithId3(base, id3) : base;
+  const buf = i <= covers ? wavWithId3(base, id3WithCover(makeCoverPng(128, i))) : base;
   writeFileSync(join(outDir, name), buf);
 }
 
