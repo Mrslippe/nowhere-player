@@ -106,6 +106,12 @@ describe("PlayerCard", () => {
     expect(html).toContain('aria-label="播放错误"');
   });
 
+  it("控制键使用 IconButton 的 sm 尺寸（不再靠 player.css 覆写）", () => {
+    const html = renderCard("hover");
+
+    expect(html.match(/data-size="sm"/g)).toHaveLength(3);
+  });
+
   it("hover：强制显示控制键", () => {
     const html = renderCard("hover");
 

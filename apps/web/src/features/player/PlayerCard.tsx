@@ -68,17 +68,18 @@ export function PlayerCard({
         )}
 
         <div className="np-player-card__controls">
-          <IconButton aria-label="上一首" disabled={controlsDisabled}>
-            <Icon name="skip-back" size={16} />
+          <IconButton aria-label="上一首" size="sm" disabled={controlsDisabled}>
+            <Icon name="skip-back" size={14} />
           </IconButton>
           <IconButton
             aria-label={showPlay ? "播放" : "暂停"}
+            size="sm"
             disabled={controlsDisabled}
           >
-            <Icon name={showPlay ? "play" : "pause"} size={16} />
+            <Icon name={showPlay ? "play" : "pause"} size={14} />
           </IconButton>
-          <IconButton aria-label="下一首" disabled={controlsDisabled}>
-            <Icon name="skip-forward" size={16} />
+          <IconButton aria-label="下一首" size="sm" disabled={controlsDisabled}>
+            <Icon name="skip-forward" size={14} />
           </IconButton>
         </div>
       </div>

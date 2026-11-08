@@ -91,11 +91,15 @@
 
 /* ── IconButton ──────────────────────────────────────── */
 .np-icon-btn {
+  /* 尺寸走 CSS 变量 + data-size，业务代码不再覆写宽高。 */
+  --np-icon-btn-size: 32px;
+  --np-icon-btn-icon-size: 16px;
+
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--np-icon-btn-size);
+  height: var(--np-icon-btn-size);
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
@@ -105,6 +109,22 @@
   transition:
     background-color var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out);
+}
+
+.np-icon-btn[data-size="sm"] {
+  --np-icon-btn-size: 20px;
+  --np-icon-btn-icon-size: 14px;
+}
+
+.np-icon-btn[data-size="md"] {
+  --np-icon-btn-size: 32px;
+  --np-icon-btn-icon-size: 16px;
+}
+
+/* 图标尺寸跟随按钮尺寸，调用方不用再手写 size。 */
+.np-icon-btn > .np-icon {
+  width: var(--np-icon-btn-icon-size);
+  height: var(--np-icon-btn-icon-size);
 }
 
 .np-icon-btn:hover:not(:disabled) {

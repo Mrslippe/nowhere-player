@@ -133,10 +133,8 @@
     visibility 0s linear 0s;
 }
 
+/* 尺寸由 IconButton 的 size="sm" 决定，这里只保留播放器内的前景色。 */
 .np-player-card__controls .np-icon-btn {
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-sm);
   color: var(--fg);
 }
 
