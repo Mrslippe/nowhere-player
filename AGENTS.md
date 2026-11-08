@@ -12,7 +12,7 @@
 
 - 技术栈：Tauri v2 + React 19 + TypeScript + Rust（symphonia / cpal）+ SQLite。
 - 音源：本地库、网易云（匿名）、B 站、yt-dlp。
-- **当前阶段：M0 之前**。仓库里只有文档，还没有任何可运行代码。
+- **当前阶段：M0 进行中**。已完成 T-0001 骨架、T-0002 双窗口壳（`tauri dev` 可起两个空窗口）；业务代码尚未开始。
 
 ---
 
@@ -20,21 +20,21 @@
 
 | 位置 | 内容 | 状态 |
 |---|---|---|
-| `crates/np-core/` | 领域模型、命令定义、错误码 | 未创建 |
-| `crates/np-audio/` | 解码 / 重采样 / 输出 / 播放状态机 | 未创建 |
-| `crates/np-library/` | 扫描 / 标签 / 封面 / SQLite | 未创建 |
-| `crates/np-sources/` | 音源适配器 | 未创建 |
-| `crates/np-system/` | 托盘 / 媒体键 / 单实例 / 自启 | 未创建 |
-| `apps/desktop/` | Tauri 壳（src-tauri） | 未创建 |
-| `apps/web/` | React 前端（两个窗口） | 未创建 |
+| `crates/np-core/` | 领域模型、命令定义、错误码 | 空壳（T-0001） |
+| `crates/np-audio/` | 解码 / 重采样 / 输出 / 播放状态机 | 空壳（T-0001） |
+| `crates/np-library/` | 扫描 / 标签 / 封面 / SQLite | 空壳（T-0001） |
+| `crates/np-sources/` | 音源适配器 | 空壳（T-0001） |
+| `crates/np-system/` | 托盘 / 媒体键 / 单实例 / 自启 | 空壳（T-0001） |
+| `apps/desktop/` | Tauri 壳（`src-tauri/` 为 Rust crate，已在 workspace 内） | ✅ T-0002 |
+| `apps/web/` | React 前端（两个窗口，按窗口 label 分流） | ✅ T-0002 |
 | `docs/` | 全部文档，入口见 `docs/README.md` | ✅ |
-| `scripts/` | 构建、发布、校验脚本 | 未创建 |
+| `scripts/` | 构建、发布、校验脚本 | ✅ |
 
 ---
 
 ## 3. 怎么验证
 
-命令在 M0 落地后生效；在此之前以本文档为准，不要臆造命令。
+以下命令已在 M0 验证可用（T-0002）。**注意构建顺序**：先根目录 `pnpm install`，再 `cargo build`——Tauri 的 `generate_context!` 在编译期读取 `apps/web/dist`，缺了会编译失败。
 
 | 目的 | 命令 |
 |---|---|
