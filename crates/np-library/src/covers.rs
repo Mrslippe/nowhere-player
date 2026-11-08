@@ -8,6 +8,7 @@
 //! 避免前端读到半截文件。编码在调用线程（扫描的 rayon 线程池）完成，只有
 //! 落盘那一小段加锁，因此并行解析时不会串行化 CPU。
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Cursor;
 use std::path::Path;
@@ -90,6 +91,36 @@ pub(crate) fn store(dir: &Path, key: &str, source: &[u8]) -> CoverOutcome {
     }
 }
 
+/// 删除 `dir` 里不再被数据库引用的封面文件，返回删除数量。
+///
+/// 只处理本模块会写出的两类名字：`<key>.jpg` 与 `<key>.tmp`（上次崩溃
+/// 留下的半截文件）；其他文件一概不碰。删除失败只跳过该文件，不让一轮
+/// 扫描因为一个只读/占用文件整体失败。
+pub(crate) fn remove_orphans(dir: &Path, referenced: &HashSet<String>) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let orphan = if let Some(stem) = name.strip_suffix(".jpg") {
+            !referenced.contains(stem)
+        } else {
+            name.ends_with(".tmp")
+        };
+        if orphan && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// 解码 → 缩放 → JPEG 编码；任何一步失败都返回 `None`。
 fn encode(source: &[u8]) -> Option<Vec<u8>> {
     let reader = ImageReader::new(Cursor::new(source))
@@ -135,6 +166,10 @@ mod tests {
     use image::{Rgb, RgbImage};
 
     use super::{CoverOutcome, store};
+    use crate::db::Database;
+    use crate::metadata::ParsedTrack;
+    use crate::repo;
+    use crate::scan::{NoopObserver, Scanner};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -242,5 +277,80 @@ mod tests {
 
         assert_eq!(outcome, CoverOutcome::Failed);
         assert!(!dir.path().join("huge.jpg").exists());
+    }
+
+    fn parsed_track(path: &Path) -> ParsedTrack {
+        ParsedTrack {
+            path: path.to_path_buf(),
+            title: "Song".to_string(),
+            artist: String::new(),
+            album: String::new(),
+            album_artist: String::new(),
+            track_no: 0,
+            disc_no: 0,
+            year: 0,
+            duration_ms: 0,
+            sample_rate: 8_000,
+            channels: 1,
+            bitrate: 128,
+            codec: "wav".to_string(),
+            cover_key: None,
+            cover: None,
+            size_bytes: 100,
+            mtime_ms: 1,
+        }
+    }
+
+    #[test]
+    fn full_scan_removes_only_orphan_covers() {
+        let dir = TempDir::new("cleanup");
+        let music = dir.path().join("music");
+        fs::create_dir_all(&music).expect("music dir");
+        let db = Database::open(dir.path().join("library.db")).expect("open db");
+
+        let mut track = parsed_track(&music.join("a.wav"));
+        track.cover_key = Some("kept".to_string());
+        repo::upsert_track(db.conn(), &track, 100).expect("insert track");
+
+        let covers_dir = db.covers_dir().expect("covers dir").to_path_buf();
+        fs::create_dir_all(&covers_dir).expect("create covers dir");
+        let kept = covers_dir.join("kept.jpg");
+        let orphan = covers_dir.join("orphan.jpg");
+        let stale = covers_dir.join("partial.tmp");
+        fs::write(&kept, b"jpeg").expect("write kept");
+        fs::write(&orphan, b"jpeg").expect("write orphan");
+        fs::write(&stale, b"partial").expect("write tmp");
+
+        Scanner::new(&db, &NoopObserver)
+            .full()
+            .scan(&[&music])
+            .expect("full scan");
+
+        assert!(kept.is_file(), "referenced cover was removed");
+        assert!(!orphan.exists(), "orphan cover survived full scan");
+        assert!(!stale.exists(), "stale tmp survived full scan");
+
+        // 增量扫描不清理：新出现的孤儿文件要留到下一次全量。
+        let later_orphan = covers_dir.join("later.jpg");
+        fs::write(&later_orphan, b"jpeg").expect("write later orphan");
+        Scanner::new(&db, &NoopObserver)
+            .scan(&[&music])
+            .expect("incremental scan");
+        assert!(later_orphan.is_file(), "incremental scan cleaned covers");
+
+        // 删掉引用它的曲目后，下一次全量扫描把封面收走。
+        db.conn()
+            .execute("DELETE FROM tracks", [])
+            .expect("delete tracks");
+        db.conn()
+            .execute("DELETE FROM albums", [])
+            .expect("delete albums");
+        Scanner::new(&db, &NoopObserver)
+            .full()
+            .scan(&[&music])
+            .expect("second full scan");
+
+        assert!(!kept.exists(), "unreferenced cover survived full scan");
+        assert!(!later_orphan.exists(), "orphan survived second full scan");
     }
 }

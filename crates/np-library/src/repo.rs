@@ -3,7 +3,7 @@
 //! 归一化顺序固定为 `artists` → `albums` → `tracks` → `track_artists`
 //! （ARCH-003 §4）。写入只由扫描器的单线程 writer 调用。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -220,6 +220,20 @@ pub(crate) fn count_missing(conn: &Connection, scan_started_at: i64) -> Result<u
         |row| row.get(0),
     )?;
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
+/// 数据库里仍被引用的封面 key（曲目级 + 专辑级）。
+///
+/// 全量扫描结束时拿它和缓存目录对账，删除孤儿文件。两处都查，避免专辑
+/// 封面在曲目被删后立刻失效。
+pub(crate) fn referenced_cover_keys(conn: &Connection) -> Result<HashSet<String>> {
+    let mut statement = conn.prepare(
+        "SELECT cover_key FROM tracks WHERE cover_key IS NOT NULL
+         UNION
+         SELECT cover_key FROM albums WHERE cover_key IS NOT NULL",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
 /// 在 `title` / `artist` / `album` 上做不区分大小写的 `LIKE`，按标题排序。

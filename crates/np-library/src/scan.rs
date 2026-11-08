@@ -113,7 +113,7 @@ impl<'a> Scanner<'a> {
         // 只能把路径（而不是 `&Database`）带进线程：`Connection` 不是 `Sync`。
         let covers_dir = self.db.covers_dir().map(Path::to_path_buf);
 
-        std::thread::scope(|scope| -> Result<ScanReport> {
+        let report = std::thread::scope(|scope| -> Result<ScanReport> {
             let producer = {
                 let candidates: &[Candidate] = &candidates;
                 let index = &index;
@@ -142,7 +142,24 @@ impl<'a> Scanner<'a> {
                 return Err(LibraryError::WorkerPanicked);
             }
             result
-        })
+        })?;
+
+        // 清理只在全量扫描正常结束时做：增量扫描可能只扫了部分根，且库中
+        // 引用尚未刷新，此时删文件有误删风险（任务卡 §6）；取消的扫描同理。
+        if self.full && !report.cancelled {
+            self.cleanup_covers()?;
+        }
+        Ok(report)
+    }
+
+    /// 删除数据库不再引用的封面文件（只由全量扫描在末尾调用）。
+    fn cleanup_covers(&self) -> Result<()> {
+        let Some(dir) = self.db.covers_dir() else {
+            return Ok(());
+        };
+        let referenced = repo::referenced_cover_keys(self.db.conn())?;
+        covers::remove_orphans(dir, &referenced);
+        Ok(())
     }
 
     /// 扫描起点：保证严格大于库里已有的 `last_seen_at`，同一毫秒内连续扫描
