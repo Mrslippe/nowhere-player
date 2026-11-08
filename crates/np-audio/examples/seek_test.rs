@@ -57,6 +57,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     wait(500);
     println!("0.5 s after seek       : {} ms", player.position_ms());
 
+    // Seek precision while paused: the decoder reports its real landing spot.
+    player.pause()?;
+    player.seek(2_500)?;
+    wait(300);
+    let landed = player.position_ms();
+    println!("seek(2500) paused      : {landed} ms (expect 2500 ±50)");
+    assert!(
+        landed.abs_diff(2_500) <= 50,
+        "seek error {} ms",
+        landed.abs_diff(2_500)
+    );
+
     player.stop()?;
     wait(200);
     let after_stop = player.position_ms();

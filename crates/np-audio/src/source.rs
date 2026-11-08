@@ -19,7 +19,7 @@ use symphonia::core::units::Time;
 use symphonia::default as symphonia_default;
 
 use crate::error::AudioError;
-use crate::format::{AudioFormat, Codec, SampleFormat, frames_to_ms};
+use crate::format::{AudioFormat, Codec, SampleFormat, frames_to_ms, ms_to_frames};
 
 /// A decoded audio source: interleaved f32 frames plus sample-accurate seeks.
 ///
@@ -222,11 +222,32 @@ impl AudioSource for FileSource {
         self.decoded.clear();
         self.offset = 0;
         self.eof = false;
-        let actual_ms = self
+        let mut actual_ms = self
             .time_base
             .and_then(|time_base| time_base.calc_time(seeked.actual_ts))
             .map(|time| time.as_millis().max(0) as u64)
             .unwrap_or(position_ms);
+
+        // Containers seek to a packet boundary, which can be up to one block
+        // (≈93 ms for FLAC) before the requested time. Decode and drop the
+        // difference so seek lands within the card's 50 ms budget.
+        let rate = self.format.sample_rate;
+        let target_frames = ms_to_frames(position_ms, rate);
+        let actual_frames = ms_to_frames(actual_ms, rate);
+        let mut skip = target_frames.saturating_sub(actual_frames);
+        if skip > 0 {
+            let channels = usize::from(self.format.channels);
+            let mut scratch = vec![0.0f32; 4096 * channels];
+            while skip > 0 {
+                let frames = (skip as usize).min(4096);
+                let read = self.read_frames(&mut scratch[..frames * channels])?;
+                if read == 0 {
+                    break;
+                }
+                skip = skip.saturating_sub(read as u64);
+                actual_ms = actual_ms.saturating_add(frames_to_ms(read as u64, rate));
+            }
+        }
         Ok(actual_ms)
     }
 }
