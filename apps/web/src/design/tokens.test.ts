@@ -76,7 +76,7 @@ const COLOR_TOKENS = [
   "--line-strong",
 ] as const;
 
-const THEMES = ["graphite", "amber", "ice"] as const;
+const THEMES = ["graphite", "amber", "ice", "phosphor"] as const;
 
 const tokensCss = readDesignFile("tokens.css");
 const themesCss = readDesignFile("themes.css");
@@ -111,7 +111,7 @@ describe("设计 token", () => {
     expect(missing).toEqual([]);
   });
 
-  it("三套主题各自覆盖全部颜色变量", () => {
+  it("每套主题各自覆盖全部颜色变量", () => {
     for (const theme of THEMES) {
       expect(themesCss, theme).toContain(`[data-theme="${theme}"]`);
     }

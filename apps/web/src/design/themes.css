@@ -1,9 +1,9 @@
 /*
- * 三套主题：graphite（默认）/ amber（暖）/ ice（冷）。
+ * 四套主题：graphite（默认）/ amber（暖）/ ice（冷）/ phosphor（磷光）。
  *
  * 用法：<html data-theme="graphite">，属性缺失时沿用 tokens.css 的 :root 缺省值。
  * 主题只覆盖颜色，间距 / 圆角 / 阴影 / 动效等结构 token 不随主题变化。
- * graphite 显式重述一遍，保证「三套主题同一套写法」，也便于 tests 逐块校验。
+ * graphite 显式重述一遍，保证「每套主题同一套写法」，也便于 tests 逐块校验。
  */
 
 :root,
@@ -68,4 +68,30 @@
 
   --line: rgba(190, 225, 255, 0.08);
   --line-strong: rgba(190, 225, 255, 0.16);
+}
+
+/*
+ * phosphor：近黑底上的琥珀磷光（T-0028 §6.2）。
+ * 单色为主：强调色与正文同色，靠亮度分级；红色只做错误标记与当前项（ADR-0003），
+ * 不承载正文。`--fg` / `--bg` 对比度见 skin.test.ts 守护（≥ 7:1）。
+ */
+[data-theme="phosphor"] {
+  --bg: #0a0806;
+  --bg-elev: #120e08;
+  --bg-hover: #1b140c;
+
+  --fg: #ffb454;
+  --fg-muted: #a87b3f;
+  --fg-faint: #5c4526;
+
+  --accent: #ffb454;
+  --accent-soft: rgba(255, 180, 84, 0.14);
+  --accent-fg: #0a0806;
+
+  --danger: #e05b3c;
+  --warn: #ffc978;
+  --success: #ffd18a;
+
+  --line: rgba(255, 180, 84, 0.14);
+  --line-strong: rgba(255, 180, 84, 0.28);
 }
