@@ -18,7 +18,7 @@ pub struct Parsed {
     pub spec: &'static CommandSpec,
     /// 命中的子命令；`queue` 无参数时解析为默认的 `list`。
     pub subcommand: Option<&'static SubcommandSpec>,
-    /// 位置参数（已去掉子命令名、引号与命令名本身）。
+    /// 位置参数（已去掉子命令名、引号与命令名本身）；枚举参数已归一化为规范值。
     pub positional: Vec<String>,
     /// 标志 → 取值；不带取值的标志（如 `--all`）映射到空字符串。
     pub flags: BTreeMap<String, String>,
@@ -104,21 +104,25 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
     if positional.len() > args.len() {
         return Err(ParseError::extra_arg(&positional[args.len()].text, usage));
     }
+    let mut values = Vec::with_capacity(positional.len());
     for (arg, token) in args.iter().zip(positional) {
-        if !arg.kind.accepts(&token.text) {
-            return Err(ParseError::invalid_arg(
-                arg.name,
-                &arg.kind.describe(),
-                &token.text,
-                usage,
-            ));
+        match arg.kind.normalize(&token.text) {
+            Some(value) => values.push(value),
+            None => {
+                return Err(ParseError::invalid_arg(
+                    arg.name,
+                    &arg.kind.describe(),
+                    &token.text,
+                    usage,
+                ));
+            }
         }
     }
 
     Ok(Some(Parsed {
         spec,
         subcommand,
-        positional: positional.iter().map(|token| token.text.clone()).collect(),
+        positional: values,
         flags,
     }))
 }
@@ -181,6 +185,22 @@ fn suggest_subcommand<'a>(spec: &'a CommandSpec, name: &str) -> Option<&'a str> 
 mod tests {
     use super::*;
     use crate::CommandErrorCode;
+
+    /// v1 表里没有带值标志，测试专用一个，覆盖 `takes_value = true` 分支。
+    const PROBE_SPECS: &[CommandSpec] = &[CommandSpec {
+        name: "probe",
+        aliases: &[],
+        summary: "测试专用命令",
+        usage: "probe [--limit=N]",
+        args: &[],
+        flags: &[FlagSpec {
+            name: "limit",
+            takes_value: true,
+            summary: "测试专用带值标志",
+        }],
+        subcommands: &[],
+        default_subcommand: None,
+    }];
 
     fn parse_ok(input: &str) -> Parsed {
         parse(input)
@@ -383,13 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn mode_parses_enums_without_touching_semantics() {
+    fn mode_normalizes_enum_values() {
         let parsed = parse_ok("mode repeat ALL");
 
         assert_eq!(parsed.subcommand.unwrap().name, "repeat");
-        assert_eq!(parsed.positional, ["ALL"]);
+        assert_eq!(parsed.positional, ["all"]);
 
-        let parsed = parse_ok("mode shuffle off");
+        let parsed = parse_ok("mode shuffle OFF");
         assert_eq!(parsed.subcommand.unwrap().name, "shuffle");
         assert_eq!(parsed.positional, ["off"]);
     }
@@ -443,6 +463,22 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("不接受取值"), "{}", error.message);
+    }
+
+    #[test]
+    fn value_flags_accept_equals_and_reject_space_form() {
+        let registry = Registry::from_specs(PROBE_SPECS);
+
+        let parsed = parse_with(&registry, "probe --limit=20")
+            .unwrap()
+            .expect("probe should parse");
+        assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("20"));
+
+        // 本解析器只认 `--limit=20`；空格形式按缺值报错，不静默吞掉下一个 token。
+        let error = parse_with(&registry, "probe --limit 20").unwrap_err();
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("缺少取值"), "{}", error.message);
+        assert_eq!(error.usage.as_deref(), Some("probe [--limit=N]"));
     }
 
     #[test]

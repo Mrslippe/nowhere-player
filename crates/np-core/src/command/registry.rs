@@ -625,22 +625,37 @@ mod tests {
     }
 
     #[test]
-    fn arg_shapes_are_checked_without_range_semantics() {
-        assert!(ArgKind::Integer.accepts("999"));
-        assert!(ArgKind::Integer.accepts("+5"));
-        assert!(ArgKind::Integer.accepts("-5"));
-        assert!(!ArgKind::Integer.accepts("1.5"));
-        assert!(!ArgKind::Integer.accepts("abc"));
-        assert!(!ArgKind::Integer.accepts(""));
+    fn arg_shapes_are_normalized_without_range_semantics() {
+        assert_eq!(ArgKind::Integer.normalize("999"), Some("999".to_owned()));
+        assert_eq!(ArgKind::Integer.normalize("+5"), Some("+5".to_owned()));
+        assert_eq!(ArgKind::Integer.normalize("-5"), Some("-5".to_owned()));
+        assert_eq!(ArgKind::Integer.normalize("1.5"), None);
+        assert_eq!(ArgKind::Integer.normalize("abc"), None);
+        assert_eq!(ArgKind::Integer.normalize(""), None);
 
-        assert!(ArgKind::SeekPosition.accepts("1:30"));
-        assert!(ArgKind::SeekPosition.accepts("+10"));
-        assert!(ArgKind::SeekPosition.accepts("-10"));
-        assert!(ArgKind::SeekPosition.accepts("1:99"));
-        assert!(!ArgKind::SeekPosition.accepts("1:2:3"));
-        assert!(!ArgKind::SeekPosition.accepts("abc"));
+        assert_eq!(
+            ArgKind::SeekPosition.normalize("1:30"),
+            Some("1:30".to_owned())
+        );
+        assert_eq!(
+            ArgKind::SeekPosition.normalize("+10"),
+            Some("+10".to_owned())
+        );
+        assert_eq!(
+            ArgKind::SeekPosition.normalize("-10"),
+            Some("-10".to_owned())
+        );
+        assert_eq!(
+            ArgKind::SeekPosition.normalize("1:99"),
+            Some("1:99".to_owned())
+        );
+        assert_eq!(ArgKind::SeekPosition.normalize("1:2:3"), None);
+        assert_eq!(ArgKind::SeekPosition.normalize("abc"), None);
 
-        assert!(ArgKind::Enum(&["off", "one"]).accepts("ONE"));
-        assert!(!ArgKind::Enum(&["off", "one"]).accepts("all"));
+        assert_eq!(
+            ArgKind::Enum(&["off", "one"]).normalize("ONE"),
+            Some("one".to_owned())
+        );
+        assert_eq!(ArgKind::Enum(&["off", "one"]).normalize("all"), None);
     }
 }
