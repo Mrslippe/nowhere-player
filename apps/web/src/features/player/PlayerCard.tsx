@@ -17,11 +17,24 @@ const VOLUME_STEP = 0.05;
 /** 键盘方向键的跳转步长。 */
 const KEY_SEEK_STEP_MS = 5000;
 
+/**
+ * 真实封面是否可见：没有 URL、或**同一个** URL 曾加载失败时回退渐变。
+ * 换成新 URL（换歌 / 重新扫描）时重新给图片一次机会。
+ */
+export function coverImageVisible(
+  coverSrc: string | null,
+  failedCoverSrc: string | null,
+): boolean {
+  return Boolean(coverSrc) && failedCoverSrc !== coverSrc;
+}
+
 export type PlayerCardProps = {
   title: string;
   artist: string;
   album: string;
   coverSeed: string;
+  /** 真实封面 URL；`null` / 未解析完成时显示确定性渐变（T-0025）。 */
+  coverSrc?: string | null;
   durationMs: number;
   positionMs: number;
   state: PlayerState;
@@ -50,6 +63,7 @@ export function PlayerCard({
   artist,
   album,
   coverSeed,
+  coverSrc = null,
   durationMs,
   positionMs,
   state,
@@ -65,6 +79,7 @@ export function PlayerCard({
   onVolumeNudge,
 }: PlayerCardProps) {
   const [seeking, setSeeking] = useState(false);
+  const [failedCoverSrc, setFailedCoverSrc] = useState<string | null>(null);
   const seekRectRef = useRef<{ left: number; width: number } | null>(null);
 
   const isIdle = state === "idle";
@@ -87,6 +102,8 @@ export function PlayerCard({
   const errorTitle = error ? `${error.code}：${error.message}` : "播放错误";
   const canSeek = !controlsDisabled && shownDuration > 0;
   const isScrubbing = seeking || dragging;
+  // 同一 URL 加载失败后不再重试；换封面（URL 变化）时重新给图片一次机会。
+  const showCoverImage = coverImageVisible(coverSrc, failedCoverSrc);
 
   const measure = (element: HTMLElement) => {
     const rect = element.getBoundingClientRect();
@@ -181,6 +198,18 @@ export function PlayerCard({
         className="np-player-card__cover"
         style={{ backgroundImage: coverBackground(coverSeed) }}
       >
+        {showCoverImage ? (
+          <img
+            className="np-player-card__cover-image"
+            src={coverSrc ?? undefined}
+            alt=""
+            decoding="async"
+            loading="eager"
+            draggable={false}
+            onError={() => setFailedCoverSrc(coverSrc ?? null)}
+          />
+        ) : null}
+
         {isLoading ? (
           <div className="np-player-card__loading">
             <Spinner size={16} label="正在加载曲目" />

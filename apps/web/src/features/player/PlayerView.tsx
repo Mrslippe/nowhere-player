@@ -10,6 +10,7 @@ import {
 } from "./state";
 import type { PlayerState } from "./state";
 import { usePlayer } from "./use-player";
+import { useTrackCoverSrc } from "./use-track-cover";
 import "./player.css";
 
 /** dev 才允许 ?state= 钉住静态原型与状态面板；打包后小窗只跟真实状态走。 */
@@ -52,6 +53,8 @@ export function PlayerView() {
   const mock = live ? null : mockForState(pinned);
   // ended 时进度条归位（位置 0、按钮回到 ▶）。
   const livePositionMs = status === "ended" ? 0 : player.positionMs;
+  // 播放状态只带文件路径；封面走 trackByPath → coverUrl（T-0025）。
+  const coverSrc = useTrackCoverSrc(live ? player.state.trackId : null);
 
   // 静态原型（?state=）不接命令，只有实时模式才注入控件回调。
   const handlers = live
@@ -82,6 +85,7 @@ export function PlayerView() {
           coverSeed={
             live ? coverSeedForTrack(player.state.trackId) : mock?.coverSeed ?? ""
           }
+          coverSrc={coverSrc}
           durationMs={live ? player.state.durationMs ?? 0 : mock?.durationMs ?? 0}
           positionMs={live ? livePositionMs : mock?.positionMs ?? 0}
           state={live ? previewStateFromStatus(status) : pinned}

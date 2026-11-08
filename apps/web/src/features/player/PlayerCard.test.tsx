@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { PlayerCard } from "./PlayerCard";
+import { PlayerCard, coverImageVisible } from "./PlayerCard";
 import type { PlayerCardProps } from "./PlayerCard";
 import { PLAYER_STATES } from "./state";
 import type { PlayerState } from "./state";
@@ -64,6 +64,36 @@ describe("PlayerCard", () => {
     expect(first).toBe(second);
     expect(first).toContain("linear-gradient(");
     expect(other).not.toBe(first);
+  });
+
+  it("有真实封面 URL 时渲染 <img>，渐变仍作为加载/失败的底", () => {
+    const html = renderCard("playing", {
+      coverSrc: "http://asset.localhost/C%3A%5Ccover.jpg",
+    });
+
+    expect(html).toContain('class="np-player-card__cover-image"');
+    expect(html).toContain('src="http://asset.localhost/C%3A%5Ccover.jpg"');
+    expect(html).toContain('alt=""');
+    expect(html).toContain('decoding="async"');
+    expect(html).toContain('loading="eager"');
+    expect(coverBackgroundOf(html)).toContain("linear-gradient(");
+  });
+
+  it("没有封面 URL 时只显示渐变，不渲染 <img>", () => {
+    expect(renderCard("playing")).not.toContain(
+      "np-player-card__cover-image",
+    );
+    expect(renderCard("playing", { coverSrc: null })).not.toContain(
+      "np-player-card__cover-image",
+    );
+  });
+
+  it("封面可见性：同一 URL 失败后回退，换 URL 重新尝试", () => {
+    expect(coverImageVisible(null, null)).toBe(false);
+    expect(coverImageVisible("", null)).toBe(false);
+    expect(coverImageVisible("cover-a", null)).toBe(true);
+    expect(coverImageVisible("cover-a", "cover-a")).toBe(false);
+    expect(coverImageVisible("cover-b", "cover-a")).toBe(true);
   });
 
   it("idle：标题位显示未在播放", () => {
