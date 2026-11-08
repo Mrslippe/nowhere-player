@@ -194,6 +194,74 @@
   white-space: nowrap;
 }
 
+/* ── error ──────────────────────────────────────────── */
+.np-blocks-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
+  border-left: 2px solid var(--danger);
+}
+
+.np-blocks-error__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.np-blocks-error__code {
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.np-blocks-error__message {
+  color: var(--fg);
+}
+
+.np-blocks-error__hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.np-blocks-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+/* ── hint ───────────────────────────────────────────── */
+.np-blocks-hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.np-blocks-hint__suggestion {
+  color: var(--accent);
+}
+
+/* ── media ──────────────────────────────────────────── */
+.np-blocks-media {
+  display: inline-flex;
+  flex: none;
+}
+
+.np-blocks-media__image,
+.np-blocks-media__placeholder {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  object-fit: cover;
+}
+
+.np-blocks-media__placeholder {
+  background-color: var(--bg-elev);
+}
+
 /* ── 窄窗口：表格降级为「每行一条」（ARCH-005 §3） ──── */
 @media (max-width: 640px) {
   .np-blocks-table thead {
