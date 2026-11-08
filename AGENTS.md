@@ -47,6 +47,7 @@
 | 前端类型 | `pnpm -C apps/web typecheck` |
 | 前端单测 | `pnpm -C apps/web test` |
 | 全量门禁 | `./scripts/check.ps1`（Windows） / `./scripts/check.sh` |
+| CI 门禁 | GitHub Actions：[`.github/workflows/ci.yml`](.github/workflows/ci.yml)（web + rust×2） |
 
 **验收最低标准**：改动必须能在本地跑通上表中的"全量门禁"。
 
