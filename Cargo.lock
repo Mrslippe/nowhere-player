@@ -2406,6 +2406,7 @@ dependencies = [
  "lofty",
  "rayon",
  "rusqlite",
+ "serde",
  "thiserror 2.0.21",
  "walkdir",
 ]

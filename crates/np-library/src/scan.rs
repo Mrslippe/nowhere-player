@@ -67,11 +67,22 @@ pub struct ScanReport {
 pub struct Scanner<'a> {
     db: &'a Database,
     observer: &'a dyn ScanObserver,
+    full: bool,
 }
 
 impl<'a> Scanner<'a> {
     pub fn new(db: &'a Database, observer: &'a dyn ScanObserver) -> Self {
-        Self { db, observer }
+        Self {
+            db,
+            observer,
+            full: false,
+        }
+    }
+
+    /// 忽略 `(size, mtime)` 增量指纹，全部重新解析（`library scan --full`）。
+    pub fn full(mut self) -> Self {
+        self.full = true;
+        self
     }
 
     /// 扫描 `roots`（不存在的根直接跳过）。
@@ -90,7 +101,12 @@ impl<'a> Scanner<'a> {
 
         let candidates = collect_candidates(&absolute_roots);
         let total = candidates.len();
-        let index = repo::load_index(self.db.conn())?;
+        // 全量扫描把索引清空：所有候选都会走标签解析。
+        let index = if self.full {
+            HashMap::new()
+        } else {
+            repo::load_index(self.db.conn())?
+        };
         let cancelled = AtomicBool::new(false);
         let (tx, rx) = sync_channel::<ScanItem>(CHANNEL_CAPACITY);
 

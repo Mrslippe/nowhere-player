@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
@@ -84,6 +85,24 @@ impl Database {
     /// 一张专辑的曲目，按 `disc_no, track_no` 排序。
     pub fn tracks_by_album(&self, album_id: i64) -> Result<Vec<Track>> {
         repo::tracks_by_album(&self.conn, album_id)
+    }
+
+    /// 一位艺人的曲目（经 `track_artists` 连接）。
+    pub fn tracks_by_artist(&self, artist_id: i64) -> Result<Vec<Track>> {
+        repo::tracks_by_artist(&self.conn, artist_id)
+    }
+
+    /// 登记一个扫描根。
+    ///
+    /// 路径先转绝对路径；已登记时返回 `Ok(false)`，不覆盖已有时间戳。
+    pub fn add_root(&self, root: impl AsRef<Path>) -> Result<bool> {
+        let root = std::path::absolute(root.as_ref())?;
+        repo::add_root(&self.conn, &root, now_ms())
+    }
+
+    /// 全部扫描根（绝对路径，按添加顺序）。
+    pub fn list_roots(&self) -> Result<Vec<String>> {
+        repo::list_roots(&self.conn)
     }
 
     /// 曲目数 / 专辑数 / 艺人数 / 总时长 / 最近扫描。
@@ -174,9 +193,16 @@ impl Drop for WriteBatch<'_> {
     }
 }
 
+/// 当前 Unix 毫秒；系统时钟早于纪元时回退到 0。
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 /// 升级前把非空库复制成 `<path>.bak`。
-fn backup(path: &Path) -> Result<()> {
-    let is_non_empty = fs::metadata(path)
+fn backup(path: &Path) -> Result<()> {    let is_non_empty = fs::metadata(path)
         .map(|meta| meta.len() > 0)
         .unwrap_or(false);
     if !is_non_empty {

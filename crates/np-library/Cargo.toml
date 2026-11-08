@@ -10,5 +10,6 @@ publish = false
 lofty = "0.25"
 rayon = "1.12"
 rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2.0"
 walkdir = "2.5"

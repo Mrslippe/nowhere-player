@@ -19,7 +19,8 @@ const TRACK_COLUMNS: &str = "id, kind, path, source, source_id, title, album_id,
 ///
 /// 字段与 `tracks` 表一一对应；`album` / `artist` / `album_artist` 是冗余文本列，
 /// 供展示与 `LIKE` 检索，id 才是权威（ARCH-003 §1）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Track {
     pub id: i64,
     pub kind: String,
@@ -47,7 +48,8 @@ pub struct Track {
 }
 
 /// `stats()` 的返回值。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Stats {
     pub tracks: u64,
     pub albums: u64,
@@ -191,6 +193,25 @@ pub(crate) fn touch_root(conn: &Connection, root: &Path, now: i64) -> Result<()>
     Ok(())
 }
 
+/// 登记一个扫描根；已存在时**不覆盖** `added_at` / `last_scan_at`，返回 `false`。
+///
+/// 幂等由 `scan_roots.path` 的 UNIQUE 约束保证；调用方用返回值区分
+/// “新添加”与“重复添加”。
+pub(crate) fn add_root(conn: &Connection, root: &Path, now: i64) -> Result<bool> {
+    let inserted = conn.execute(
+        "INSERT OR IGNORE INTO scan_roots (path, added_at, last_scan_at) VALUES (?1, ?2, 0)",
+        params![root.to_string_lossy(), now],
+    )?;
+    Ok(inserted > 0)
+}
+
+/// 全部扫描根，按添加顺序（`id`）返回绝对路径。
+pub(crate) fn list_roots(conn: &Connection) -> Result<Vec<String>> {
+    let mut statement = conn.prepare("SELECT path FROM scan_roots ORDER BY id")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// 本轮扫描未见到的旧记录数（只统计，不删除）。
 pub(crate) fn count_missing(conn: &Connection, scan_started_at: i64) -> Result<usize> {
     let count: i64 = conn.query_row(
@@ -232,6 +253,18 @@ pub(crate) fn tracks_by_album(conn: &Connection, album_id: i64) -> Result<Vec<Tr
          ORDER BY disc_no, track_no, title COLLATE NOCASE, id"
     ))?;
     let rows = statement.query_map([album_id], row_to_track)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 一位艺人的曲目，经 `track_artists` 连接，按专辑/碟/轨排序。
+pub(crate) fn tracks_by_artist(conn: &Connection, artist_id: i64) -> Result<Vec<Track>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {TRACK_COLUMNS} FROM tracks
+         JOIN track_artists ON track_artists.track_id = tracks.id
+         WHERE track_artists.artist_id = ?1
+         ORDER BY album COLLATE NOCASE, disc_no, track_no, title COLLATE NOCASE, id"
+    ))?;
+    let rows = statement.query_map([artist_id], row_to_track)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -641,5 +674,66 @@ mod tests {
         assert_eq!(tracks[0].title, "Second");
         assert_eq!(tracks[0].last_seen_at, 200);
         assert_eq!(tracks[0].added_at, 100);
+    }
+
+    #[test]
+    fn add_root_is_idempotent_and_reports_duplicates() {
+        let db = Database::open_in_memory().expect("memory db");
+        let root = std::path::absolute("music-library").expect("absolute");
+
+        assert!(db.add_root(&root).expect("first add"), "first add inserts");
+        assert!(
+            !db.add_root(&root).expect("second add"),
+            "second add must report the duplicate"
+        );
+
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM scan_roots"), 1);
+        assert_eq!(
+            db.list_roots().expect("roots"),
+            vec![root.to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
+    fn list_roots_keeps_insertion_order() {
+        let db = Database::open_in_memory().expect("memory db");
+        let first = std::path::absolute("music-first").expect("absolute");
+        let second = std::path::absolute("music-second").expect("absolute");
+
+        db.add_root(&second).expect("second root");
+        db.add_root(&first).expect("first root");
+
+        assert_eq!(
+            db.list_roots().expect("roots"),
+            vec![
+                second.to_string_lossy().into_owned(),
+                first.to_string_lossy().into_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn tracks_by_artist_joins_track_artists() {
+        let db = Database::open_in_memory().expect("memory db");
+        let mut alice = sample("/music/alice.wav");
+        alice.title = "Alice Song".to_string();
+        alice.artist = "Alice".to_string();
+        let mut bob = sample("/music/bob.wav");
+        bob.title = "Bob Song".to_string();
+        bob.artist = "Bob".to_string();
+        insert(&db, &alice, 100);
+        insert(&db, &bob, 100);
+
+        let artist_id: i64 = db
+            .conn()
+            .query_row("SELECT id FROM artists WHERE name = 'Alice'", [], |row| {
+                row.get(0)
+            })
+            .expect("artist id");
+        let tracks = db.tracks_by_artist(artist_id).expect("by artist");
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].title, "Alice Song");
+        assert!(db.tracks_by_artist(999).expect("unknown artist").is_empty());
     }
 }
