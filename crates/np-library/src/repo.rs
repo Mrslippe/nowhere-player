@@ -251,13 +251,44 @@ pub(crate) fn search(conn: &Connection, keyword: &str, limit: usize) -> Result<V
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// 把调用方给的路径归一到库内路径的写法（T-0026 §6.2）。
+///
+/// 只做**分隔符**归一，**不改大小写、不改库里存的路径**：
+///
+/// - Windows：扫描器落库的是 `E:\Music\a.wav`，而 `trackId` 也可能来自
+///   前端（`E:/Music/a.wav`），统一把 `/` 换成 `\`；
+/// - 其他平台：原样返回。`\` 在 Unix 是合法文件名字符，替换会误伤真实路径；
+///   大小写敏感由 SQL 侧决定（Unix 不上 `COLLATE NOCASE`）。
+///
+/// 纯函数：同样的输入永远得到同样的输出，不碰文件系统。
+#[cfg(windows)]
+pub(crate) fn normalize_track_path(path: &str) -> String {
+    path.replace('/', "\\")
+}
+
+/// 非 Windows：分隔符与大小写都保持原样（见 Windows 版说明）。
+#[cfg(not(windows))]
+pub(crate) fn normalize_track_path(path: &str) -> String {
+    path.to_owned()
+}
+
+/// 匹配条件：Windows 上大小写不敏感（`COLLATE NOCASE`，仅 ASCII），
+/// 其他平台保持大小写敏感（Unix 路径本来就区分大小写）。
+#[cfg(windows)]
+const PATH_MATCH: &str = "path = ?1 COLLATE NOCASE";
+#[cfg(not(windows))]
+const PATH_MATCH: &str = "path = ?1";
+
 /// 按绝对路径精确查一首曲目；不存在返回 `None`。
 ///
 /// 播放器窗只拿得到 `PlaybackState.track_id`（本地文件即绝对路径），
-/// 封面等元数据要经这条查询回库取（T-0025）。
+/// 封面等元数据要经这条查询回库取（T-0025）。查询前先做
+/// [`normalize_track_path`] 归一（T-0026）：`E:/a.wav`、`E:\a.wav` 与
+/// 大小写差异都能命中同一条记录；库里存的仍是扫描时的原样路径。
 pub(crate) fn track_by_path(conn: &Connection, path: &str) -> Result<Option<Track>> {
+    let path = normalize_track_path(path);
     let mut statement = conn.prepare(&format!(
-        "SELECT {TRACK_COLUMNS} FROM tracks WHERE kind = 'local' AND path = ?1"
+        "SELECT {TRACK_COLUMNS} FROM tracks WHERE kind = 'local' AND {PATH_MATCH}"
     ))?;
     let track = statement.query_row([path], row_to_track).optional()?;
     Ok(track)
@@ -603,26 +634,102 @@ mod tests {
     }
 
     #[test]
-    fn track_by_path_matches_exact_path_and_returns_none_when_missing() {
+    fn normalize_track_path_keeps_case_and_non_separator_chars() {
+        // 大小写不在这里归一：交给 SQL 的 COLLATE NOCASE（Windows）或
+        // 原样比较（Unix）。空串 / 相对路径也保持原样，让查询自然 miss。
+        assert_eq!(normalize_track_path(""), "");
+        assert_eq!(normalize_track_path("Song.wav"), "Song.wav");
+        assert_eq!(normalize_track_path("Song.WAV"), "Song.WAV");
+        assert_eq!(normalize_track_path("music"), "music");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_track_path_writes_windows_separators() {
+        for (input, expected) in [
+            ("E:/a.wav", r"E:\a.wav"),
+            (r"E:\a.wav", r"E:\a.wav"),
+            ("E:/Music/2024/a.wav", r"E:\Music\2024\a.wav"),
+            ("//server/share/a.wav", r"\\server\share\a.wav"),
+            ("C:/mixed/Sep\\dir/a.flac", r"C:\mixed\Sep\dir\a.flac"),
+        ] {
+            assert_eq!(normalize_track_path(input), expected, "input {input:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_track_path_keeps_posix_paths() {
+        for input in [
+            "/music/a.wav",
+            "music/a.wav",
+            "/music/with\\backslash.wav",
+            "/Music/Album/Song.flac",
+        ] {
+            assert_eq!(normalize_track_path(input), input, "input {input:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn track_by_path_matches_separator_and_case_variants_on_windows() {
         let db = Database::open_in_memory().expect("memory db");
-        let mut track = sample("/music/a.wav");
+        let mut track = sample(r"C:\Music\Album\Song.wav");
+        track.title = "Song".to_string();
         track.cover_key = Some("0123456789abcdef".to_string());
         insert(&db, &track, 100);
 
-        let found = track_by_path(db.conn(), "/music/a.wav")
-            .expect("lookup")
-            .expect("track");
-        assert_eq!(found.path, "/music/a.wav");
-        assert_eq!(found.cover_key.as_deref(), Some("0123456789abcdef"));
+        // 正斜杠 / 反斜杠 / 大小写混写都命中同一条记录。
+        for lookup in [
+            r"C:\Music\Album\Song.wav",
+            "C:/Music/Album/Song.wav",
+            r"c:\music\album\song.WAV",
+            "C:/MUSIC/album/SONG.wav",
+        ] {
+            let found = track_by_path(db.conn(), lookup)
+                .expect("lookup")
+                .expect(lookup);
+            // 归一化只作用于查询参数，不修改库里的原样路径。
+            assert_eq!(found.path, r"C:\Music\Album\Song.wav");
+            assert_eq!(found.cover_key.as_deref(), Some("0123456789abcdef"));
+        }
 
         assert!(
-            track_by_path(db.conn(), "/music/b.wav")
-                .expect("missing")
+            track_by_path(db.conn(), r"D:\Music\Album\Song.wav")
+                .expect("other drive")
                 .is_none()
         );
         assert!(
-            track_by_path(db.conn(), "/music/A.wav")
+            track_by_path(db.conn(), r"C:\Music\Album\Other.wav")
+                .expect("other file")
+                .is_none()
+        );
+        assert!(track_by_path(db.conn(), "").expect("empty").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn track_by_path_is_exact_and_case_sensitive_on_unix() {
+        let db = Database::open_in_memory().expect("memory db");
+        let mut track = sample("/music/album/Song.wav");
+        track.title = "Song".to_string();
+        track.cover_key = Some("0123456789abcdef".to_string());
+        insert(&db, &track, 100);
+
+        let found = track_by_path(db.conn(), "/music/album/Song.wav")
+            .expect("lookup")
+            .expect("track");
+        assert_eq!(found.path, "/music/album/Song.wav");
+
+        // Unix 路径区分大小写：大小写不同必须 miss。
+        assert!(
+            track_by_path(db.conn(), "/music/album/song.wav")
                 .expect("case sensitive")
+                .is_none()
+        );
+        assert!(
+            track_by_path(db.conn(), "/music/album/Other.wav")
+                .expect("missing")
                 .is_none()
         );
         assert!(track_by_path(db.conn(), "").expect("empty").is_none());

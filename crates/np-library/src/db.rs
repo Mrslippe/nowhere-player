@@ -102,7 +102,9 @@ impl Database {
     /// 按绝对路径精确查一首曲目；不存在返回 `None`。
     ///
     /// 播放器只持有文件路径（`PlaybackState.trackId`），封面等媒体库
-    /// 元数据经这条查询回库取（T-0025）。
+    /// 元数据经这条查询回库取（T-0025）。查询前会做分隔符归一
+    /// （Windows `/` → `\`，并按 `COLLATE NOCASE` 比较），库里存的路径不变
+    /// （T-0026）。
     pub fn track_by_path(&self, path: &str) -> Result<Option<Track>> {
         repo::track_by_path(&self.conn, path)
     }
