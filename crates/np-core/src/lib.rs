@@ -4,6 +4,7 @@ pub mod command;
 pub mod player;
 pub mod queue;
 pub mod terminal;
+pub mod theme;
 
 pub use command::{
     ArgKind, ArgSpec, CommandErrorCode, CommandSpec, Completion, CompletionItem, CompletionKind,
@@ -15,3 +16,8 @@ pub use player::{
 };
 pub use queue::{Queue, QueueStep, QueueView};
 pub use terminal::{Block, BlockStatus, MediaKind, Output, SCHEMA_VERSION, Span, SpanColor, Tone};
+pub use theme::{
+    BUILTIN_THEMES, BuiltinTheme, MAX_THEME_ID_LEN, MAX_THEME_NAME_CHARS, RawTheme, Skin,
+    THEME_CONTRACT, THEME_TOKEN_NAMES, ThemeApplyReply, ThemeError, ThemeListEntry, ThemeSource,
+    ThemeSpec, ThemeTokens, is_valid_theme_color, validate_theme_id,
+};
