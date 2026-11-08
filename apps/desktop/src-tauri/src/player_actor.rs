@@ -158,14 +158,18 @@ impl PlayerActor {
         }
     }
 
-    /// 主循环：命令优先，最多每 250 ms 跑一次 tick。
+    /// 主循环：命令优先，按固定 deadline 每 250 ms 跑一次 tick。
+    ///
+    /// 直接用 `recv_timeout(TICK_INTERVAL)` 会累积 Windows 定时器粒度
+    /// （实测约 265 ms），所以用绝对 deadline 计算下一次等待时长。
     fn run(mut self, rx: Receiver<ActorMessage>) {
-        let mut last_tick = Instant::now();
+        let mut next_tick = Instant::now() + TICK_INTERVAL;
         loop {
             let mut batch = Vec::new();
             let mut shutdown = false;
 
-            match rx.recv_timeout(TICK_INTERVAL) {
+            let wait = next_tick.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(wait) {
                 Ok(ActorMessage::Command(pending)) => batch.push(pending),
                 Ok(ActorMessage::Shutdown) => shutdown = true,
                 Err(RecvTimeoutError::Timeout) => {}
@@ -196,14 +200,20 @@ impl PlayerActor {
                 break;
             }
 
-            if last_tick.elapsed() >= TICK_INTERVAL {
+            if Instant::now() >= next_tick {
                 self.tick();
-                last_tick = Instant::now();
+                next_tick += TICK_INTERVAL;
+                let now = Instant::now();
+                if next_tick <= now {
+                    // 落后超过一个周期（例如命令阻塞）时不补发，避免突发。
+                    next_tick = now + TICK_INTERVAL;
+                }
             }
         }
 
         // 必须在本线程释放 cpal 流与解码线程（T-0013 §7）。
         self.player = None;
+        println!("[player] actor stopped, device released");
     }
 
     /// 批量执行命令；`seek` / `volume` 只执行最后一次（latest-wins）。
