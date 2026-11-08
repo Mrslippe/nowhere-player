@@ -179,12 +179,39 @@ export function toCommandError(error: unknown): CommandError {
 }
 
 /**
+ * 是否是 `clear` **之前**就已经开始执行的块（T-0021 §2.3）。
+ *
+ * `clear` 只清视图、不发 IPC，清空时记下 `clearedAt`；此后到达的
+ * `startedAt < clearedAt` 的块属于清空前的命令，必须丢弃，否则会“复活”。
+ * 用 `startedAt` 而不是到达时间：到达时间受事件队列影响，不可靠。
+ *
+ * 严格小于：`startedAt === clearedAt` 的块保留，`clear` 后同一毫秒内
+ * 敲下的新命令不会被误杀。
+ */
+export function isStaleBlock(
+  block: Block,
+  clearedAt: number | null | undefined,
+): boolean {
+  return typeof clearedAt === "number" && block.startedAt < clearedAt;
+}
+
+/**
  * 按 `id` 覆盖或追加块（T-0019 §6）。
  *
  * 同一个 `blockId` 会有两次事件（`running` → 最终块）：覆盖而不是追加，
  * 否则一条命令会显示成两行。找不到同 id 时追加到末尾（新命令）。
+ *
+ * `clearedAt` 可选：传了就把清空前的在途块丢掉（见 {@link isStaleBlock}）。
  */
-export function upsertBlock(blocks: readonly Block[], block: Block): Block[] {
+export function upsertBlock(
+  blocks: readonly Block[],
+  block: Block,
+  clearedAt: number | null = null,
+): Block[] {
+  if (isStaleBlock(block, clearedAt)) {
+    return blocks.slice();
+  }
+
   const index = blocks.findIndex((item) => item.id === block.id);
 
   if (index === -1) {

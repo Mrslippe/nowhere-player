@@ -10,9 +10,11 @@ import {
   createBlockId,
   createWelcomeBlock,
   ipcErrorBlock,
+  loadAppVersion,
   planInput,
   submitInput,
   withStreamLost,
+  withWelcomeVersion,
   type TerminalRuntime,
 } from "./terminal-session";
 
@@ -254,3 +256,55 @@ describe("订阅失败提示（T-0021 §2.2）", () => {
   });
 });
 
+describe("版本号（T-0021 §2.4）", () => {
+  it("读到版本号就用它（可带空白）", async () => {
+    expect(await loadAppVersion(async () => "1.2.3")).toBe("1.2.3");
+    expect(await loadAppVersion(async () => "  1.2.3  ")).toBe("1.2.3");
+  });
+
+  it("读取失败回退兜底版本（浏览器 mock / 非 Tauri）", async () => {
+    const failing = async (): Promise<string> => {
+      throw new Error("window.__TAURI_INTERNALS__ is undefined");
+    };
+
+    expect(await loadAppVersion(failing)).toBe(APP_VERSION);
+    expect(APP_VERSION).toBe("0.0.0");
+  });
+
+  it("空版本号回退兜底版本，不展示空串", async () => {
+    expect(await loadAppVersion(async () => "")).toBe(APP_VERSION);
+    expect(await loadAppVersion(async () => "   ")).toBe(APP_VERSION);
+  });
+
+  it("拿到真版本后替换欢迎块，保留位置、startedAt 与其它块", () => {
+    const welcome = createWelcomeBlock("0.0.0", 123);
+    const other = ipcErrorBlock(
+      "help",
+      "blk_err",
+      { code: "E_UNKNOWN", message: "boom" },
+      124,
+    );
+
+    const blocks = withWelcomeVersion([welcome, other], "1.2.3");
+
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].startedAt).toBe(123);
+    expect(JSON.stringify(blocks[0].outputs)).toContain("1.2.3");
+    expect(blocks[1]).toBe(other);
+  });
+
+  it("版本获取失败时欢迎块仍渲染（兜底版本 + help 提示）", () => {
+    const blocks = withWelcomeVersion([createWelcomeBlock("0.0.0", 5)], APP_VERSION);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].id).toBe(WELCOME_BLOCK_ID);
+    expect(blocks[0].footer).toBe("输入 help 查看命令");
+    const serialized = JSON.stringify(blocks[0].outputs);
+    expect(serialized).toContain("Nowhere Player");
+    expect(serialized).toContain(APP_VERSION);
+  });
+
+  it("clear 之后欢迎块已不在，异步版本到达也不会把它加回来", () => {
+    expect(withWelcomeVersion([], "1.2.3")).toEqual([]);
+  });
+});

@@ -4,6 +4,7 @@ import {
   CMD_EXEC_COMMAND,
   TERMINAL_BLOCK_EVENT,
   createCommandBridge,
+  isStaleBlock,
   isTauriRuntime,
   toCommandError,
   upsertBlock,
@@ -269,6 +270,46 @@ describe("upsertBlock（按 id 覆盖）", () => {
   });
 });
 
+describe("isStaleBlock / clear 之后的在途块（T-0021 §2.3）", () => {
+  it("按 startedAt 与 clearedAt 判新旧：只丢弃清空前的块", () => {
+    expect(isStaleBlock(makeBlock({ startedAt: 199 }), 200)).toBe(true);
+    expect(isStaleBlock(makeBlock({ startedAt: 200 }), 200)).toBe(false);
+    expect(isStaleBlock(makeBlock({ startedAt: 201 }), 200)).toBe(false);
+    // 没清空过（null）时一律保留。
+    expect(isStaleBlock(makeBlock({ startedAt: 0 }), null)).toBe(false);
+  });
+
+  it("clear 之后到达的旧块被丢弃（running 与最终块都不复活）", () => {
+    const running = makeBlock({ id: "blk_old", startedAt: 100 });
+    const done = makeBlock({ id: "blk_old", startedAt: 100, status: "done" });
+
+    expect(upsertBlock([], running, 200)).toHaveLength(0);
+    expect(upsertBlock([], done, 200)).toHaveLength(0);
+  });
+
+  it("clear 后同一毫秒敲下的新命令正常显示（不误杀）", () => {
+    const sameMs = makeBlock({ id: "blk_new", startedAt: 200, status: "done" });
+    const later = makeBlock({ id: "blk_later", startedAt: 201, status: "done" });
+
+    expect(upsertBlock([], sameMs, 200).map((block) => block.id)).toEqual([
+      "blk_new",
+    ]);
+    expect(
+      upsertBlock(upsertBlock([], sameMs, 200), later, 200).map(
+        (block) => block.id,
+      ),
+    ).toEqual(["blk_new", "blk_later"]);
+  });
+
+  it("丢弃旧块时不改动已有块（数组原样保留）", () => {
+    const existing = makeBlock({ id: "blk_a", startedAt: 100, status: "running" });
+    const done = makeBlock({ id: "blk_a", startedAt: 100, status: "done" });
+
+    // startedAt 早于 clearedAt 的最终块被丢弃，不会把旧块写回去。
+    expect(upsertBlock([existing], done, 150)).toHaveLength(1);
+    expect(upsertBlock([existing], done, 150)[0].status).toBe("running");
+  });
+});
 
 describe("浏览器 mock 模式（无 Tauri）", () => {
   it("无 window / 无 Tauri 时 isTauriRuntime 为 false", () => {

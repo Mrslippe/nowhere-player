@@ -4,6 +4,7 @@
  * 组件只负责把它接到 React 状态；这里不碰 DOM、不读全局，便于用
  * `renderToStaticMarkup` + 直接调用纯函数做单测（T-0019 §8）。
  */
+import { getVersion } from "@tauri-apps/api/app";
 import type { Block } from "../../shared/terminal-model";
 import { SCHEMA_VERSION } from "../../shared/terminal-model";
 import type { CommandError, ExecReply } from "../../shared/command-bridge";
@@ -13,11 +14,11 @@ import { toCommandError } from "../../shared/command-bridge";
 let sequence = 0;
 
 /**
- * 展示用版本号。
+ * 版本号兜底值（T-0021 §2.4）。
  *
- * 与 `Cargo.toml` 工作区版本 / `tauri.conf.json` 的 `version` 保持一致（当前均为
- * `0.0.0`）。前端没有构建期版本注入点（`vite.config.ts` 本卡禁改），
- * 版本号提升时这里要同步改；后端 `version` 命令是权威值。
+ * 真实版本由 {@link loadAppVersion} 在运行时经 `@tauri-apps/api/app` 的
+ * `getVersion()` 读取；浏览器 mock / 非 Tauri 运行时（含单测）读不到，
+ * 回退到这里。首屏先用它渲染，拿到真版本后再替换，不阻塞首屏。
  */
 export const APP_VERSION = "0.0.0";
 
@@ -29,6 +30,24 @@ export const STREAM_LOST_BLOCK_ID = "blk_stream_lost";
 
 /** 订阅失败的展示文案（T-0021 §2.2）。 */
 export const STREAM_LOST_MESSAGE = "实时输出不可用，请重开终端窗";
+
+/**
+ * 读应用版本（T-0021 §2.4）。
+ *
+ * 异步读取，失败或读到空串时回退 {@link APP_VERSION}（浏览器 mock 走这条路）。
+ * 注入 `read` 只为单测：生产调用不需要传参。
+ */
+export async function loadAppVersion(
+  read: () => Promise<string> = getVersion,
+): Promise<string> {
+  try {
+    const version = await read();
+    const trimmed = version.trim();
+    return trimmed === "" ? APP_VERSION : trimmed;
+  } catch {
+    return APP_VERSION;
+  }
+}
 
 /**
  * 生成 `cmd.exec` 的 `blockId`（前端生成，后端原样回填到两次事件里）。
@@ -183,6 +202,23 @@ export function createWelcomeBlock(
     ],
     footer: "输入 help 查看命令",
   };
+}
+
+/**
+ * 欢迎块换版本号（T-0021 §2.4）：异步拿到 `getVersion()` 后补上真版本。
+ *
+ * 按 id 定位、保留原 `startedAt` 与位置；`clear` 之后欢迎块已不在，
+ * 自然什么都不做。版本读取失败时版本就是兜底值，欢迎块照常渲染。
+ */
+export function withWelcomeVersion(
+  blocks: readonly Block[],
+  version: string,
+): Block[] {
+  return blocks.map((block) =>
+    block.id === WELCOME_BLOCK_ID
+      ? createWelcomeBlock(version, block.startedAt)
+      : block,
+  );
 }
 
 /**

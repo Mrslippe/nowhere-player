@@ -36,8 +36,10 @@ import { DEMO_TIME, runMockCommand } from "./mock-commands";
 import {
   createBlockId,
   createWelcomeBlock,
+  loadAppVersion,
   submitInput,
   withStreamLost,
+  withWelcomeVersion,
 } from "./terminal-session";
 import "./terminal.css";
 
@@ -140,24 +142,52 @@ export function TerminalLab({
   );
   const [feedback, setFeedback] = useState<string | null>(null);
   const feedbackTimer = useRef<number | null>(null);
+  /**
+   * 最近一次 `clear` 的时间戳（毫秒；未清空为 null）。
+   *
+   * `clear` 只清视图、不发 IPC，所以清空前的命令可能还有块在路上；
+   * 晚到的块按 `startedAt` 判断是否属于清空前，属于则丢弃（T-0021 §2.3）。
+   */
+  const clearedAtRef = useRef<number | null>(null);
+
+  /** 应用一条块；`clear` 之前开始的在途块在这里被丢弃。 */
+  const applyBlock = (block: Block): void => {
+    setBlocks((previous) => upsertBlock(previous, block, clearedAtRef.current));
+  };
+
+  /** 清空本地块并记下时间戳；`clear` 命令与顶栏按钮共用同一入口。 */
+  const clearBlocks = (): void => {
+    clearedAtRef.current = Date.now();
+    setBlocks([]);
+  };
 
   // 订阅必须在挂载时就建立：`cmd.exec` 在返回回执前就 emit，
   // 「await exec 之后再订阅」会丢掉首条命令的块（T-0019 §11 风险 1）。
   // 同一 blockId 会来两次事件（running → 最终），一律按 id 覆盖。
   useEffect(
     () =>
-      bridge.subscribeBlocks(
-        (block) => {
-          setBlocks((previous) => upsertBlock(previous, block));
-        },
-        () => {
-          // 订阅失败：推一条本地 error 块，明确告诉用户实时输出不可用。
-          // 不自动重试（避免刷屏）；重开终端窗 = 重新订阅，是唯一的重试路径。
-          setBlocks((previous) => withStreamLost(previous));
-        },
-      ),
+      bridge.subscribeBlocks(applyBlock, () => {
+        // 订阅失败：推一条本地 error 块，明确告诉用户实时输出不可用。
+        // 不自动重试（避免刷屏）；重开终端窗 = 重新订阅，是唯一的重试路径。
+        setBlocks((previous) => withStreamLost(previous));
+      }),
     [bridge],
   );
+
+  // 版本号异步读取：首屏先用兜底版本渲染，拿到真版本后替换（T-0021 §2.4）。
+  useEffect(() => {
+    let active = true;
+
+    void loadAppVersion().then((version) => {
+      if (active) {
+        setBlocks((previous) => withWelcomeVersion(previous, version));
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // 首屏从 ?theme= 进入时也要落到 <html data-theme>；切换时同步（不刷新）。
   useEffect(() => {
@@ -200,17 +230,9 @@ export function TerminalLab({
     void submitInput(input, {
       exec: (text, blockId) => bridge.exec(text, blockId),
       createBlockId,
-      applyBlock: (block) => {
-        setBlocks((previous) => upsertBlock(previous, block));
-      },
-      clear: () => {
-        setBlocks([]);
-      },
+      applyBlock,
+      clear: clearBlocks,
     });
-  };
-
-  const clear = (): void => {
-    setBlocks([]);
   };
 
   const changeScore = (side: ScoreSide, dimension: DimensionId, value: number): void => {
@@ -290,7 +312,7 @@ export function TerminalLab({
 
         <span className="np-lab__spacer" />
 
-        <Button variant="ghost" size="sm" onClick={clear}>
+        <Button variant="ghost" size="sm" onClick={clearBlocks}>
           清空
         </Button>
       </header>
