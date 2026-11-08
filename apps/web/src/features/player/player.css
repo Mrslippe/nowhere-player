@@ -12,9 +12,16 @@
   align-items: center;
   justify-content: center;
   gap: var(--sp-4);
-  min-height: 100vh;
-  overflow-x: hidden;
+  height: 100vh;
+  overflow: hidden;
   background: var(--bg);
+}
+
+/* 小窗预览高度只有 120px 时，卡片贴顶，dev 面板留在视口外，不产生滚动条。 */
+@media (max-height: 200px) {
+  .np-player-view {
+    justify-content: flex-start;
+  }
 }
 
 /* 窗口内容区：340×120，卡片按 border-box 撑满，不含窗口边框。 */
@@ -22,6 +29,22 @@
   flex: none;
   width: var(--player-window-w);
   height: var(--player-window-h);
+}
+
+/* dev 状态面板（打包后不渲染）；宽度对齐小窗，避免 340px 下横向滚动。 */
+.np-player-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  max-width: var(--player-window-w);
+}
+
+.np-player-switcher .np-btn {
+  height: 24px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-10);
 }
 
 /* ── 卡片 ────────────────────────────────────────────── */
@@ -64,6 +87,19 @@
   opacity: 0.92;
   transform: translateY(-1px);
   pointer-events: none;
+}
+
+/* 加载态：深色圆底托住 Spinner，避免在渐变上对比度不足。 */
+.np-player-card__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
 }
 
 /* ── 控制键：默认隐藏，卡片 hover 后 120ms 淡入 ──────── */
@@ -152,6 +188,13 @@
   height: 4px;
 }
 
+/* 不确定态从周期中段起步，首帧就有可见的滑动段，不会像空进度条。 */
+.np-player-card[data-state="loading"]
+  .np-player-card__progress
+  .np-progress__indicator {
+  animation-delay: -0.6s;
+}
+
 .np-player-card__time {
   flex: none;
   color: var(--fg-muted);
@@ -159,6 +202,28 @@
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
   white-space: nowrap;
+}
+
+/* ── 6 种状态 ────────────────────────────────────────── */
+/* 空闲：整体降透明度。 */
+.np-player-card[data-state="idle"] {
+  opacity: 0.6;
+}
+
+/* 暂停：整体饱和度降 15%，播放键由组件切换为 ▶。 */
+.np-player-card[data-state="paused"] {
+  filter: saturate(0.85);
+}
+
+/* 错误：右上角 6px 红点，不弹窗、不写长文案。 */
+.np-player-card__error-dot {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
 }
 
 /* ── 动效降级 ────────────────────────────────────────── */
