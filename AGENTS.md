@@ -47,8 +47,13 @@
 | 格式 | `cargo fmt --all -- --check` |
 | 前端类型 | `pnpm -C apps/web typecheck` |
 | 前端单测 | `pnpm -C apps/web test` |
+| 前端单测（**只跑某目录**） | `pnpm -C apps/web exec vitest run src/features/player src/shared` |
 | 全量门禁 | `./scripts/check.ps1`（Windows） / `./scripts/check.sh` |
 | CI 门禁 | GitHub Actions：[`.github/workflows/ci.yml`](.github/workflows/ci.yml)（web + rust×2） |
+
+> ⚠️ **两个命令陷阱**（T-0014 实测）：
+> 1. `pnpm test -- <path>` **不会过滤**——vitest 5 把 `--` 之后当位置参数，实际跑全量。要过滤必须用 `exec vitest run <path>`。
+> 2. `pnpm dev -- --port 1426` 也会把 `--` 传进 vite，端口不生效。用 `pnpm -C apps/web exec vite --port 1426`。
 
 **验收最低标准**：改动必须能在本地跑通上表中的"全量门禁"。
 
