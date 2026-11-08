@@ -20,6 +20,9 @@ use np_core::{
     Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
     PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, Span,
 };
+use tauri::{AppHandle, Emitter, State};
+
+use crate::player_actor::PlayerHandle;
 
 /// 执行器依赖的播放器能力（T-0018 §6.1）。
 ///
@@ -692,6 +695,159 @@ fn track_display(track_id: &str) -> String {
 fn format_position(position_ms: u64) -> String {
     let total_seconds = position_ms / 1_000;
     format!("{:02}:{:02}", total_seconds / 60, total_seconds % 60)
+}
+
+/// `terminal:block` 事件名。
+///
+/// Tauri 2 的事件名只允许字母数字与 `- / : _`，**点号非法**，
+/// 所以这里用冒号（`cmd.exec` 是命令名，不受同一限制）。
+pub(crate) const EVENT_TERMINAL_BLOCK: &str = "terminal:block";
+
+/// `cmd.exec` 的立即回执：`{ blockId, ok }`（camelCase）。
+///
+/// `desktop` crate 不直接依赖 `serde`（本卡禁止改 `Cargo.toml`），
+/// 因此不派生 `Serialize`，而是实现 Tauri 公开的
+/// [`tauri::ipc::IpcResponse`]，手写一段 JSON 体。字段只有两个，
+/// 转义逻辑见 [`json_string`]，并由单测锁住。
+pub(crate) struct CmdExecReply {
+    block_id: String,
+    ok: bool,
+}
+
+impl tauri::ipc::IpcResponse for CmdExecReply {
+    fn body(self) -> tauri::Result<tauri::ipc::InvokeResponseBody> {
+        Ok(tauri::ipc::InvokeResponseBody::Json(format!(
+            r#"{{"blockId":{},"ok":{}}}"#,
+            json_string(&self.block_id),
+            self.ok
+        )))
+    }
+}
+
+/// `PlayerHandle` 的 [`PlayerApi`] 适配（生产实现）。
+pub(crate) struct HandleApi<'a> {
+    handle: &'a PlayerHandle,
+}
+
+impl<'a> HandleApi<'a> {
+    pub(crate) fn new(handle: &'a PlayerHandle) -> Self {
+        Self { handle }
+    }
+}
+
+impl PlayerApi for HandleApi<'_> {
+    fn snapshot(&self) -> Result<PlaybackState, CmdError> {
+        self.handle.snapshot().map_err(CmdError::from_player)
+    }
+
+    fn play(&self, path: Option<String>) -> Result<PlaybackState, CmdError> {
+        self.handle.play(path).map_err(CmdError::from_player)
+    }
+
+    fn pause(&self) -> Result<PlaybackState, CmdError> {
+        self.handle.pause().map_err(CmdError::from_player)
+    }
+
+    /// `PlayerHandle` 没有独立的 `resume`：`play(None)` 在 actor 里就是继续当前曲目。
+    fn resume(&self) -> Result<PlaybackState, CmdError> {
+        self.handle.play(None).map_err(CmdError::from_player)
+    }
+
+    fn next(&self) -> Result<PlaybackState, CmdError> {
+        self.handle.next().map_err(CmdError::from_player)
+    }
+
+    fn prev(&self) -> Result<PlaybackState, CmdError> {
+        self.handle.prev().map_err(CmdError::from_player)
+    }
+
+    fn seek(&self, position_ms: u64) -> Result<PlaybackState, CmdError> {
+        self.handle.seek(position_ms).map_err(CmdError::from_player)
+    }
+
+    fn volume(&self, volume: f32) -> Result<PlaybackState, CmdError> {
+        self.handle.volume(volume).map_err(CmdError::from_player)
+    }
+
+    fn mode(&self, mode: PlaybackMode) -> Result<PlaybackState, CmdError> {
+        self.handle.mode(mode).map_err(CmdError::from_player)
+    }
+
+    fn queue_list(&self) -> Result<QueueView, CmdError> {
+        self.handle.queue_list().map_err(CmdError::from_player)
+    }
+
+    fn queue_add(&self, paths: Vec<String>) -> Result<QueueView, CmdError> {
+        self.handle.queue_add(paths).map_err(CmdError::from_player)
+    }
+
+    fn queue_remove(&self, index: usize) -> Result<QueueView, CmdError> {
+        self.handle
+            .queue_remove(index)
+            .map_err(CmdError::from_player)
+    }
+
+    fn queue_clear(&self) -> Result<QueueView, CmdError> {
+        self.handle.queue_clear().map_err(CmdError::from_player)
+    }
+
+    fn queue_jump(&self, index: usize) -> Result<QueueView, CmdError> {
+        self.handle.queue_jump(index).map_err(CmdError::from_player)
+    }
+}
+
+/// `cmd.exec`：执行一条终端输入。
+///
+/// 立即返回 `{ blockId, ok }`，输出经 `terminal:block` 事件推送：
+/// 先发 `running` 空块，再发同一 `id` 的最终块（前端按 `id` 覆盖）。
+/// `ok` 表示该命令最终是否成功；空输入视为成功且不产生块。
+#[tauri::command(rename = "cmd.exec")]
+pub(crate) fn cmd_exec(
+    app: AppHandle,
+    handle: State<'_, PlayerHandle>,
+    input: String,
+    block_id: String,
+) -> CmdExecReply {
+    let api = HandleApi::new(&handle);
+
+    match execute(&api, &block_id, &input) {
+        Execution::Ignored => CmdExecReply { block_id, ok: true },
+        Execution::Blocks { running, done } => {
+            emit_block(&app, &running);
+            let ok = done.status != BlockStatus::Error;
+            emit_block(&app, &done);
+            CmdExecReply { block_id, ok }
+        }
+    }
+}
+
+fn emit_block(app: &AppHandle, block: &Block) {
+    if let Err(error) = app.emit(EVENT_TERMINAL_BLOCK, block) {
+        eprintln!("[cmd] emit {EVENT_TERMINAL_BLOCK} failed: {error}");
+    }
+}
+
+/// 手写 JSON 字符串转义；只用于 [`CmdExecReply`] 的 `blockId`。
+fn json_string(value: &str) -> String {
+    use std::fmt::Write;
+
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            control if (control as u32) < 0x20 => {
+                let _ = write!(escaped, "\\u{:04x}", control as u32);
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped.push('"');
+    escaped
 }
 
 #[cfg(test)]
@@ -1412,5 +1568,48 @@ mod tests {
         assert!(done.duration_ms.is_some());
         assert!(done.started_at > 0);
         assert_eq!(done.schema_version, SCHEMA_VERSION);
+    }
+
+    // ---- IPC 与事件 ----
+
+    #[test]
+    fn terminal_event_channel_uses_a_colon_not_a_dot() {
+        assert_eq!(EVENT_TERMINAL_BLOCK, "terminal:block");
+        assert!(!EVENT_TERMINAL_BLOCK.contains('.'));
+    }
+
+    #[test]
+    fn cmd_exec_command_name_keeps_the_dot() {
+        assert_eq!(__tauri_command_name_cmd_exec!(), "cmd.exec");
+    }
+
+    #[test]
+    fn reply_body_is_camel_case_json() {
+        let reply = CmdExecReply {
+            block_id: "block-1".to_owned(),
+            ok: true,
+        };
+
+        match tauri::ipc::IpcResponse::body(reply).expect("reply body") {
+            tauri::ipc::InvokeResponseBody::Json(json) => {
+                assert_eq!(json, r#"{"blockId":"block-1","ok":true}"#);
+            }
+            tauri::ipc::InvokeResponseBody::Raw(_) => panic!("expected a JSON body"),
+        }
+    }
+
+    #[test]
+    fn reply_body_escapes_block_ids() {
+        let reply = CmdExecReply {
+            block_id: "a\"b\\c\nd".to_owned(),
+            ok: false,
+        };
+
+        match tauri::ipc::IpcResponse::body(reply).expect("reply body") {
+            tauri::ipc::InvokeResponseBody::Json(json) => {
+                assert_eq!(json, r#"{"blockId":"a\"b\\c\nd","ok":false}"#);
+            }
+            tauri::ipc::InvokeResponseBody::Raw(_) => panic!("expected a JSON body"),
+        }
     }
 }
