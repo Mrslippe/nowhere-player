@@ -24,7 +24,10 @@ use np_core::{
     Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
     PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, Span,
 };
-use np_library::{Database, LibraryError, ScanObserver, ScanReport, Scanner, Stats, Track};
+use np_library::{
+    CoverCacheUsage, Database, LibraryError, ScanObserver, ScanReport, Scanner, Stats, Track,
+    cover_cache_usage,
+};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::player_actor::PlayerHandle;
@@ -81,6 +84,8 @@ pub(crate) trait LibraryApi {
     fn list_recent(&self, limit: usize) -> Result<Vec<Track>, CmdError>;
     /// 曲目 / 专辑 / 艺人 / 时长 / 最近扫描。
     fn stats(&self) -> Result<Stats, CmdError>;
+    /// 封面缓存用量（文件数 / 字节数，T-0026 §6.3）。
+    fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError>;
     /// 把最近一次 `search` 结果存进会话上下文（最多 100 条）。
     fn remember_search(&self, tracks: Vec<Track>);
     /// 当前会话上下文里的搜索结果。
@@ -153,6 +158,10 @@ impl LibraryApi for EmptyLibraryApi {
 
     fn stats(&self) -> Result<Stats, CmdError> {
         Ok(Stats::default())
+    }
+
+    fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError> {
+        Ok(CoverCacheUsage::default())
     }
 
     fn remember_search(&self, _tracks: Vec<Track>) {}
@@ -732,9 +741,10 @@ impl Executor<'_> {
         })
     }
 
-    /// `library stat`：曲目 / 专辑 / 艺人 / 总时长 / 最近扫描。
+    /// `library stat`：曲目 / 专辑 / 艺人 / 总时长 / 最近扫描 / 封面缓存。
     fn library_stat(&self) -> Result<Outcome, CmdError> {
         let stats = self.library.stats()?;
+        let covers = self.library.covers_usage()?;
         let last_scan = if stats.last_scan_at == 0 {
             "从未扫描".to_owned()
         } else {
@@ -746,6 +756,7 @@ impl Executor<'_> {
             ("艺人", stats.artists.to_string()),
             ("总时长", format_total_duration(stats.total_duration_ms)),
             ("最近扫描", last_scan),
+            ("封面缓存", format_cover_cache(covers)),
         ];
 
         Ok(Outcome {
@@ -944,6 +955,12 @@ fn format_total_duration(total_ms: u64) -> String {
     } else {
         format!("{seconds} 秒")
     }
+}
+
+/// 封面缓存用量文案：`N 个文件 / X MB`（1 MB = 1024² 字节，保留一位小数）。
+fn format_cover_cache(usage: CoverCacheUsage) -> String {
+    let megabytes = usage.bytes as f64 / (1024.0 * 1024.0);
+    format!("{} 个文件 / {megabytes:.1} MB", usage.files)
 }
 
 /// 最近扫描的粗粒度相对时间；只用于终端文案，精度到天。
@@ -1521,6 +1538,11 @@ impl LibraryApi for LibraryHandle {
         self.with_db(|db| db.stats())
     }
 
+    fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError> {
+        // 只算 `<db 所在目录>/covers` 下的 jpg；目录不存在返回 0。
+        Ok(cover_cache_usage(&self.covers_dir()))
+    }
+
     fn remember_search(&self, tracks: Vec<Track>) {
         let mut tracks = tracks;
         tracks.truncate(MAX_SEARCH_RESULTS);
@@ -2048,6 +2070,7 @@ mod tests {
         Search(String, usize),
         ListRecent(usize),
         Stats,
+        Covers,
     }
 
     struct FakeLibraryState {
@@ -2055,6 +2078,7 @@ mod tests {
         list_tracks: Vec<Track>,
         search_tracks: Vec<Track>,
         stats: Stats,
+        covers: CoverCacheUsage,
         busy: bool,
         session: Vec<Track>,
         calls: Vec<LibraryCall>,
@@ -2073,6 +2097,7 @@ mod tests {
                     list_tracks: Vec::new(),
                     search_tracks: Vec::new(),
                     stats: Stats::default(),
+                    covers: CoverCacheUsage::default(),
                     busy: false,
                     session: Vec::new(),
                     calls: Vec::new(),
@@ -2098,6 +2123,11 @@ mod tests {
 
         fn with_stats(self, stats: Stats) -> Self {
             self.state.lock().expect("state mutex").stats = stats;
+            self
+        }
+
+        fn with_covers(self, files: u64, bytes: u64) -> Self {
+            self.state.lock().expect("state mutex").covers = CoverCacheUsage { files, bytes };
             self
         }
 
@@ -2162,6 +2192,11 @@ mod tests {
         fn stats(&self) -> Result<Stats, CmdError> {
             self.record(LibraryCall::Stats);
             Ok(self.state.lock().expect("state mutex").stats)
+        }
+
+        fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError> {
+            self.record(LibraryCall::Covers);
+            Ok(self.state.lock().expect("state mutex").covers)
         }
 
         fn remember_search(&self, tracks: Vec<Track>) {
@@ -2816,15 +2851,17 @@ mod tests {
     }
 
     #[test]
-    fn library_stat_renders_counts_and_scan_time() {
+    fn library_stat_renders_counts_scan_time_and_cover_cache() {
         let api = FakeApi::new();
-        let library = FakeLibraryApi::new().with_stats(Stats {
-            tracks: 3,
-            albums: 1,
-            artists: 2,
-            total_duration_ms: 3_723_000,
-            last_scan_at: 0,
-        });
+        let library = FakeLibraryApi::new()
+            .with_stats(Stats {
+                tracks: 3,
+                albums: 1,
+                artists: 2,
+                total_duration_ms: 3_723_000,
+                last_scan_at: 0,
+            })
+            .with_covers(3, 1_572_864);
         let block = done_with_library(&api, &library, "library stat");
         let text = text_of_block(&block);
 
@@ -2833,6 +2870,22 @@ mod tests {
         assert!(text.contains("艺人 · 2"), "{text}");
         assert!(text.contains("总时长 · 1 小时 2 分"), "{text}");
         assert!(text.contains("最近扫描 · 从未扫描"), "{text}");
+        // 3 个文件 / 1.5 MB：字节数按 1024² 换算，保留一位小数。
+        assert!(text.contains("封面缓存 · 3 个文件 / 1.5 MB"), "{text}");
+        assert_eq!(
+            library.calls(),
+            vec![LibraryCall::Stats, LibraryCall::Covers]
+        );
+    }
+
+    #[test]
+    fn library_stat_reports_zero_cover_cache() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "library stat");
+        let text = text_of_block(&block);
+
+        assert!(text.contains("封面缓存 · 0 个文件 / 0.0 MB"), "{text}");
     }
 
     #[test]
@@ -2989,7 +3042,10 @@ mod tests {
         let block = done_with_library(&api, &library, "lib stat");
 
         assert_eq!(block.status, BlockStatus::Done);
-        assert_eq!(library.calls(), vec![LibraryCall::Stats]);
+        assert_eq!(
+            library.calls(),
+            vec![LibraryCall::Stats, LibraryCall::Covers]
+        );
     }
 
     // ---- 扫描进度（节流 + 块状态） ----
