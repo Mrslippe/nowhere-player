@@ -155,6 +155,8 @@
   padding: 0 var(--sp-3);
   border-bottom: 1px solid var(--line);
   background: var(--bg);
+  /* 补全弹层相对输入行定位（T-0020）。 */
+  position: relative;
 }
 
 .np-lab__prompt {
@@ -188,6 +190,64 @@
 
 .np-lab__input::placeholder {
   color: var(--fg-faint);
+}
+
+/* ── Tab 补全弹层（T-0020 §6.3） ───────────────────────── */
+/* 输入行在窗口底部，弹层向上展开，避免盖住 ⏎ 与评分面板。 */
+.np-lab__completion {
+  position: absolute;
+  left: var(--sp-3);
+  right: var(--sp-3);
+  bottom: calc(100% + var(--sp-1));
+  z-index: 20;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--sp-1) 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+}
+
+.np-lab__completion-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  cursor: default;
+}
+
+.np-lab__completion-item[data-active="true"] {
+  background: var(--bg-hover);
+}
+
+.np-lab__completion-text {
+  flex: none;
+  min-width: 72px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.np-lab__completion-kind {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  line-height: 1.4;
+}
+
+.np-lab__completion-summary {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .np-lab__run {

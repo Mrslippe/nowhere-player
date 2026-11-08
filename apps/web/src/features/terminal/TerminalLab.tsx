@@ -285,7 +285,11 @@ export function TerminalLab({
 
       <TerminalStage variant={variant} blocks={blocks} />
 
-      <CommandInput onSubmit={submit} />
+      <CommandInput
+        onSubmit={submit}
+        complete={(input, cursor) => bridge.complete(input, cursor)}
+        persistHistory={persist}
+      />
 
       <ScorePanel
         scores={scores}

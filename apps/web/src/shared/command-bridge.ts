@@ -26,6 +26,45 @@ export const CMD_EXEC_COMMAND = "cmd.exec";
 /** 事件名（冒号，T-0018 冻结）。 */
 export const TERMINAL_BLOCK_EVENT = "terminal:block";
 
+/** 补全命令名（点号，T-0020）。 */
+export const CMD_COMPLETE_COMMAND = "cmd.complete";
+
+/** 补全候选来源（与 `np_core::command::CompletionKind` 的 camelCase 序列化一致）。 */
+export type CompletionKind =
+  | "command"
+  | "subcommand"
+  | "enum"
+  | "dynamic"
+  | "suggestion";
+
+/** 一条补全候选。 */
+export interface CompletionItem {
+  /** 采纳后替换 `replaceStart..replaceEnd` 的文本。 */
+  text: string;
+  kind: CompletionKind;
+  /** 一行说明。 */
+  summary: string;
+}
+
+/**
+ * 一次补全结果（T-0020 §6.1）。
+ *
+ * `replaceStart` / `replaceEnd` 与请求里的 `cursor` 都是**字符（码点）偏移**，
+ * 不是 `selectionStart` 的 UTF-16 偏移，也不是字节偏移。
+ * 无候选时 `items` 为空，区间仍然给出。
+ */
+export interface Completion {
+  replaceStart: number;
+  replaceEnd: number;
+  items: CompletionItem[];
+}
+
+/** `cmd.complete` 的入参。`cursor` 是字符偏移。 */
+export interface CompleteArgs {
+  input: string;
+  cursor: number;
+}
+
 /** 归一化后的失败：UI 只认 `{ code, message }`（与 `player-bridge` 同形）。 */
 export interface CommandError {
   code: string;
@@ -66,6 +105,11 @@ export interface CommandTransport {
   exec(args: ExecArgs): Promise<ExecReply>;
   /** 订阅块事件；返回取消函数。 */
   listenBlocks(handler: BlockHandler): Promise<Unsubscribe>;
+  /**
+   * 请求补全。可选：T-0019 之前的测试夹具只关心 exec/事件，
+   * 缺省时桥退回空列表（不弹层、不改变输入）。
+   */
+  complete?(args: CompleteArgs): Promise<Completion>;
 }
 
 export interface CommandBridgeOptions {
@@ -82,6 +126,11 @@ export interface CommandBridge {
   exec(input: string, blockId: string): Promise<ExecReply>;
   /** 订阅块事件（含 `running` 与最终块）；返回取消函数，重复调用安全。 */
   subscribeBlocks(handler: BlockHandler): Unsubscribe;
+  /**
+   * 请求补全（`cmd.complete`）。`cursor` 是字符偏移。
+   * 失败抛 {@link CommandError}；调用方负责降级（关弹层、不改输入）。
+   */
+  complete(input: string, cursor: number): Promise<Completion>;
 }
 
 /** 当前是否跑在 Tauri 运行时里（浏览器预览为 false）。 */
@@ -156,6 +205,15 @@ const tauriTransport: CommandTransport = {
 
     return off;
   },
+
+  async complete({ input, cursor }) {
+    try {
+      const raw = await invoke<unknown>(CMD_COMPLETE_COMMAND, { input, cursor });
+      return normalizeCompletion(raw, cursor);
+    } catch (error) {
+      throw toCommandError(error);
+    }
+  },
 };
 
 /** 回执校验：只认 `{ blockId: string, ok: boolean }`。 */
@@ -171,6 +229,75 @@ function normalizeReply(raw: unknown): ExecReply {
     code: "E_UNKNOWN",
     message: "cmd.exec 返回了非法回执",
   } satisfies CommandError;
+}
+
+const COMPLETION_KINDS: readonly CompletionKind[] = [
+  "command",
+  "subcommand",
+  "enum",
+  "dynamic",
+  "suggestion",
+];
+
+function isCompletionKind(value: unknown): value is CompletionKind {
+  return (
+    typeof value === "string" &&
+    (COMPLETION_KINDS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * 补全回执校验：形状不对就当作“没有候选”，绝不把脏数据交给弹层。
+ *
+ * 坐标单位是字符偏移；后端返回负数 / 非整数时回落到 `cursor`。
+ */
+function normalizeCompletion(raw: unknown, cursor: number): Completion {
+  if (typeof raw !== "object" || raw === null) {
+    return emptyCompletion(cursor);
+  }
+
+  const value = raw as Record<string, unknown>;
+  const replaceStart = toCharIndex(value.replaceStart, cursor);
+  const replaceEnd = Math.max(
+    replaceStart,
+    toCharIndex(value.replaceEnd, replaceStart),
+  );
+  const items = Array.isArray(value.items)
+    ? value.items.flatMap((entry) => normalizeItem(entry))
+    : [];
+
+  return { replaceStart, replaceEnd, items };
+}
+
+function toCharIndex(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function normalizeItem(raw: unknown): CompletionItem[] {
+  if (typeof raw !== "object" || raw === null) {
+    return [];
+  }
+
+  const value = raw as Record<string, unknown>;
+  if (typeof value.text !== "string" || value.text === "") {
+    return [];
+  }
+
+  return [
+    {
+      text: value.text,
+      // 未知类型并入“命令”；只影响标签，不影响替换。
+      kind: isCompletionKind(value.kind) ? value.kind : "command",
+      summary: typeof value.summary === "string" ? value.summary : "",
+    },
+  ];
+}
+
+/** 空补全：没有候选，也不改动输入（浏览器预览与通道缺省时用）。 */
+export function emptyCompletion(cursor: number): Completion {
+  return { replaceStart: cursor, replaceEnd: cursor, items: [] };
 }
 
 /**
@@ -219,6 +346,11 @@ function createMockBridge(fallback: FallbackRunner | undefined): CommandBridge {
       return () => {
         handlers.delete(handler);
       };
+    },
+
+    // 浏览器预览没有后端补全表：返回空列表，Tab 不弹层、不改输入。
+    async complete(_input, cursor) {
+      return emptyCompletion(cursor);
     },
   };
 }
@@ -283,6 +415,22 @@ function createTransportBridge(transport: CommandTransport): CommandBridge {
 
       try {
         return await transport.exec({ input, blockId });
+      } catch (error) {
+        throw toCommandError(error);
+      }
+    },
+
+    async complete(input, cursor) {
+      // 补全不依赖块事件订阅：通道没实现就当作“无候选”，绝不等待 `ready`。
+      if (transport.complete === undefined) {
+        return emptyCompletion(cursor);
+      }
+
+      try {
+        return normalizeCompletion(
+          await transport.complete({ input, cursor }),
+          cursor,
+        );
       } catch (error) {
         throw toCommandError(error);
       }

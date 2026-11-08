@@ -1,0 +1,232 @@
+/**
+ * Tab 补全的纯逻辑（T-0020 §6.1 / §6.3）。
+ *
+ * 后端给的区间是**字符**偏移；`<input>` 的 `selectionStart` 是 UTF-16 偏移。
+ * 中文这类 BMP 字符两者相同，但 emoji 之类的代理对会差 1，所以这里统一换算，
+ * 不在组件里手写 `slice`。
+ *
+ * 弹层交互也做成纯函数：`decideKey` 按「弹层是否打开」决定按键归属
+ * （弹层打开时 ↑/↓ 归弹层，关闭时归历史），组件只负责更新状态。
+ */
+import type { Completion, CompletionItem } from "../../shared/command-bridge";
+
+/** Tab 弹层最多显示的候选条数（T-0020 §6.3）。 */
+export const POPUP_LIMIT = 8;
+
+/** 打开的补全弹层：候选与当前高亮下标（相对可见列表）。 */
+export interface CompletionPopupState {
+  completion: Completion;
+  activeIndex: number;
+}
+
+/** 字符（码点）个数。 */
+export function charLength(text: string): number {
+  return [...text].length;
+}
+
+/** UTF-16 偏移 → 字符偏移（越界钳制；代理对中间按前一个码点算）。 */
+export function toCharOffset(text: string, utf16Offset: number): number {
+  const limit = Math.max(0, Math.min(utf16Offset, text.length));
+  let utf16Index = 0;
+  let chars = 0;
+
+  for (const character of text) {
+    if (utf16Index + character.length > limit) {
+      break;
+    }
+    utf16Index += character.length;
+    chars += 1;
+  }
+
+  return chars;
+}
+
+/** 字符偏移 → UTF-16 偏移（越界钳制）。 */
+export function fromCharOffset(text: string, charOffset: number): number {
+  let utf16Index = 0;
+  let chars = 0;
+
+  for (const character of text) {
+    if (chars >= charOffset) {
+      break;
+    }
+    utf16Index += character.length;
+    chars += 1;
+  }
+
+  return utf16Index;
+}
+
+/** 只保留弹层可见的候选（最多 {@link POPUP_LIMIT} 条）。 */
+export function visibleItems(completion: Completion): CompletionItem[] {
+  return completion.items.slice(0, POPUP_LIMIT);
+}
+
+/**
+ * 收到补全结果 → 弹层状态。
+ *
+ * 无候选返回 `null`：不弹层、不改变输入（T-0020 §6.3）。
+ */
+export function openCompletion(
+  completion: Completion,
+): CompletionPopupState | null {
+  const items = visibleItems(completion);
+  if (items.length === 0) {
+    return null;
+  }
+
+  return {
+    completion: { ...completion, items },
+    activeIndex: 0,
+  };
+}
+
+/** 高亮上/下移，循环（`delta` 为 ±1 或任意整数）。 */
+export function moveCompletion(
+  state: CompletionPopupState,
+  delta: number,
+): CompletionPopupState {
+  const count = state.completion.items.length;
+  if (count === 0) {
+    return state;
+  }
+
+  return {
+    ...state,
+    activeIndex: (((state.activeIndex + delta) % count) + count) % count,
+  };
+}
+
+/** 当前高亮的候选；空列表为 `null`。 */
+export function activeItem(
+  state: CompletionPopupState,
+): CompletionItem | null {
+  return state.completion.items[state.activeIndex] ?? null;
+}
+
+/**
+ * 采纳一条候选：只替换 `replaceStart..replaceEnd` 这一段 token。
+ *
+ * 命令 / 子命令 / 建议后补一个空格，方便接着按 Tab；枚举值与序号不补。
+ * 若 token 后面已经有空白（光标在行中间），不再重复补空格。
+ *
+ * 返回的 `caret` 是 **UTF-16** 偏移，可直接给 `setSelectionRange`。
+ */
+export function applyCompletion(
+  input: string,
+  completion: Completion,
+  item: CompletionItem,
+): { value: string; caret: number } {
+  const start = fromCharOffset(input, Math.max(0, completion.replaceStart));
+  const end = Math.max(
+    start,
+    fromCharOffset(input, Math.max(0, completion.replaceEnd)),
+  );
+  const rest = input.slice(end);
+  const needsSpace =
+    item.kind !== "enum" &&
+    item.kind !== "dynamic" &&
+    !/^\s/.test(rest);
+  const inserted = needsSpace ? `${item.text} ` : item.text;
+
+  return {
+    value: `${input.slice(0, start)}${inserted}${rest}`,
+    caret: start + inserted.length,
+  };
+}
+
+/** 组件识别的按键（已排除 IME 组合输入）。 */
+export type InputKey = "tab" | "arrow-up" | "arrow-down" | "enter" | "escape";
+
+/** 一次按键的决策结果；组件据此更新状态与光标，不再自己判断归属。 */
+export interface KeyDecision {
+  /** 按键之后的弹层状态（`null` = 关闭）。 */
+  popup: CompletionPopupState | null;
+  /** 需要请求一次补全（Tab 且弹层未打开）。 */
+  requestCompletion: boolean;
+  /** 历史翻页方向：-1 上一条、+1 下一条、0 不动。 */
+  historyStep: -1 | 0 | 1;
+  /** 已采纳的输入与光标（UTF-16）；`null` = 不采纳。 */
+  adopt: { value: string; caret: number } | null;
+  /** 弹层关闭时按 Enter：交给表单提交。 */
+  submit: boolean;
+}
+
+const NO_OP: KeyDecision = {
+  popup: null,
+  requestCompletion: false,
+  historyStep: 0,
+  adopt: null,
+  submit: false,
+};
+
+/**
+ * 按键归属（T-0020 §11）：
+ *
+ * - 弹层打开：`↑/↓` 移动高亮、`Tab` 循环、`Enter` 采纳、`Esc` 关闭；
+ * - 弹层关闭：`↑/↓` 翻历史、`Enter` 提交、`Tab` 请求补全。
+ */
+export function decideKey(
+  key: InputKey,
+  input: string,
+  popup: CompletionPopupState | null,
+): KeyDecision {
+  switch (key) {
+    case "tab": {
+      if (popup === null) {
+        return { ...NO_OP, popup: null, requestCompletion: true };
+      }
+      return { ...NO_OP, popup: moveCompletion(popup, 1) };
+    }
+
+    case "arrow-up": {
+      if (popup === null) {
+        return { ...NO_OP, historyStep: -1 };
+      }
+      return { ...NO_OP, popup: moveCompletion(popup, -1) };
+    }
+
+    case "arrow-down": {
+      if (popup === null) {
+        return { ...NO_OP, historyStep: 1 };
+      }
+      return { ...NO_OP, popup: moveCompletion(popup, 1) };
+    }
+
+    case "enter": {
+      if (popup === null) {
+        return { ...NO_OP, submit: true };
+      }
+      const item = activeItem(popup);
+      return {
+        ...NO_OP,
+        popup: null,
+        adopt:
+          item === null
+            ? null
+            : applyCompletion(input, popup.completion, item),
+      };
+    }
+
+    case "escape":
+      return { ...NO_OP, popup: null };
+  }
+}
+
+/** DOM `KeyboardEvent.key` → {@link InputKey}；不认识的返回 `null`。 */
+export function toInputKey(key: string): InputKey | null {
+  switch (key) {
+    case "Tab":
+      return "tab";
+    case "ArrowUp":
+      return "arrow-up";
+    case "ArrowDown":
+      return "arrow-down";
+    case "Enter":
+      return "enter";
+    case "Escape":
+      return "escape";
+    default:
+      return null;
+  }
+}
