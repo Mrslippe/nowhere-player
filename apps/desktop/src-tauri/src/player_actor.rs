@@ -949,6 +949,31 @@ mod tests {
         assert_eq!(state.queue_index, None);
     }
 
+    #[test]
+    fn next_on_the_last_track_with_repeat_off_marks_ended_without_moving() {
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::new(sink.clone());
+        actor.queue_add(vec!["a".into(), "b".into()]).unwrap();
+        assert_eq!(actor.queue.jump(1), Some(1));
+
+        // 队列上没有打开过 player：`repeat = off` 的末尾不越界，置 ended。
+        let state = actor.next_track().expect("last track must not error");
+        assert_eq!(state.status, PlaybackStatus::Ended);
+        assert_eq!(actor.queue.position(), Some(1), "cursor stays on the last");
+        assert_eq!(state.queue_index, Some(1));
+        assert_eq!(sink.last_state().unwrap().status, PlaybackStatus::Ended);
+
+        // `repeat = all` 的下一步会回绕到第一首（决策由纯函数给出）。
+        actor
+            .set_mode(PlaybackMode {
+                repeat: RepeatMode::All,
+                shuffle: false,
+            })
+            .unwrap();
+        assert_eq!(actor.queue.next(), QueueStep::Open(0));
+        assert_eq!(actor.queue.position(), Some(0));
+    }
+
     /// 端到端切歌：真实 `Player` + 临时 wav。
     ///
     /// 需要音频设备；无设备环境（如 CI 的 Ubuntu runner）会先探测并跳过。
