@@ -43,6 +43,9 @@ pub fn run() {
             ipc::library_stats,
             ipc::library_cover_url,
             ipc::library_track_by_path,
+            ipc::theme_list,
+            ipc::theme_apply,
+            ipc::theme_export_builtin,
             command_exec::cmd_exec,
             command_exec::cmd_complete,
         ])
