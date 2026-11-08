@@ -18,14 +18,19 @@
 }
 
 /* ── 顶栏 ───────────────────────────────────────────── */
+/*
+ * 自绘标题栏（T-0032 §6.4）：34px，和原来的实验顶栏合并成一条，不新增栏。
+ * 整条 `data-tauri-drag-region="deep"` 可拖动，按钮自己拦拖拽。
+ */
 .np-lab__topbar {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--sp-2);
-  height: 36px;
+  height: 34px;
   padding: 0 var(--sp-3);
   border-bottom: var(--np-border-hairline);
+  user-select: none;
 }
 
 .np-lab__brand {
@@ -86,6 +91,64 @@ html[data-theme="phosphor"]
 
 .np-lab__spacer {
   flex: 1 1 auto;
+}
+
+/* 右侧窗口按钮：最小化 / 隐藏到托盘。32×24，hover 有底色。 */
+.np-lab__window-controls {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  margin-left: var(--sp-1);
+}
+
+.np-lab__window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--np-radius-control-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.np-lab__window-btn svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+.np-lab__window-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.np-lab__window-btn:active {
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+
+/* 关闭是「隐藏到托盘」，仍按关闭键的惯例给 danger 底色。 */
+.np-lab__window-btn--close:hover {
+  background: var(--danger);
+  color: var(--accent-fg);
+}
+
+.np-lab__window-btn--close:active {
+  background: var(--danger);
+  color: var(--accent-fg);
+  filter: brightness(0.94);
 }
 
 /* ── 终端区域 ───────────────────────────────────────── */

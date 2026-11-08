@@ -11,6 +11,7 @@ import {
   copyToClipboard,
 } from "./components/export";
 import { ScorePanel } from "./components/ScorePanel";
+import { WindowControls } from "./components/WindowControls";
 import {
   DEFAULT_SCORES,
   loadScores,
@@ -277,7 +278,7 @@ export function TerminalLab({
 
   return (
     <div className="np-lab" data-testid="terminal-lab" data-variant={variant}>
-      <header className="np-lab__topbar">
+      <header className="np-lab__topbar" data-tauri-drag-region="deep">
         <span className="np-lab__brand">终端对比实验室</span>
 
         <div className="np-lab__group" role="group" aria-label="渲染视图">
@@ -315,6 +316,8 @@ export function TerminalLab({
         <Button variant="ghost" size="sm" onClick={clearBlocks}>
           清空
         </Button>
+
+        <WindowControls />
       </header>
 
       <TerminalStage variant={variant} blocks={blocks} />

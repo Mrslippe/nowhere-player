@@ -15,8 +15,8 @@ const APP_ENTRY: &str = "index.html";
 /// 外壳参数（T-0032）：
 /// - `decorations(false)`：桌面挂件不需要系统标题栏。
 /// - `resizable(false)`：产品不需要改宽高。Win32 层同时去掉 `WS_THICKFRAME`
-///   （tao 的 `WM_NCHITTEST` 只在 `RESIZABLE` 时处理边缘拖拽），因此边缘
-///   resize 热区与 Windows 11 给厚边框窗口画的 1px 边框/圆角一起消失。
+///   （tao 的 `WM_NCHITTEST` 只在 `RESIZABLE` 时处理边缘拖拽），边缘 resize
+///   热区因此消失；Windows 11 的 1px 亮边/圆角是否随之消失，需真机确认。
 /// - `shadow(false)`：无边框窗不要 DWM 阴影，避免阴影内缩带来的视觉描边。
 ///
 /// 这里**没有**启用 `transparent`：透明窗有合成开销与点击穿透风险，先按
@@ -65,19 +65,28 @@ pub(crate) fn hide_player(app: &AppHandle) {
     }
 }
 
-/// 播放器关窗拦截为隐藏；焦点变化时切换窗口级快捷键的注册状态。
+/// 播放器关窗拦截为隐藏；终端窗的关闭同样收起到托盘。
 pub(crate) fn on_window_event(window: &Window, event: &WindowEvent) {
-    if window.label() != PLAYER_LABEL {
-        return;
-    }
-
-    match event {
-        WindowEvent::CloseRequested { api, .. } => {
-            api.prevent_close();
-            hide_player(window.app_handle());
-        }
-        WindowEvent::Focused(focused) => {
-            shortcut::set_player_focused(window.app_handle(), *focused);
+    match window.label() {
+        PLAYER_LABEL => match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                hide_player(window.app_handle());
+            }
+            WindowEvent::Focused(focused) => {
+                shortcut::set_player_focused(window.app_handle(), *focused);
+            }
+            _ => {}
+        },
+        // T-0032：终端窗没有系统标题栏，Alt+F4 / 系统关闭也按「隐藏到托盘」处理，
+        // 保留终端历史；自绘关闭按钮走前端 window.hide()。
+        TERMINAL_LABEL => {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Err(error) = window.hide() {
+                    eprintln!("[window] terminal hide failed: {error}");
+                }
+            }
         }
         _ => {}
     }
@@ -99,7 +108,9 @@ fn create_terminal(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, TERMINAL_LABEL, WebviewUrl::App(APP_ENTRY.into()))
         .title("Nowhere Player — Terminal")
         .inner_size(880.0, 560.0)
-        .decorations(true)
+        // T-0032 §6.4：系统标题栏太突兀，改由页内顶栏自绘（34px）。
+        .decorations(false)
+        .shadow(false)
         .visible(false)
         .center()
         .build()

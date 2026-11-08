@@ -107,6 +107,15 @@ describe("TerminalLab 三种视图", () => {
     expect(counts).toHaveLength(2);
   });
 
+  it("顶栏是自绘标题栏：整条可拖动，右侧有最小化/隐藏到托盘", () => {
+    const html = renderLab("blocks", []);
+
+    expect(html).toContain('data-tauri-drag-region="deep"');
+    expect(html).toContain('data-tauri-drag-region="false"');
+    expect(html).toContain('aria-label="最小化"');
+    expect(html).toContain('aria-label="隐藏到托盘"');
+  });
+
   it("TerminalView 渲染实验室视图，不抛错", () => {
     const html = renderToStaticMarkup(<TerminalView />);
 
