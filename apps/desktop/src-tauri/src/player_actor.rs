@@ -733,6 +733,9 @@ impl<S: EventSink> PlayerActor<S> {
             self.recover_decode(message, position);
             return;
         }
+        // 本 tick 没有新的解码错误：复位重试预算，避免同一个错误反复重开。
+        // 预算在下一次健康 tick 才复位，重开后立刻再次出错仍会落 `E_DECODE`。
+        self.decode_retries = 0;
 
         if ended && self.machine.is_playing() {
             // 自然播完：`repeat = one` 在这里生效（T-0016 §2.3）。
@@ -782,8 +785,8 @@ impl<S: EventSink> PlayerActor<S> {
 
     /// 设备侧失败：先释放旧输出流，再用当前默认设备重开当前曲目并 seek 回原位。
     ///
-    /// 成功保持原来的播放/暂停状态；失败置 `E_DEVICE_LOST`，队列保留，
-    /// 用户 `play` 可重试（T-0016 §2.1）。
+    /// 成功按原状态恢复（播放中继续播、暂停保持暂停、已播完保持 `ended`）；
+    /// 失败置 `E_DEVICE_LOST`，队列保留，用户 `play` 可重试（T-0016 §2.1）。
     fn recover_device_lost(&mut self, position_ms: u64) {
         let was_playing = self.machine.is_playing();
         let Some(index) = self.queue.position() else {
@@ -807,8 +810,8 @@ impl<S: EventSink> PlayerActor<S> {
 
     /// 解码线程死亡：重开当前曲目并 seek 回原位置，最多重试 [`DECODE_MAX_RETRIES`] 次。
     ///
-    /// 重试再失败（或预算已用尽）置 `E_DECODE`；成功时 [`Self::reopen_at`] 会
-    /// 清空错误状态并复位重试计数（T-0016 §2.2）。
+    /// 重试再失败（或预算已用尽）置 `E_DECODE`；成功后 [`Self::reopen_at`] 清空
+    /// 错误状态，重试预算留到下一次健康 tick 复位（T-0016 §2.2）。
     fn recover_decode(&mut self, message: String, position_ms: u64) {
         if self.machine.is_playing() && self.decode_retries < DECODE_MAX_RETRIES {
             self.decode_retries += 1;
@@ -839,6 +842,7 @@ impl<S: EventSink> PlayerActor<S> {
     /// 设备变化与解码恢复共用（T-0016 §2.1/§2.2）：始终先 `self.player = None`
     /// 再 `Player::open`，两个 cpal 输出流不能同时在世（T-0015 §11）。
     /// `seek` 失败不阻断恢复，继续播放（卡 §6）；位置钳制到 `duration_ms`（卡 §11）。
+    /// 成功后按原状态恢复：播放中继续播、暂停保持暂停、已播完保持 `ended`。
     fn reopen_at(
         &mut self,
         index: usize,
@@ -863,7 +867,6 @@ impl<S: EventSink> PlayerActor<S> {
         self.player = Some(player);
 
         self.observed_device = self.devices.default_output();
-        self.decode_retries = 0;
         self.sync_queue_state();
 
         if resume_playing {
@@ -876,6 +879,10 @@ impl<S: EventSink> PlayerActor<S> {
                 return Err(error);
             }
             let event = self.machine.play(actual);
+            self.emit(event);
+        } else if self.machine.snapshot().status == PlaybackStatus::Ended {
+            // 播完后换设备：重开只为保住可用输出流，状态仍是 ended。
+            let event = self.machine.end(actual);
             self.emit(event);
         } else {
             let event = self.machine.pause(actual);
@@ -1271,7 +1278,15 @@ mod tests {
             state.error.is_none(),
             "successful recovery clears the error"
         );
-        assert_eq!(actor.decode_retries, 0);
+        assert_eq!(
+            actor.decode_retries, DECODE_MAX_RETRIES,
+            "the retry budget stays consumed until the next healthy tick"
+        );
+        actor.tick();
+        assert_eq!(
+            actor.decode_retries, 0,
+            "a healthy tick resets the retry budget"
+        );
         assert!(actor.player.is_some(), "recovery keeps a live player");
         assert!(
             state.position_ms >= 650,
