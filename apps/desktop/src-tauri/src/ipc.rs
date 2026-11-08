@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use np_core::{PlaybackMode, PlaybackState, PlayerError, QueueView};
 use np_library::{Stats, Track};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::command_exec::{
     CmdErrorPayload, EventObserver, LibraryApi, LibraryHandle, LibraryObserver, MAX_SEARCH_RESULTS,
