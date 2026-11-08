@@ -1,0 +1,36 @@
+/*
+ * 字体与字号阶。
+ * UI 走系统栈（Inter 优先），终端走等宽栈；M0 不打包字体文件。
+ */
+
+:root {
+  /* UI：Inter → SF Pro → Segoe UI → 平台 sans */
+  --font-ui: Inter, "SF Pro Text", "Segoe UI", system-ui, -apple-system,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  /* 终端：JetBrains Mono → SF Mono → Cascadia Code → 通用等宽 */
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", monospace;
+
+  /* 字号阶：10 / 12 / 13 / 15 / 20（终端正文 13，UI 12–15） */
+  --fs-10: 10px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-15: 15px;
+  --fs-20: 20px;
+
+  /* 行高与字距 */
+  --lh-tight: 1.25;
+  --lh-base: 1.55;
+  --tracking-caps: 0.08em;
+}
+
+/* 数字等宽：时间、进度、表格数字对齐 */
+.np-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 等宽文本：终端输出、Kbd、命令示例 */
+.np-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
