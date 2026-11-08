@@ -20,13 +20,21 @@ pub enum ArgKind {
 }
 
 impl ArgKind {
-    /// 这段文本是否符合该形状。
-    pub(crate) fn accepts(self, text: &str) -> bool {
+    /// 校验形状并返回要存进 [`crate::Parsed::positional`] 的值。
+    ///
+    /// 文本、整数与播放位置原样保留；枚举返回命令表里的**规范值**
+    /// （大小写不敏感匹配，`ALL` → `all`），让执行层不必自己归一化。
+    pub(crate) fn normalize(self, text: &str) -> Option<String> {
         match self {
-            Self::Text => true,
-            Self::Integer => is_signed_integer(text),
-            Self::SeekPosition => is_seek_position(text),
-            Self::Enum(values) => values.iter().any(|value| value.eq_ignore_ascii_case(text)),
+            Self::Text => Some(text.to_owned()),
+            Self::Integer if is_signed_integer(text) => Some(text.to_owned()),
+            Self::Integer => None,
+            Self::SeekPosition if is_seek_position(text) => Some(text.to_owned()),
+            Self::SeekPosition => None,
+            Self::Enum(values) => values
+                .iter()
+                .find(|value| value.eq_ignore_ascii_case(text))
+                .map(|value| (*value).to_owned()),
         }
     }
 
@@ -159,6 +167,14 @@ impl Registry {
 impl Default for Registry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl Registry {
+    /// 测试专用：用自定义命令表构造，覆盖 v1 表里尚未出现的形状。
+    pub(crate) const fn from_specs(specs: &'static [CommandSpec]) -> Self {
+        Self { specs }
     }
 }
 
