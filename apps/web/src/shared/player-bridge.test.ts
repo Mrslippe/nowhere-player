@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   invokePlayer,
   isTauriRuntime,
+  PLAYER_POSITION_EVENT,
+  PLAYER_STATE_EVENT,
   resetMockPlayer,
   subscribe,
   toPlayerError,
 } from "./player-bridge";
-import type { PlaybackState } from "./player-bridge";
+import type { PlaybackState, PlayerCommandName } from "./player-bridge";
 
 beforeEach(() => {
   resetMockPlayer();
@@ -15,6 +17,21 @@ beforeEach(() => {
 afterEach(() => {
   resetMockPlayer();
   vi.useRealTimers();
+});
+
+describe("冻结的线上契约", () => {
+  it("事件名是 模块:事件，不含点号（Tauri 会拒绝 IllegalEventName）", () => {
+    expect(PLAYER_STATE_EVENT).toBe("player:state");
+    expect(PLAYER_POSITION_EVENT).toBe("player:position");
+    expect(PLAYER_STATE_EVENT).not.toContain(".");
+    expect(PLAYER_POSITION_EVENT).not.toContain(".");
+  });
+
+  it("未知命令也被归一成 { code, message }，不会静默成功", async () => {
+    await expect(
+      invokePlayer("player.unknown" as PlayerCommandName),
+    ).rejects.toMatchObject({ code: "E_UNSUPPORTED" });
+  });
 });
 
 describe("player-bridge 在浏览器 / node（无 Tauri）下退化为 mock", () => {
