@@ -18,9 +18,7 @@ pub use format::{
     AudioFormat, Codec, DeviceCaps, SampleFormat, frames_to_ms, ms_to_frames, negotiate,
 };
 pub use resample::{GainPolicy, ProcessingPlan};
-pub use sink::{
-    AudioSink, CpalDevices, CpalSharedSink, DeviceInfo, DeviceProvider, RenderFn,
-};
+pub use sink::{AudioSink, CpalDevices, CpalSharedSink, DeviceInfo, DeviceProvider, RenderFn};
 pub use source::{AudioSource, FileSource};
 pub use volume::{clamp_volume, gain_for_volume};
 
@@ -50,6 +48,19 @@ impl Player {
     /// 暂停。已解码但未播放的样本保留在环形缓冲里，继续时立即接着放。
     pub fn pause(&self) -> Result<(), AudioError> {
         self.engine.pause()
+    }
+
+    /// 跳转到 `position_ms`（毫秒）。
+    ///
+    /// 先淡出旧位置，再清空缓冲并按新位置重新解码，避免爆音和旧样本残留。
+    /// 位置以解码器实际到达的位置为准（采样级误差 ≤ 一个 packet）。
+    pub fn seek(&self, position_ms: u64) -> Result<(), AudioError> {
+        self.engine.seek(position_ms)
+    }
+
+    /// 停止：淡出、清空缓冲并回到 0 位置（保持暂停）。
+    pub fn stop(&self) -> Result<(), AudioError> {
+        self.engine.stop()
     }
 
     /// 设置音量（0.0–1.0，感知曲线 `gain = v^3`）。

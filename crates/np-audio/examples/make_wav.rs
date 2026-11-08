@@ -14,10 +14,24 @@ use std::io::{BufWriter, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let path = args.next().unwrap_or_else(|| "target/sine-44100.wav".into());
-    let rate: u32 = args.next().map(|value| value.parse()).transpose()?.unwrap_or(44_100);
-    let seconds: u32 = args.next().map(|value| value.parse()).transpose()?.unwrap_or(5);
-    let channels: u16 = args.next().map(|value| value.parse()).transpose()?.unwrap_or(2);
+    let path = args
+        .next()
+        .unwrap_or_else(|| "target/sine-44100.wav".into());
+    let rate: u32 = args
+        .next()
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(44_100);
+    let seconds: u32 = args
+        .next()
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(5);
+    let channels: u16 = args
+        .next()
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(2);
 
     let frames = rate * seconds;
     let mut samples = Vec::with_capacity((frames as usize) * usize::from(channels));
@@ -61,8 +75,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     out.flush()?;
 
-    println!(
-        "wrote {path}: {rate} Hz, {channels} ch, {seconds} s, 440 Hz sine (16-bit PCM)"
-    );
+    println!("wrote {path}: {rate} Hz, {channels} ch, {seconds} s, 440 Hz sine (16-bit PCM)");
     Ok(())
 }

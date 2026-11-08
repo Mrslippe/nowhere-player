@@ -6,12 +6,12 @@
 use std::fs::File;
 use std::path::Path;
 
+use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::well_known::{
     CODEC_ID_AAC, CODEC_ID_ALAC, CODEC_ID_FLAC, CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3,
     CODEC_ID_VORBIS,
 };
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
-use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
@@ -71,12 +71,7 @@ impl FileSource {
             hint.with_extension(extension);
         }
         let reader = symphonia_default::get_probe()
-            .probe(
-                &hint,
-                source,
-                Default::default(),
-                Default::default(),
-            )
+            .probe(&hint, source, Default::default(), Default::default())
             .map_err(|err| AudioError::UnsupportedFormat(format!("{}: {err}", path.display())))?;
 
         let (track_id, params, num_frames, duration, time_base, short_name) = {
@@ -109,13 +104,15 @@ impl FileSource {
         let format = AudioFormat::new(sample_rate, channels as u16, SampleFormat::F32);
         let codec = codec_from_params(params.codec, short_name);
 
-        let duration_ms = num_frames.map(|frames| frames_to_ms(frames, sample_rate)).or_else(|| {
-            let time_base = time_base?;
-            let duration = duration?;
-            time_base
-                .calc_duration(duration)
-                .map(|time| time.as_millis().max(0) as u64)
-        });
+        let duration_ms = num_frames
+            .map(|frames| frames_to_ms(frames, sample_rate))
+            .or_else(|| {
+                let time_base = time_base?;
+                let duration = duration?;
+                time_base
+                    .calc_duration(duration)
+                    .map(|time| time.as_millis().max(0) as u64)
+            });
 
         let decoder = symphonia_default::get_codecs()
             .make_audio_decoder(&params, &AudioDecoderOptions::default())
@@ -234,7 +231,10 @@ impl AudioSource for FileSource {
     }
 }
 
-fn codec_from_params(codec: symphonia::core::codecs::audio::AudioCodecId, short_name: &str) -> Codec {
+fn codec_from_params(
+    codec: symphonia::core::codecs::audio::AudioCodecId,
+    short_name: &str,
+) -> Codec {
     match codec {
         CODEC_ID_FLAC => Codec::Flac,
         CODEC_ID_MP1 | CODEC_ID_MP2 | CODEC_ID_MP3 => Codec::Mp3,

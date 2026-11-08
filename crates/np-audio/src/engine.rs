@@ -5,13 +5,22 @@
 //! - this thread (caller / actor): control, never touches audio data;
 //! - `np-audio-decode`: blocking decode + optional resample, fills the ring;
 //! - cpal's audio thread: runs [`Renderer::render`], pops the ring and applies
-//!   gain. It only touches atomics, a stack buffer and the ring.
+//!   the gain envelope. It only touches atomics, a stack buffer and the ring.
+//!
+//! Seeking is a four-step handshake so that no stale sample can leak into the
+//! new position:
+//!
+//! 1. control bumps `epoch` and publishes the target;
+//! 2. the renderer fades out, drains the ring and sets `drained_epoch`;
+//! 3. the decoder waits for `drained_epoch`, seeks, sets `seeked_epoch`;
+//! 4. the renderer drains once more (dropping pushes that were in flight) and
+//!    sets `ready_epoch`; only then does the decoder push new samples.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::AudioError;
 use crate::format::{AudioFormat, DeviceCaps, frames_to_ms, negotiate};
@@ -30,18 +39,39 @@ const RING_MS: u32 = 300;
 /// Frames decoded per source read. 1024 frames ≈ 21 ms at 48 kHz.
 const READ_FRAMES: usize = 1024;
 
+/// Fade ramp for play/pause/seek/stop (ARCH-006/PLAN-001: 8–15 ms).
+const FADE_MS: u32 = 12;
+
+/// How long the decoder waits for a renderer handshake before giving up.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// State shared between control, decode thread and audio callback.
 pub(crate) struct Shared {
     playing: AtomicBool,
     /// Linear gain (`v^3`), stored as f32 bits.
     gain: AtomicU32,
-    /// Frames handed to the device since playback started.
+    /// Frames handed to the device since the last seek.
     played_frames: AtomicU64,
+    /// Position of the first frame after the last seek.
+    base_ms: AtomicU64,
+    /// Decoder reached end of file.
     ended: AtomicBool,
-    /// Set once the decoder hit EOF *and* the ring was drained to the device.
+    /// The ring was played out after `ended`.
     drained: AtomicBool,
     shutdown: AtomicBool,
     underruns: AtomicU64,
+
+    /// Seek generation. Bumped by control.
+    epoch: AtomicU64,
+    /// Renderer finished fading out and drained the ring.
+    drained_epoch: AtomicU64,
+    /// Decoder finished seeking to the current epoch.
+    seeked_epoch: AtomicU64,
+    /// Renderer drained once more; the decoder may now push new samples.
+    ready_epoch: AtomicU64,
+    /// Latest seek target in milliseconds.
+    seek_request: Mutex<Option<u64>>,
+
     error: Mutex<Option<String>>,
 }
 
@@ -51,10 +81,16 @@ impl Shared {
             playing: AtomicBool::new(false),
             gain: AtomicU32::new(1.0f32.to_bits()),
             played_frames: AtomicU64::new(0),
+            base_ms: AtomicU64::new(0),
             ended: AtomicBool::new(false),
             drained: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
+            drained_epoch: AtomicU64::new(0),
+            seeked_epoch: AtomicU64::new(0),
+            ready_epoch: AtomicU64::new(0),
+            seek_request: Mutex::new(None),
             error: Mutex::new(None),
         }
     }
@@ -66,58 +102,168 @@ impl Shared {
     }
 }
 
-/// Fills the device buffer from the ring and applies gain.
+/// Fills the device buffer from the ring and applies the gain envelope.
 ///
 /// Runs on the audio thread: no allocation, no locks, no formatting.
 pub(crate) struct Renderer {
     consumer: RingConsumer,
     shared: Arc<Shared>,
     channels: usize,
+    /// Gain change per frame for a 12 ms full-scale ramp.
+    step: f32,
     gain: f32,
+    /// Last seek generation that was fully resumed.
+    handled_epoch: u64,
+    /// Seek generation currently fading out / waiting for the decoder.
+    fade_epoch: Option<u64>,
 }
 
 impl Renderer {
-    fn new(consumer: RingConsumer, shared: Arc<Shared>, channels: usize) -> Self {
+    fn new(consumer: RingConsumer, shared: Arc<Shared>, channels: usize, sample_rate: u32) -> Self {
+        let fade_frames = sample_rate as f32 * FADE_MS as f32 / 1000.0;
         Self {
             consumer,
             shared,
             channels,
+            step: 1.0 / fade_frames,
             gain: 0.0,
+            handled_epoch: 0,
+            fade_epoch: None,
         }
     }
 
     fn render(&mut self, out: &mut [f32]) {
-        let target = if self.shared.playing.load(Ordering::Relaxed) {
-            f32::from_bits(self.shared.gain.load(Ordering::Relaxed))
+        let frames = out.len() / self.channels;
+        if frames == 0 {
+            return;
+        }
+        let latest = self.shared.epoch.load(Ordering::Acquire);
+        if latest != self.handled_epoch {
+            self.fade_epoch = Some(latest);
+        }
+        match self.fade_epoch {
+            Some(epoch) => self.render_seek(out, epoch, frames),
+            None => self.render_playback(out, frames),
+        }
+    }
+
+    /// Fades old audio out, drains the ring, and waits for the decoder.
+    fn render_seek(&mut self, out: &mut [f32], epoch: u64, frames: usize) {
+        let channels = self.channels;
+        if self.gain > 0.0 {
+            let pop_frames = ((self.gain / self.step).ceil() as usize).clamp(1, frames);
+            let written = self.consumer.pop(&mut out[..pop_frames * channels]);
+            let written_frames = written / channels;
+            for frame in 0..written_frames {
+                self.apply_frame(out, frame);
+                self.gain = next_gain(self.gain, 0.0, self.step);
+            }
+            out[written_frames * channels..].fill(0.0);
+            self.shared
+                .played_frames
+                .fetch_add(written_frames as u64, Ordering::Relaxed);
+            // If the ring ran dry mid-fade, finish the ramp through silence.
+            let mut frame = written_frames;
+            while self.gain > 0.0 && frame < frames {
+                self.gain = next_gain(self.gain, 0.0, self.step);
+                frame += 1;
+            }
+            if self.gain <= 0.0 {
+                self.consumer.clear();
+                self.shared.played_frames.store(0, Ordering::Relaxed);
+                self.shared.drained_epoch.store(epoch, Ordering::Relaxed);
+            }
+        } else if self.shared.drained_epoch.load(Ordering::Relaxed) < epoch {
+            self.consumer.clear();
+            self.shared.played_frames.store(0, Ordering::Relaxed);
+            self.shared.drained_epoch.store(epoch, Ordering::Relaxed);
+        } else {
+            out.fill(0.0);
+        }
+
+        // The decoder has seeked; drop anything that was still in flight and
+        // open the gate for new samples.
+        if self.shared.seeked_epoch.load(Ordering::Acquire) >= epoch {
+            self.consumer.clear();
+            self.shared.played_frames.store(0, Ordering::Relaxed);
+            self.shared.ready_epoch.store(epoch, Ordering::Release);
+            self.handled_epoch = epoch;
+            self.fade_epoch = None;
+            self.gain = 0.0;
+            out.fill(0.0);
+        }
+    }
+
+    /// Normal playback with fade-in, volume ramps and pause fade-out.
+    fn render_playback(&mut self, out: &mut [f32], frames: usize) {
+        let shared = &self.shared;
+        let playing = shared.playing.load(Ordering::Relaxed);
+        let target = if playing {
+            f32::from_bits(shared.gain.load(Ordering::Relaxed))
         } else {
             0.0
         };
-        self.gain = target;
-        if self.gain <= 0.0 {
+        if !playing && self.gain <= 0.0 {
             out.fill(0.0);
             return;
         }
-        let written = self.consumer.pop(out);
-        for sample in &mut out[..written] {
+
+        // While pausing, only consume the frames needed for the ramp so the
+        // rest of the buffered audio is still there on resume.
+        let pop_frames = if playing {
+            frames
+        } else {
+            ((self.gain / self.step).ceil() as usize).clamp(1, frames)
+        };
+        let written = self.consumer.pop(&mut out[..pop_frames * self.channels]);
+        let written_frames = written / self.channels;
+        for frame in 0..written_frames {
+            self.apply_frame(out, frame);
+            self.gain = next_gain(self.gain, target, self.step);
+        }
+        out[written_frames * self.channels..].fill(0.0);
+        shared
+            .played_frames
+            .fetch_add(written_frames as u64, Ordering::Relaxed);
+
+        if !playing {
+            let mut frame = written_frames;
+            while self.gain > 0.0 && frame < frames {
+                self.gain = next_gain(self.gain, 0.0, self.step);
+                frame += 1;
+            }
+        }
+
+        let ended = shared.ended.load(Ordering::Relaxed);
+        if written_frames < frames
+            && playing
+            && target > 0.0
+            && !ended
+            && shared.played_frames.load(Ordering::Relaxed) > written_frames as u64
+        {
+            shared.underruns.fetch_add(1, Ordering::Relaxed);
+        }
+        if ended && written_frames == 0 {
+            shared.drained.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn apply_frame(&self, out: &mut [f32], frame: usize) {
+        let start = frame * self.channels;
+        for sample in &mut out[start..start + self.channels] {
             *sample *= self.gain;
         }
-        for sample in &mut out[written..] {
-            *sample = 0.0;
-        }
-        if written == 0 {
-            let ended = self.shared.ended.load(Ordering::Relaxed);
-            // Startup buffering and the tail after EOF are expected silence,
-            // not underruns; only a dry ring mid-track is a real one.
-            if !ended && self.shared.played_frames.load(Ordering::Relaxed) > 0 {
-                self.shared.underruns.fetch_add(1, Ordering::Relaxed);
-            }
-            if ended {
-                self.shared.drained.store(true, Ordering::Relaxed);
-            }
-        }
-        self.shared
-            .played_frames
-            .fetch_add((written / self.channels) as u64, Ordering::Relaxed);
+    }
+}
+
+/// Moves `gain` toward `target` by at most `step`.
+fn next_gain(gain: f32, target: f32, step: f32) -> f32 {
+    if gain < target {
+        (gain + step).min(target)
+    } else if gain > target {
+        (gain - step).max(target)
+    } else {
+        gain
     }
 }
 
@@ -146,7 +292,8 @@ impl Engine {
         let output_format = negotiate(source_format, &caps)?;
         let plan = ProcessingPlan::compute(source_format, output_format);
 
-        let ring_frames = (u64::from(output_format.sample_rate) * u64::from(RING_MS) / 1000) as usize;
+        let ring_frames =
+            (u64::from(output_format.sample_rate) * u64::from(RING_MS) / 1000) as usize;
         let (producer, consumer) = ring::spsc(ring_frames * output_format.frame_samples());
 
         let shared = Arc::new(Shared::new());
@@ -154,6 +301,7 @@ impl Engine {
             consumer,
             Arc::clone(&shared),
             output_format.frame_samples(),
+            output_format.sample_rate,
         );
         let mut sink: Box<dyn AudioSink> = Box::new(cpal_sink);
         sink.open(
@@ -194,6 +342,28 @@ impl Engine {
         Ok(())
     }
 
+    pub fn seek(&self, position_ms: u64) -> Result<(), AudioError> {
+        self.check_device()?;
+        let target = match self.duration_ms {
+            Some(duration) => position_ms.min(duration),
+            None => position_ms,
+        };
+        if let Ok(mut slot) = self.shared.seek_request.lock() {
+            *slot = Some(target);
+        }
+        self.shared.base_ms.store(target, Ordering::Release);
+        self.shared.played_frames.store(0, Ordering::Relaxed);
+        self.shared.ended.store(false, Ordering::Relaxed);
+        self.shared.drained.store(false, Ordering::Relaxed);
+        self.shared.epoch.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), AudioError> {
+        self.pause()?;
+        self.seek(0)
+    }
+
     pub fn set_volume(&self, volume: f32) {
         self.shared
             .gain
@@ -201,10 +371,16 @@ impl Engine {
     }
 
     pub fn position_ms(&self) -> u64 {
-        frames_to_ms(
-            self.shared.played_frames.load(Ordering::Acquire),
-            self.output_format.sample_rate,
-        )
+        let played = self.shared.played_frames.load(Ordering::Acquire);
+        let position = self
+            .shared
+            .base_ms
+            .load(Ordering::Acquire)
+            .saturating_add(frames_to_ms(played, self.output_format.sample_rate));
+        match self.duration_ms {
+            Some(duration) => position.min(duration),
+            None => position,
+        }
     }
 
     pub fn duration_ms(&self) -> Option<u64> {
@@ -240,11 +416,7 @@ impl Engine {
     }
 
     pub fn last_error(&self) -> Option<String> {
-        self.shared
-            .error
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+        self.shared.error.lock().ok().and_then(|slot| slot.clone())
     }
 
     fn check_device(&self) -> Result<(), AudioError> {
@@ -293,6 +465,7 @@ fn decode_loop(
 ) -> Result<(), AudioError> {
     let source_format = source.format();
     let in_channels = usize::from(source_format.channels);
+    let out_channels = usize::from(output_format.channels);
     let mut resampler = if plan.resample {
         Some(StreamResampler::new(source_format, output_format)?)
     } else {
@@ -300,19 +473,53 @@ fn decode_loop(
     };
 
     let mut decoded = vec![0.0f32; READ_FRAMES * in_channels];
-    let mut mapped = Vec::with_capacity(READ_FRAMES * usize::from(output_format.channels));
+    let mut mapped = Vec::with_capacity(READ_FRAMES * out_channels);
     let mut converted = Vec::new();
+    let mut handled_epoch = 0u64;
+    let mut at_eof = false;
 
     loop {
         if shared.shutdown.load(Ordering::Acquire) {
             return Ok(());
         }
+
+        let epoch = shared.epoch.load(Ordering::Acquire);
+        if epoch != handled_epoch {
+            let target = shared
+                .seek_request
+                .lock()
+                .ok()
+                .and_then(|slot| *slot)
+                .unwrap_or(0);
+            wait_for(shared, epoch, |shared| {
+                shared.drained_epoch.load(Ordering::Acquire)
+            });
+            let actual = source.seek(target)?;
+            if let Some(resampler) = resampler.as_mut() {
+                resampler.reset();
+            }
+            if shared.epoch.load(Ordering::Acquire) == epoch {
+                shared.base_ms.store(actual, Ordering::Release);
+                shared.seeked_epoch.store(epoch, Ordering::Release);
+                wait_for(shared, epoch, |shared| {
+                    shared.ready_epoch.load(Ordering::Acquire)
+                });
+            }
+            handled_epoch = epoch;
+            at_eof = false;
+            continue;
+        }
+
         if !shared.playing.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(3));
             continue;
         }
+        if at_eof {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
         // Keep at least a few callback blocks of headroom before decoding more.
-        if producer.vacant() < usize::from(output_format.channels) * 256 {
+        if producer.vacant() < out_channels * 256 {
             thread::sleep(Duration::from_millis(2));
             continue;
         }
@@ -324,35 +531,54 @@ fn decode_loop(
             if let Some(resampler) = resampler.as_mut() {
                 resampler.flush(&mut converted)?;
             }
-            push_all(&mut producer, &converted, shared)?;
-            shared.ended.store(true, Ordering::Release);
-            return Ok(());
+            if push_all(&mut producer, &converted, shared, epoch)? {
+                shared.ended.store(true, Ordering::Release);
+                at_eof = true;
+            }
+            continue;
         }
 
         map_channels(
             &decoded[..frames * in_channels],
             in_channels,
-            usize::from(output_format.channels),
+            out_channels,
             &mut mapped,
         );
         match resampler.as_mut() {
             Some(resampler) => resampler.process(&mapped, &mut converted)?,
             None => converted.extend_from_slice(&mapped),
         }
-        push_all(&mut producer, &converted, shared)?;
+        let _ = push_all(&mut producer, &converted, shared, epoch)?;
+        // If a seek invalidated the pushed samples, the next iteration handles
+        // the new epoch before decoding again.
+    }
+}
+
+fn wait_for(shared: &Shared, epoch: u64, read: impl Fn(&Shared) -> u64) {
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    while read(shared) < epoch {
+        if shared.shutdown.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
 /// Pushes all samples, waiting for the consumer when the ring is full.
+///
+/// Returns `false` when a seek happened while pushing; the caller must not
+/// continue with the old stream.
 fn push_all(
     producer: &mut RingProducer,
     samples: &[f32],
     shared: &Shared,
-) -> Result<(), AudioError> {
+    epoch: u64,
+) -> Result<bool, AudioError> {
     let mut offset = 0;
     while offset < samples.len() {
-        if shared.shutdown.load(Ordering::Acquire) {
-            return Ok(());
+        if shared.shutdown.load(Ordering::Acquire) || shared.epoch.load(Ordering::Acquire) != epoch
+        {
+            return Ok(false);
         }
         let pushed = producer.push(&samples[offset..]);
         if pushed == 0 {
@@ -361,5 +587,182 @@ fn push_all(
             offset += pushed;
         }
     }
-    Ok(())
+    Ok(shared.epoch.load(Ordering::Acquire) == epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: u32 = 48_000;
+    const CHANNELS: usize = 2;
+    /// 12 ms at 48 kHz.
+    const FADE_FRAMES: usize = 576;
+
+    fn renderer(capacity_frames: usize) -> (Renderer, RingProducer, Arc<Shared>) {
+        let (producer, consumer) = ring::spsc(capacity_frames * CHANNELS);
+        let shared = Arc::new(Shared::new());
+        let renderer = Renderer::new(consumer, Arc::clone(&shared), CHANNELS, RATE);
+        (renderer, producer, shared)
+    }
+
+    fn push(producer: &mut RingProducer, frames: usize) {
+        let ones = vec![1.0f32; frames * CHANNELS];
+        assert_eq!(producer.push(&ones), ones.len());
+    }
+
+    fn max_step(samples: &[f32]) -> f32 {
+        let (frames, _) = samples.as_chunks::<CHANNELS>();
+        let mut frames = frames.iter().map(|frame| frame[0]);
+        let mut previous = frames.next().unwrap_or(0.0);
+        let mut max = 0.0f32;
+        for value in frames {
+            max = max.max((value - previous).abs());
+            previous = value;
+        }
+        max
+    }
+
+    #[test]
+    fn fade_in_starts_at_zero_and_reaches_unity() {
+        let (mut renderer, mut producer, shared) = renderer(4096);
+        push(&mut producer, 2000);
+        shared.playing.store(true, Ordering::Release);
+
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+
+        assert_eq!(out[0], 0.0);
+        assert!(out[CHANNELS] > 0.0 && out[CHANNELS] < 0.01);
+        let last = out[699 * CHANNELS];
+        assert!((last - 1.0).abs() < 1e-6, "last frame gain {last}");
+        assert!(max_step(&out) <= 1.0 / FADE_FRAMES as f32 + 1e-6);
+    }
+
+    #[test]
+    fn pause_fades_out_and_stops_consuming() {
+        let (mut renderer, mut producer, shared) = renderer(4096);
+        push(&mut producer, 2000);
+        shared.playing.store(true, Ordering::Release);
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+
+        shared.playing.store(false, Ordering::Release);
+        push(&mut producer, 2000);
+        let played_before = shared.played_frames.load(Ordering::Relaxed);
+        out.fill(0.0);
+        renderer.render(&mut out);
+
+        let during = shared.played_frames.load(Ordering::Relaxed);
+        assert_eq!(during - played_before, FADE_FRAMES as u64);
+        // f32 accumulation drifts a few ppm; the ramp is still monotonic.
+        assert!(
+            max_step(&out) <= 1.0 / FADE_FRAMES as f32 + 1e-5,
+            "max step {}",
+            max_step(&out)
+        );
+
+        // Once silent, paused callbacks must not consume the ring.
+        posterity_ring_is_intact(&mut producer);
+        out.fill(0.0);
+        renderer.render(&mut out);
+        assert_eq!(shared.played_frames.load(Ordering::Relaxed), during);
+        assert!(out.iter().all(|sample| *sample == 0.0));
+    }
+
+    fn posterity_ring_is_intact(producer: &mut RingProducer) {
+        // 2000 - 700 (play) + 2000 - 576 (pause fade) = 2724 frames left.
+        assert_eq!(producer.occupied(), 2724 * CHANNELS);
+    }
+
+    #[test]
+    fn scripted_transport_has_no_sample_jumps() {
+        let (mut renderer, mut producer, shared) = renderer(8192);
+        let mut captured: Vec<f32> = Vec::new();
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+
+        push(&mut producer, 4000);
+        shared.playing.store(true, Ordering::Release);
+        renderer.render(&mut out);
+        captured.extend_from_slice(&out);
+
+        shared.playing.store(false, Ordering::Release);
+        renderer.render(&mut out);
+        captured.extend_from_slice(&out);
+
+        shared.playing.store(true, Ordering::Release);
+        push(&mut producer, 2000);
+        renderer.render(&mut out);
+        captured.extend_from_slice(&out);
+
+        if let Ok(mut slot) = shared.seek_request.lock() {
+            *slot = Some(1_000);
+        }
+        shared.epoch.fetch_add(1, Ordering::AcqRel);
+        renderer.render(&mut out);
+        captured.extend_from_slice(&out);
+
+        shared.seeked_epoch.store(1, Ordering::Release);
+        renderer.render(&mut out);
+        captured.extend_from_slice(&out);
+
+        push(&mut producer, 2000);
+        renderer.render(&mut out);
+        captured.extend_from_slice(&out);
+
+        assert!(captured.iter().all(|sample| sample.is_finite()));
+        let jump = max_step(&captured);
+        assert!(
+            jump <= 1.0 / FADE_FRAMES as f32 + 1e-5,
+            "transport produced a {jump} jump"
+        );
+    }
+
+    #[test]
+    fn seek_handshake_drains_and_opens_the_gate() {
+        let (mut renderer, mut producer, shared) = renderer(4096);
+        push(&mut producer, 2000);
+        shared.playing.store(true, Ordering::Release);
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+        assert!((renderer.gain - 1.0).abs() < 1e-6);
+
+        // Control issues a seek.
+        if let Ok(mut slot) = shared.seek_request.lock() {
+            *slot = Some(500);
+        }
+        shared.base_ms.store(500, Ordering::Release);
+        shared.played_frames.store(0, Ordering::Relaxed);
+        shared.epoch.fetch_add(1, Ordering::AcqRel);
+        push(&mut producer, 400);
+
+        out.fill(0.0);
+        renderer.render(&mut out);
+        assert_eq!(shared.drained_epoch.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.ready_epoch.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.played_frames.load(Ordering::Relaxed), 0);
+        assert!(
+            out[FADE_FRAMES * CHANNELS..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert_eq!(renderer.fade_epoch, Some(1));
+
+        // Decoder finished seeking; the renderer must clear once more and ack.
+        shared.seeked_epoch.store(1, Ordering::Release);
+        out.fill(0.0);
+        renderer.render(&mut out);
+        assert_eq!(shared.ready_epoch.load(Ordering::Relaxed), 1);
+        assert_eq!(renderer.handled_epoch, 1);
+        assert!(renderer.fade_epoch.is_none());
+        assert_eq!(renderer.gain, 0.0);
+        assert!(out.iter().all(|sample| *sample == 0.0));
+
+        // New samples after the seq start from silence (fade-in).
+        push(&mut producer, 1000);
+        out.fill(0.0);
+        renderer.render(&mut out);
+        assert_eq!(out[0], 0.0);
+        assert!(out[CHANNELS] > 0.0);
+    }
 }

@@ -4,9 +4,7 @@
 //! flags are `false` the samples go from decoder to device untouched.
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{
-    Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, WindowFunction,
-};
+use rubato::{Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, WindowFunction};
 
 use crate::error::AudioError;
 use crate::format::AudioFormat;
@@ -193,6 +191,12 @@ impl StreamResampler {
         self.pending.clear();
         Ok(())
     }
+
+    /// Drops pending input; called after a seek.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+        self.pending.clear();
+    }
 }
 
 fn resample_error(error: impl std::fmt::Display) -> AudioError {
@@ -271,5 +275,38 @@ mod tests {
             "produced {produced}, expected ≈ {expected}"
         );
         assert!(out.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn resampling_does_not_shift_pitch() {
+        let mut resampler = StreamResampler::new(format(44_100, 2), format(48_000, 2)).unwrap();
+        let frames = 44_100 / 2; // 0.5 s
+        let mut input = Vec::with_capacity(frames * 2);
+        for frame in 0..frames {
+            let value = (std::f32::consts::TAU * 440.0 * frame as f32 / 44_100.0).sin() * 0.5;
+            input.push(value);
+            input.push(value);
+        }
+        let mut out = Vec::new();
+        for chunk in input.chunks(441 * 2) {
+            resampler.process(chunk, &mut out).unwrap();
+        }
+        resampler.flush(&mut out).unwrap();
+
+        // Skip the filter delay at both ends, then count sign changes.
+        let (frames, _) = out.as_chunks::<2>();
+        let left: Vec<f32> = frames.iter().map(|frame| frame[0]).collect();
+        let body = &left[2_000..left.len() - 2_000];
+        let crossings = body
+            .windows(2)
+            .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
+            .count();
+        let seconds = body.len() as f64 / 48_000.0;
+        let measured = crossings as f64 / (2.0 * seconds);
+        assert!(
+            (measured - 440.0).abs() < 4.4,
+            "pitch shifted: {measured} Hz"
+        );
+        assert_eq!(left.len(), out.len() / 2);
     }
 }

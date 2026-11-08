@@ -17,7 +17,10 @@ use ringbuf::{
 pub fn spsc(capacity_samples: usize) -> (RingProducer, RingConsumer) {
     let rb = HeapRb::<f32>::new(capacity_samples.max(1));
     let (producer, consumer) = rb.split();
-    (RingProducer { inner: producer }, RingConsumer { inner: consumer })
+    (
+        RingProducer { inner: producer },
+        RingConsumer { inner: consumer },
+    )
 }
 
 /// Producer half of the ring buffer. Lives on the decode thread.

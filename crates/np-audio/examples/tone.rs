@@ -11,9 +11,9 @@
 use std::thread;
 use std::time::Duration;
 
+use np_audio::format::{AudioFormat, SampleFormat, negotiate};
 use np_audio::ring;
 use np_audio::sink::{AudioSink, CpalSharedSink};
-use np_audio::format::{AudioFormat, SampleFormat, negotiate};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sink = CpalSharedSink::new()?;

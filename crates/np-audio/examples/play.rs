@@ -15,9 +15,7 @@ use np_audio::Player;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let path = args
-        .next()
-        .ok_or("usage: play <file> [max_seconds]")?;
+    let path = args.next().ok_or("usage: play <file> [max_seconds]")?;
     let max_seconds: Option<f64> = args.next().map(|value| value.parse()).transpose()?;
 
     let player = Player::open(&path)?;
@@ -32,7 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plan.is_bit_perfect()
     );
     println!("duration    : {:?} ms", player.duration_ms());
-    println!("device caps : {} formats", player.device_caps().formats.len());
+    println!(
+        "device caps : {} formats",
+        player.device_caps().formats.len()
+    );
     println!("playing {} ...", path);
 
     let started = Instant::now();
@@ -71,7 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(std::io::Error::other(format!("playback failed: {error}")).into());
     }
     if played_ms == 0 {
-        return Err(std::io::Error::other("position never advanced: no audio reached the device").into());
+        return Err(
+            std::io::Error::other("position never advanced: no audio reached the device").into(),
+        );
     }
     Ok(())
 }

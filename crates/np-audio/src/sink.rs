@@ -89,16 +89,13 @@ impl CpalSharedSink {
             .default_output_device()
             .ok_or_else(|| AudioError::DeviceUnavailable("no default output device".into()))?;
         let name = device.to_string();
-        let preferred_format = device
-            .default_output_config()
-            .ok()
-            .and_then(|config| {
-                audio_format_from_cpal(
-                    config.sample_format(),
-                    config.channels(),
-                    config.sample_rate(),
-                )
-            });
+        let preferred_format = device.default_output_config().ok().and_then(|config| {
+            audio_format_from_cpal(
+                config.sample_format(),
+                config.channels(),
+                config.sample_rate(),
+            )
+        });
         Ok(Self {
             device,
             name,
@@ -376,21 +373,14 @@ fn device_caps_from(device: &cpal::Device) -> Result<DeviceCaps, AudioError> {
             range.channels(),
             range.min_sample_rate(),
         )
-        .map(|format| format.sample_format)
-        else {
+        .map(|format| format.sample_format) else {
             continue;
         };
         for rate in candidate_rates(range.min_sample_rate(), range.max_sample_rate()) {
             formats.push(AudioFormat::new(rate, range.channels(), sample_format));
         }
     }
-    formats.sort_by_key(|format| {
-        (
-            format.sample_rate,
-            format.channels,
-            format.sample_format,
-        )
-    });
+    formats.sort_by_key(|format| (format.sample_rate, format.channels, format.sample_format));
     formats.dedup();
     Ok(DeviceCaps {
         formats,
@@ -434,7 +424,10 @@ mod tests {
     fn cpal_format_mapping_round_trips() {
         for format in [SampleFormat::F32, SampleFormat::I16, SampleFormat::I32] {
             let cpal = cpal_sample_format(format);
-            assert_eq!(audio_format_from_cpal(cpal, 2, 48_000), Some(AudioFormat::new(48_000, 2, format)));
+            assert_eq!(
+                audio_format_from_cpal(cpal, 2, 48_000),
+                Some(AudioFormat::new(48_000, 2, format))
+            );
         }
         assert_eq!(
             audio_format_from_cpal(CpalSampleFormat::U16, 2, 48_000),
