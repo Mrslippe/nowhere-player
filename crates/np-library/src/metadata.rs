@@ -7,14 +7,15 @@ use std::path::{Path, PathBuf};
 
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey};
 use lofty::tag::Tag;
+use lofty::tag::{Accessor, ItemKey};
 
 use crate::error::{LibraryError, Result};
 
 /// 扫描认的音频扩展名白名单（与 ARCH-003 §4 一致）。
-pub(crate) const AUDIO_EXTENSIONS: &[&str] =
-    &["flac", "mp3", "m4a", "aac", "ogg", "opus", "wav", "aiff", "aif"];
+pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
+    "flac", "mp3", "m4a", "aac", "ogg", "opus", "wav", "aiff", "aif",
+];
 
 /// 一个文件的解析结果（还没写库）。
 #[derive(Debug, Clone)]

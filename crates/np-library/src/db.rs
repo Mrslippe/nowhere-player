@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use crate::error::Result;
+use crate::repo::{self, Stats, Track};
 use crate::schema;
 
 /// 每多少条提交一次（ARCH-003 §0 / 任务卡 §6.2）。
@@ -68,6 +69,26 @@ impl Database {
     /// 当前 `PRAGMA user_version`。
     pub fn schema_version(&self) -> Result<u32> {
         schema::version(&self.conn)
+    }
+
+    /// 在标题 / 艺人 / 专辑上做不区分大小写的 `LIKE` 检索（ARCH-003 §5）。
+    pub fn search(&self, keyword: &str, limit: usize) -> Result<Vec<Track>> {
+        repo::search(&self.conn, keyword, limit)
+    }
+
+    /// 最近入库的曲目。
+    pub fn list_recent(&self, limit: usize) -> Result<Vec<Track>> {
+        repo::list_recent(&self.conn, limit)
+    }
+
+    /// 一张专辑的曲目，按 `disc_no, track_no` 排序。
+    pub fn tracks_by_album(&self, album_id: i64) -> Result<Vec<Track>> {
+        repo::tracks_by_album(&self.conn, album_id)
+    }
+
+    /// 曲目数 / 专辑数 / 艺人数 / 总时长 / 最近扫描。
+    pub fn stats(&self) -> Result<Stats> {
+        repo::stats(&self.conn)
     }
 
     pub(crate) fn conn(&self) -> &Connection {
@@ -155,7 +176,9 @@ impl Drop for WriteBatch<'_> {
 
 /// 升级前把非空库复制成 `<path>.bak`。
 fn backup(path: &Path) -> Result<()> {
-    let is_non_empty = fs::metadata(path).map(|meta| meta.len() > 0).unwrap_or(false);
+    let is_non_empty = fs::metadata(path)
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false);
     if !is_non_empty {
         return Ok(());
     }

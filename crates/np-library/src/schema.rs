@@ -101,9 +101,7 @@ pub(crate) fn version(conn: &Connection) -> Result<u32> {
 /// 目前只有 v1；未来版本在这里追加 `if current < 2 { ... }`。
 pub(crate) fn apply(conn: &Connection, current: u32) -> Result<u32> {
     if current < 1 {
-        conn.execute_batch(&format!(
-            "BEGIN;\n{V1}\nPRAGMA user_version = 1;\nCOMMIT;"
-        ))?;
+        conn.execute_batch(&format!("BEGIN;\n{V1}\nPRAGMA user_version = 1;\nCOMMIT;"))?;
     }
     version(conn)
 }

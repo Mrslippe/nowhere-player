@@ -133,10 +133,7 @@ pub(crate) fn upsert_track(conn: &Connection, track: &ParsedTrack, now: i64) -> 
         |row| row.get(0),
     )?;
 
-    conn.execute(
-        "DELETE FROM track_artists WHERE track_id = ?1",
-        [track_id],
-    )?;
+    conn.execute("DELETE FROM track_artists WHERE track_id = ?1", [track_id])?;
     let mut linked: Vec<i64> = Vec::with_capacity(artist_names.len());
     for (position, name) in artist_names.iter().enumerate() {
         let artist_id = get_or_create_artist(conn, name)?;
@@ -146,7 +143,11 @@ pub(crate) fn upsert_track(conn: &Connection, track: &ParsedTrack, now: i64) -> 
         linked.push(artist_id);
         conn.execute(
             "INSERT INTO track_artists (track_id, artist_id, position) VALUES (?1, ?2, ?3)",
-            params![track_id, artist_id, i64::try_from(position).unwrap_or(i64::MAX)],
+            params![
+                track_id,
+                artist_id,
+                i64::try_from(position).unwrap_or(i64::MAX)
+            ],
         )?;
     }
 
@@ -315,11 +316,11 @@ fn split_artists(value: &str) -> Vec<&str> {
 /// 按 name 去重（`COLLATE NOCASE`）取 id，没有就建。
 fn get_or_create_artist(conn: &Connection, name: &str) -> Result<i64> {
     conn.execute("INSERT OR IGNORE INTO artists (name) VALUES (?1)", [name])?;
-    Ok(conn.query_row(
-        "SELECT id FROM artists WHERE name = ?1",
-        [name],
-        |row| row.get(0),
-    )?)
+    Ok(
+        conn.query_row("SELECT id FROM artists WHERE name = ?1", [name], |row| {
+            row.get(0)
+        })?,
+    )
 }
 
 /// 按 `(title, album_artist_id)` 取 id，没有就建；已有专辑只补空的 year / cover。
@@ -463,10 +464,7 @@ mod tests {
             .expect("query")
             .collect::<rusqlite::Result<Vec<_>>>()
             .expect("collect");
-        assert_eq!(
-            rows,
-            vec![("Alice".to_string(), 0), ("Bob".to_string(), 1)]
-        );
+        assert_eq!(rows, vec![("Alice".to_string(), 0), ("Bob".to_string(), 1)]);
         let track_row = search(db.conn(), "Song", 1).expect("search");
         assert_eq!(track_row[0].artist, "Alice; Bob");
     }
@@ -510,7 +508,10 @@ mod tests {
         assert_eq!(search(db.conn(), "radio", 10).expect("artist").len(), 2);
         assert_eq!(search(db.conn(), "computer", 10).expect("album").len(), 2);
         assert_eq!(search(db.conn(), "RADIOHEAD", 10).expect("case").len(), 2);
-        assert_eq!(search(db.conn(), "kid", 10).expect("limit")[0].title, "Kid A");
+        assert_eq!(
+            search(db.conn(), "kid", 10).expect("limit")[0].title,
+            "Kid A"
+        );
     }
 
     #[test]
