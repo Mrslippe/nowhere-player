@@ -6,9 +6,11 @@ mod shortcut;
 mod tray;
 mod windows;
 
+use tauri::Manager;
+
 /// 启动桌面壳：先注册插件，再建窗、注册快捷键、装托盘。
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         // 单实例必须第一个注册，否则不生效（T-0009 §11）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             println!("[single-instance] secondary launch, showing player");
@@ -19,7 +21,18 @@ pub fn run() {
             None,
         ))
         .plugin(shortcut::plugin())
+        .invoke_handler(tauri::generate_handler![
+            ipc::player_snapshot,
+            ipc::player_play,
+            ipc::player_pause,
+            ipc::player_next,
+            ipc::player_prev,
+            ipc::player_seek,
+            ipc::player_volume,
+        ])
         .setup(|app| {
+            // actor 线程在此启动；`Player` 由线程内部惰性创建。
+            app.manage(player_actor::PlayerHandle::spawn(app.handle().clone())?);
             let handle = app.handle();
             windows::create_player(handle)?;
             shortcut::register(handle);
@@ -27,6 +40,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(windows::on_window_event)
-        .run(tauri::generate_context!())
-        .expect("failed to run Nowhere Player");
+        .build(tauri::generate_context!())
+        .expect("failed to build Nowhere Player");
+
+    app.run(|app, event| {
+        // 退出前让 actor 在自己线程 drop `Player`，释放音频设备（T-0013 §7）。
+        if let tauri::RunEvent::Exit = event {
+            app.state::<player_actor::PlayerHandle>().shutdown();
+        }
+    });
 }
