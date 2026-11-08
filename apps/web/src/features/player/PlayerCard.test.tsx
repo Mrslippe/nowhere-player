@@ -153,4 +153,28 @@ describe("PlayerCard", () => {
     expect(html).toContain("np-player-card__notice");
     expect(html).toContain("下一首失败 · E_UNSUPPORTED");
   });
+
+  it("进度条外包一层可拖动的 role=slider 热区，aria 值跟随位置", () => {
+    const html = renderCard("playing", { positionMs: 6000, durationMs: 12_000 });
+
+    expect(html).toContain('class="np-player-card__seek"');
+    expect(html).toContain('role="slider"');
+    expect(html).toContain('aria-valuemax="12000"');
+    expect(html).toContain('aria-valuenow="6000"');
+    expect(html).toContain('tabindex="0"');
+  });
+
+  it("没有时长时热区不可聚焦、不可拖动", () => {
+    const html = renderCard("idle", { durationMs: 0 });
+
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('tabindex="-1"');
+  });
+
+  it("滚轮调音量后的提示只在传入时渲染", () => {
+    expect(renderCard("playing")).not.toContain("np-player-card__volume");
+    expect(renderCard("playing", { volumeHint: "85%" })).toContain(
+      "音量 85%",
+    );
+  });
 });

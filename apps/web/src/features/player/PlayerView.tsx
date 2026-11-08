@@ -53,6 +53,20 @@ export function PlayerView() {
   // ended 时进度条归位（位置 0、按钮回到 ▶）。
   const livePositionMs = status === "ended" ? 0 : player.positionMs;
 
+  // 静态原型（?state=）不接命令，只有实时模式才注入控件回调。
+  const handlers = live
+    ? {
+        onToggle: player.onToggle,
+        onPrev: player.onPrev,
+        onNext: player.onNext,
+        onSeekPreview: player.onSeekPreview,
+        onSeekCommit: player.onSeekCommit,
+        onVolumeNudge: player.onVolumeNudge,
+        volumeHint: player.volumeHint,
+        dragging: player.dragging,
+      }
+    : {};
+
   return (
     <main
       className="np-player-view"
@@ -73,6 +87,7 @@ export function PlayerView() {
           state={live ? previewStateFromStatus(status) : pinned}
           error={live ? player.error : null}
           notice={live ? player.notice : null}
+          {...handlers}
         />
       </div>
 

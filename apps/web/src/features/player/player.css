@@ -175,6 +175,27 @@
   margin-top: 10px;
 }
 
+/* 拖动热区：比 2px 轨道高，桌面上好点中；键盘也可操作。 */
+.np-player-card__seek {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  height: 14px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.np-player-card__seek:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.np-player-card[data-seeking="true"] .np-player-card__seek {
+  cursor: grabbing;
+}
+
 .np-player-card__progress {
   flex: 1;
   min-width: 0;
@@ -223,6 +244,23 @@
   border-radius: 50%;
   background: var(--danger);
   cursor: help;
+}
+
+/* 滚轮调音量后的短暂提示，不拦截指针。 */
+.np-player-card__volume {
+  position: absolute;
+  top: 6px;
+  right: 20px;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* 一次性提示（如 next 返回 E_UNSUPPORTED）：浮在卡片底部，不拦截指针。 */
