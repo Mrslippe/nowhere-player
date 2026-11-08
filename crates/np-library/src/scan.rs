@@ -99,7 +99,7 @@ impl<'a> Scanner<'a> {
             repo::touch_root(self.db.conn(), root, scan_started_at)?;
         }
 
-        let candidates = collect_candidates(&absolute_roots);
+        let candidates = collect_candidates(&absolute_roots, self.observer);
         let total = candidates.len();
         // 全量扫描把索引清空：所有候选都会走标签解析。
         let index = if self.full {
@@ -267,14 +267,18 @@ impl ScanItem {
     }
 }
 
-fn collect_candidates(roots: &[PathBuf]) -> Vec<Candidate> {
+fn collect_candidates(roots: &[PathBuf], observer: &dyn ScanObserver) -> Vec<Candidate> {
     let mut candidates = Vec::new();
-    for root in roots {
+    'roots: for root in roots {
         let walker = WalkDir::new(root)
             .follow_links(false)
             .into_iter()
             .filter_entry(|entry| !is_skipped(entry));
         for entry in walker.filter_map(std::result::Result::ok) {
+            // 目录遍历本身可能很慢；退出应用时也要能在这里及时停下。
+            if observer.is_cancelled() {
+                break 'roots;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
