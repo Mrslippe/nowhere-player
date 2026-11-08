@@ -279,7 +279,10 @@ export function TerminalLab({
   return (
     <div className="np-lab" data-testid="terminal-lab" data-variant={variant}>
       <header className="np-lab__topbar" data-tauri-drag-region="deep">
-        <span className="np-lab__brand">终端对比实验室</span>
+        <span className="np-lab__brand">
+          Nowhere Player
+          <span className="np-lab__brand-suffix">终端</span>
+        </span>
 
         <div className="np-lab__group" role="group" aria-label="渲染视图">
           {LAB_VARIANTS.map((value) => (

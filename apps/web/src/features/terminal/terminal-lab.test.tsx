@@ -112,6 +112,10 @@ describe("TerminalLab 三种视图", () => {
 
     expect(html).toContain('data-tauri-drag-region="deep"');
     expect(html).toContain('data-tauri-drag-region="false"');
+    expect(html).toContain("Nowhere Player");
+    // 标题栏左边是产品名 + 窗口身份，不再是 dev 期的实验室名。
+    expect(html).toContain("np-lab__brand-suffix");
+    expect(html).not.toContain("终端对比实验室");
     expect(html).toContain('aria-label="最小化"');
     expect(html).toContain('aria-label="隐藏到托盘"');
   });

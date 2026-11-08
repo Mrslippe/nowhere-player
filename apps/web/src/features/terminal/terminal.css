@@ -41,6 +41,14 @@
   white-space: nowrap;
 }
 
+/* 标题栏里区分产品名与窗口身份；不抢主标题的字重。 */
+.np-lab__brand-suffix {
+  margin-left: var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  letter-spacing: 0.08em;
+}
+
 .np-lab__group {
   display: inline-flex;
   align-items: center;
