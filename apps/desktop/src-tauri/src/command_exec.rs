@@ -401,7 +401,7 @@ impl Executor<'_> {
 
         Ok(Outcome {
             outputs: vec![Output::Table {
-                columns: vec!["#".to_owned(), "曲目".to_owned(), "当前".to_owned()],
+                columns: vec!["序号".to_owned(), "曲目".to_owned(), "当前".to_owned()],
                 rows,
                 selectable: true,
             }],
@@ -1395,7 +1395,7 @@ mod tests {
 
         assert_eq!(
             table.0,
-            &vec!["#".to_owned(), "曲目".to_owned(), "当前".to_owned()]
+            &vec!["序号".to_owned(), "曲目".to_owned(), "当前".to_owned()]
         );
         assert_eq!(table.1.len(), 3);
         assert_eq!(table.1[0][0], "1");
