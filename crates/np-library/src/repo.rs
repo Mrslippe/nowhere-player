@@ -411,6 +411,7 @@ mod tests {
             bitrate: 128,
             codec: "wav".to_string(),
             cover_key: None,
+            cover: None,
             size_bytes: 100,
             mtime_ms: 1,
         }

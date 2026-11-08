@@ -1,8 +1,10 @@
 //! 标签读取与封面哈希。
 //!
-//! 读取用 [`lofty`]，对上层只产出 [`ParsedTrack`]；封面只算内容哈希，
-//! 不写缓存文件（T-0024 才落盘）。
+//! 读取用 [`lofty`]，对上层只产出 [`ParsedTrack`]；封面在这里选出**源字节**
+//! （内嵌图优先，其次同目录 `cover.jpg` / `folder.jpg` / `front.jpg`），
+//! 真正解码、缩放与落盘由 [`crate::covers`] 在扫描线程里完成。
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use lofty::file::{AudioFile, TaggedFileExt};
@@ -10,12 +12,30 @@ use lofty::probe::Probe;
 use lofty::tag::Tag;
 use lofty::tag::{Accessor, ItemKey};
 
+use crate::covers::SIDECAR_NAMES;
 use crate::error::{LibraryError, Result};
 
 /// 扫描认的音频扩展名白名单（与 ARCH-003 §4 一致）。
 pub(crate) const AUDIO_EXTENSIONS: &[&str] = &[
     "flac", "mp3", "m4a", "aac", "ogg", "opus", "wav", "aiff", "aif",
 ];
+
+/// 封面源字节及其内容哈希。
+///
+/// 哈希针对**原始封面字节**计算，与之后重新编码的 JPEG 无关：换一次
+/// 编码质量不会让所有曲目的 `cover_key` 失效。
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedCover {
+    pub key: String,
+    pub bytes: Vec<u8>,
+}
+
+impl ParsedCover {
+    fn new(bytes: Vec<u8>) -> Self {
+        let key = cover_key(&bytes);
+        Self { key, bytes }
+    }
+}
 
 /// 一个文件的解析结果（还没写库）。
 #[derive(Debug, Clone)]
@@ -34,6 +54,8 @@ pub(crate) struct ParsedTrack {
     pub bitrate: u32,
     pub codec: String,
     pub cover_key: Option<String>,
+    /// 尚未落盘的封面源字节；扫描器写完后置空，不参与入库。
+    pub cover: Option<ParsedCover>,
     pub size_bytes: i64,
     pub mtime_ms: i64,
 }
@@ -70,10 +92,12 @@ pub(crate) fn parse_file(path: &Path, size_bytes: i64, mtime_ms: i64) -> Result<
     let year = tag.and_then(tag_year).unwrap_or(0);
     let track_no = tag.and_then(|tag| tag.track()).unwrap_or(0);
     let disc_no = tag.and_then(|tag| tag.disk()).unwrap_or(0);
-    let cover_key = tag
+    let cover = tag
         .and_then(|tag| tag.pictures().first())
         .filter(|picture| !picture.data().is_empty())
-        .map(|picture| cover_key(picture.data()));
+        .map(|picture| ParsedCover::new(picture.data().to_vec()))
+        .or_else(|| path.parent().and_then(sidecar_cover));
+    let cover_key = cover.as_ref().map(|cover| cover.key.clone());
 
     Ok(ParsedTrack {
         path: path.to_path_buf(),
@@ -90,8 +114,20 @@ pub(crate) fn parse_file(path: &Path, size_bytes: i64, mtime_ms: i64) -> Result<
         bitrate: properties.audio_bitrate().unwrap_or(0),
         codec: codec_of(path),
         cover_key,
+        cover,
         size_bytes,
         mtime_ms,
+    })
+}
+
+/// 同目录封面：按 `cover.jpg` → `folder.jpg` → `front.jpg` 取第一个可读文件。
+///
+/// 读失败或空文件按“没有封面”处理，不打断标签解析；字节会整份读入，
+/// 哈希与缩放都需要它。
+fn sidecar_cover(dir: &Path) -> Option<ParsedCover> {
+    SIDECAR_NAMES.iter().find_map(|name| {
+        let bytes = fs::read(dir.join(name)).ok()?;
+        (!bytes.is_empty()).then(|| ParsedCover::new(bytes))
     })
 }
 

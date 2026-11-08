@@ -2,6 +2,7 @@
 //!
 //! SQLite 只出现在这个 crate 里（ARCH-003 §1）。
 
+mod covers;
 mod db;
 pub mod error;
 mod metadata;
