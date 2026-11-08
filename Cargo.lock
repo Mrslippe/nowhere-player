@@ -2278,6 +2278,8 @@ dependencies = [
 name = "nowhere-desktop"
 version = "0.0.0"
 dependencies = [
+ "np-audio",
+ "np-core",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

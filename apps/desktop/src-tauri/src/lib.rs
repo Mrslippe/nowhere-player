@@ -1,5 +1,6 @@
 //! Tauri 壳：插件装配 + 启动编排，不放业务逻辑（见开发方案 §4.2）。
 
+mod player_actor;
 mod shortcut;
 mod tray;
 mod windows;
