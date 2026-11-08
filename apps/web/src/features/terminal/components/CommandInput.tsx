@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 export interface CommandInputProps {
@@ -6,7 +6,7 @@ export interface CommandInputProps {
   onSubmit: (input: string) => void;
 }
 
-const PLACEHOLDER = "输入 scan / search 晴天 / play 1 / perm / hint / cover";
+const PLACEHOLDER = "输入 help 查看命令，例如 play 1 / queue";
 
 /**
  * 底部命令输入（T-0008 §6.6）。
@@ -16,6 +16,7 @@ const PLACEHOLDER = "输入 scan / search 晴天 / play 1 / perm / hint / cover"
  */
 export function CommandInput({ onSubmit }: CommandInputProps) {
   const [value, setValue] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -27,6 +28,8 @@ export function CommandInput({ onSubmit }: CommandInputProps) {
 
     onSubmit(input);
     setValue("");
+    // 提交后保持焦点：点 ⏎ 按钮提交时焦点会落到按钮上（T-0019 §6）。
+    inputRef.current?.focus();
   };
 
   return (
@@ -35,6 +38,7 @@ export function CommandInput({ onSubmit }: CommandInputProps) {
         ›
       </span>
       <input
+        ref={inputRef}
         className="np-lab__input"
         value={value}
         onChange={(event) => setValue(event.target.value)}

@@ -4,8 +4,8 @@ export const LAB_VARIANTS = ["blocks", "xterm", "both"] as const;
 
 export type LabVariant = (typeof LAB_VARIANTS)[number];
 
-/** 默认分屏：一进页面就能看到两套渲染器的差异。 */
-export const DEFAULT_VARIANT: LabVariant = "both";
+/** 默认视图：结构化渲染 + 真实链路（T-0019 起）。 */
+export const DEFAULT_VARIANT: LabVariant = "blocks";
 
 export const VARIANT_LABELS: Readonly<Record<LabVariant, string>> = {
   blocks: "结构化",

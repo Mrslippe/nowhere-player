@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../design";
+import { createCommandBridge, upsertBlock } from "../../shared/command-bridge";
 import fixture from "../../shared/fixtures/terminal-demo.json";
 import type { Block } from "../../shared/terminal-model";
 import { isBlock } from "../../shared/terminal-model.guard";
@@ -32,6 +33,7 @@ import {
   type LabVariant,
 } from "./components/variant";
 import { DEMO_TIME, runMockCommand } from "./mock-commands";
+import { createBlockId, submitInput } from "./terminal-session";
 import "./terminal.css";
 
 function readParam(name: string): string | null {
@@ -78,10 +80,13 @@ export interface TerminalLabProps {
 }
 
 /**
- * 终端对比实验室（T-0008）。
+ * 终端视图（T-0008 实验室 → T-0019 接真实事件流）。
  *
  * 顶栏（视图 / 主题 / 清空）→ 终端区域 → 输入行 → 评分面板。
  * 两个渲染器共享同一个 `blocks` 状态，实验室里不存在第二份假数据。
+ *
+ * 真实链路：输入框 → `cmd.exec` → `terminal:block` 事件 → `upsertBlock` 覆盖渲染。
+ * 浏览器（无 Tauri）退化为 mock，保证 `pnpm dev` 可预览。
  */
 export function TerminalLab({
   initialVariant,
@@ -90,6 +95,16 @@ export function TerminalLab({
   initialScores,
   persist = true,
 }: TerminalLabProps) {
+  // mock 兜底只在浏览器生效；真实运行时 bridge 忽略 fallback。
+  // `runMockCommand` 在 features/，由这里注入，`shared/` 不反向依赖（项目结构规范 §5）。
+  const bridge = useMemo(
+    () =>
+      createCommandBridge({
+        fallback: (input, blockId) => runMockCommand(input, { id: blockId }),
+      }),
+    [],
+  );
+
   const [variant, setVariant] = useState<LabVariant>(
     () => initialVariant ?? parseVariant(readParam("variant")),
   );
@@ -108,6 +123,17 @@ export function TerminalLab({
   );
   const [feedback, setFeedback] = useState<string | null>(null);
   const feedbackTimer = useRef<number | null>(null);
+
+  // 订阅必须在挂载时就建立：`cmd.exec` 在返回回执前就 emit，
+  // 「await exec 之后再订阅」会丢掉首条命令的块（T-0019 §11 风险 1）。
+  // 同一 blockId 会来两次事件（running → 最终），一律按 id 覆盖。
+  useEffect(
+    () =>
+      bridge.subscribeBlocks((block) => {
+        setBlocks((previous) => upsertBlock(previous, block));
+      }),
+    [bridge],
+  );
 
   // 首屏从 ?theme= 进入时也要落到 <html data-theme>；切换时同步（不刷新）。
   useEffect(() => {
@@ -146,7 +172,17 @@ export function TerminalLab({
   };
 
   const submit = (input: string): void => {
-    setBlocks((previous) => [...previous, runMockCommand(input)]);
+    // `clear` 在 `submitInput` 里截住：只清本地块，不发 IPC（命令表 §2.1）。
+    void submitInput(input, {
+      exec: (text, blockId) => bridge.exec(text, blockId),
+      createBlockId,
+      applyBlock: (block) => {
+        setBlocks((previous) => upsertBlock(previous, block));
+      },
+      clear: () => {
+        setBlocks([]);
+      },
+    });
   };
 
   const clear = (): void => {

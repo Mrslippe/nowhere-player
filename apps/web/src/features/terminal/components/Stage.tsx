@@ -67,16 +67,22 @@ export function TerminalStage({ variant, blocks }: TerminalStageProps) {
 
   // 新块到来后贴底；切换视图回到顶部，保证首屏两边都从同一起点开始看。
   // 首次挂载不滚动：截图/直链时从历史开头阅读，而不是直接掉到末尾。
+  // T-0019：同一 id 的最终块会替换 `running` 块（数量不变但内容变多），
+  // 所以末尾块换了引用也要贴底，而不是只看长度。
   const previousVariant = useRef(variant);
   const previousCount = useRef(blocks.length);
+  const previousLast = useRef<Block | null>(blocks[blocks.length - 1] ?? null);
 
   useEffect(() => {
     const scroll = blockScrollRef.current;
     const variantChanged = previousVariant.current !== variant;
     const grew = blocks.length > previousCount.current;
+    const last = blocks[blocks.length - 1] ?? null;
+    const lastChanged = last !== previousLast.current;
 
     previousVariant.current = variant;
     previousCount.current = blocks.length;
+    previousLast.current = last;
 
     if (variantChanged) {
       if (scroll !== null) {
@@ -89,7 +95,7 @@ export function TerminalStage({ variant, blocks }: TerminalStageProps) {
       return;
     }
 
-    if (!grew) {
+    if (!grew && !lastChanged) {
       return;
     }
 

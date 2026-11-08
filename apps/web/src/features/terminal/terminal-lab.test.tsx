@@ -66,9 +66,9 @@ describe("parseVariant", () => {
     expect(parseVariant("both")).toBe("both");
   });
 
-  it("未知或缺省的 ?variant= 回落到 both", () => {
-    expect(parseVariant(null)).toBe("both");
-    expect(parseVariant("side-by-side")).toBe("both");
+  it("未知或缺省的 ?variant= 回落到 blocks（默认真实链路，T-0019）", () => {
+    expect(parseVariant(null)).toBe("blocks");
+    expect(parseVariant("side-by-side")).toBe("blocks");
   });
 });
 
