@@ -73,6 +73,17 @@
   color: var(--accent);
 }
 
+/*
+ * T-0028：终端主题组只认识 graphite / amber / ice，phosphor 直链会被
+ * parseTheme 兜底成 graphite；此时 graphite 的 aria-pressed 只是兜底值，
+ * 去掉误亮的选中态。真正点选 graphite 后 data-theme 变回 graphite，本规则自然失效。
+ */
+html[data-theme="phosphor"]
+  .np-lab__chip[data-theme="graphite"][aria-pressed="true"] {
+  background: transparent;
+  color: var(--fg-muted);
+}
+
 .np-lab__spacer {
   flex: 1 1 auto;
 }
