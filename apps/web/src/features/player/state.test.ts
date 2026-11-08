@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isPlayerState, PLAYER_STATES, readPlayerState } from "./state";
+import {
+  isPlayerState,
+  PLAYER_STATES,
+  readPlayerState,
+  readPlayerStateOverride,
+} from "./state";
 
 describe("readPlayerState", () => {
   it.each(PLAYER_STATES)("%s 可通过 ?state= 读取", (state) => {
@@ -14,6 +19,18 @@ describe("readPlayerState", () => {
 
   it("从完整查询串中取 state", () => {
     expect(readPlayerState("?foo=1&state=paused")).toBe("paused");
+  });
+});
+
+describe("readPlayerStateOverride", () => {
+  it.each(PLAYER_STATES)("%s 可被显式钉住", (state) => {
+    expect(readPlayerStateOverride(`?state=${state}`)).toBe(state);
+  });
+
+  it("没给或非法值返回 null（与默认 playing 区分）", () => {
+    expect(readPlayerStateOverride("")).toBeNull();
+    expect(readPlayerStateOverride("?state=")).toBeNull();
+    expect(readPlayerStateOverride("?state=nope")).toBeNull();
   });
 });
 

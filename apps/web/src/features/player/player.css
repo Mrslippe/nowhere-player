@@ -222,6 +222,28 @@
   height: 6px;
   border-radius: 50%;
   background: var(--danger);
+  cursor: help;
+}
+
+/* 一次性提示（如 next 返回 E_UNSUPPORTED）：浮在卡片底部，不拦截指针。 */
+.np-player-card__notice {
+  position: absolute;
+  right: var(--sp-4);
+  bottom: 6px;
+  left: var(--sp-4);
+  overflow: hidden;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  line-height: 1.4;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* ── 动效降级 ────────────────────────────────────────── */

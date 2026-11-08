@@ -43,3 +43,17 @@ export function readPlayerState(search?: string): PlayerState {
 
   return isPlayerState(value) ? value : DEFAULT_PLAYER_STATE;
 }
+
+/**
+ * 只有查询串明确给了合法 `?state=` 才返回状态，否则返回 `null`。
+ *
+ * T-0014 起小窗默认渲染真实播放状态；`?state=` 只在 dev 下用来钉住
+ * 静态原型（截图 / 视觉验收），需要区分「没给」和「给了 playing」。
+ */
+export function readPlayerStateOverride(search?: string): PlayerState | null {
+  const query =
+    search ?? (typeof window === "undefined" ? "" : window.location.search);
+  const value = new URLSearchParams(query).get("state");
+
+  return isPlayerState(value) ? value : null;
+}

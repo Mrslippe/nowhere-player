@@ -125,4 +125,32 @@ describe("PlayerCard", () => {
     expect(html).toContain(BASE_PROPS.title);
     expect(html).toContain(`title="${BASE_PROPS.title}"`);
   });
+
+  it("异步 error 非空时显示红点，悬停提示带 {code, message}", () => {
+    const html = renderCard("playing", {
+      error: { code: "E_DEVICE_LOST", message: "输出设备已断开" },
+    });
+
+    expect(html).toContain("np-player-card__error-dot");
+    expect(html).toContain('aria-label="播放错误：E_DEVICE_LOST"');
+    expect(html).toContain(
+      'title="E_DEVICE_LOST：输出设备已断开"',
+    );
+  });
+
+  it("无 error 时不显示红点", () => {
+    expect(renderCard("playing")).not.toContain(
+      "np-player-card__error-dot",
+    );
+  });
+
+  it("notice 一次性提示渲染为 role=status，不阻塞操作", () => {
+    const html = renderCard("paused", {
+      notice: "下一首失败 · E_UNSUPPORTED",
+    });
+
+    expect(html).toContain('role="status"');
+    expect(html).toContain("np-player-card__notice");
+    expect(html).toContain("下一首失败 · E_UNSUPPORTED");
+  });
 });

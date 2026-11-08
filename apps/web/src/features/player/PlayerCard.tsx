@@ -1,4 +1,5 @@
 import { Icon, IconButton, ProgressBar, Spinner } from "../../design";
+import type { PlayerErrorInfo } from "../../shared/player-bridge";
 import { coverBackground, coverInitial } from "./cover";
 import { formatTime } from "./format";
 import type { PlayerState } from "./state";
@@ -12,6 +13,10 @@ export type PlayerCardProps = {
   durationMs: number;
   positionMs: number;
   state: PlayerState;
+  /** 订阅到的异步错误或命令失败；非空时显示红点，悬停可看 `{code, message}`。 */
+  error?: PlayerErrorInfo | null;
+  /** 一次性提示（如 `next` 返回 E_UNSUPPORTED），不阻塞操作。 */
+  notice?: string | null;
 };
 
 /**
@@ -26,6 +31,8 @@ export function PlayerCard({
   durationMs,
   positionMs,
   state,
+  error = null,
+  notice = null,
 }: PlayerCardProps) {
   const isIdle = state === "idle";
   const isLoading = state === "loading";
@@ -44,6 +51,7 @@ export function PlayerCard({
   const displayTitle = isError ? "播放失败" : isIdle ? "未在播放" : title;
   const subtitle = isIdle ? "从配置窗选择歌曲" : `${artist} · ${album}`;
   const time = `${formatTime(shownPosition)}/${formatTime(shownDuration)}`;
+  const errorTitle = error ? `${error.code}：${error.message}` : "播放错误";
 
   return (
     <article
@@ -104,12 +112,19 @@ export function PlayerCard({
         </div>
       </div>
 
-      {isError ? (
+      {isError || error ? (
         <span
           className="np-player-card__error-dot"
           role="img"
-          aria-label="播放错误"
+          aria-label={error ? `播放错误：${error.code}` : "播放错误"}
+          title={errorTitle}
         />
+      ) : null}
+
+      {notice ? (
+        <span className="np-player-card__notice" role="status" title={notice}>
+          {notice}
+        </span>
       ) : null}
     </article>
   );
