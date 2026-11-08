@@ -4,9 +4,12 @@
  * 数据流（元数据属于媒体库，播放状态只带路径）：
  *
  *   `player:state.trackId`（绝对路径）
- *     → `library.trackByPath` 拿到 `Track.coverKey`
+ *     → `library.trackByPath` 拿到 `Track`（`cover_key` / 标题 / 艺人 / 专辑）
  *     → `library.coverUrl` 拿到封面文件绝对路径
  *     → `convertFileSrc` 拼成当前平台可加载的 URL（**不硬编码** URL 形式）
+ *
+ * T-0026 起同一次 `trackByPath` 的结果也供播放器窗的标题 / 艺人 / 专辑使用
+ * （`trackForPath`），不再为元数据单发一次 IPC。
  *
  * 两级内存缓存都按“一次请求”语义工作：同一个路径 / 同一个 key 只请求一次；
  * 失败（含文件缺失、IPC 报错）也缓存成 `null`，同一张坏图不会反复重试。
