@@ -63,3 +63,17 @@ pub(crate) fn player_volume(
 ) -> Result<PlaybackState, PlayerError> {
     handle.volume(volume)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn command_names_keep_the_dotted_contract() {
+        assert_eq!(__tauri_command_name_player_snapshot!(), "player.snapshot");
+        assert_eq!(__tauri_command_name_player_play!(), "player.play");
+        assert_eq!(__tauri_command_name_player_pause!(), "player.pause");
+        assert_eq!(__tauri_command_name_player_next!(), "player.next");
+        assert_eq!(__tauri_command_name_player_prev!(), "player.prev");
+        assert_eq!(__tauri_command_name_player_seek!(), "player.seek");
+        assert_eq!(__tauri_command_name_player_volume!(), "player.volume");
+    }
+}

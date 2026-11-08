@@ -447,3 +447,49 @@ fn map_audio_error(error: AudioError) -> PlayerError {
     };
     PlayerError::from_audio(failure, message)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use np_audio::SampleFormat;
+    use np_core::PlayerErrorCode;
+
+    #[test]
+    fn audio_errors_map_to_the_expected_codes() {
+        let cases = [
+            (
+                AudioError::Decode("bad frame".into()),
+                PlayerErrorCode::Decode,
+            ),
+            (
+                AudioError::Io(std::io::Error::other("missing file")),
+                PlayerErrorCode::Decode,
+            ),
+            (AudioError::Resample("x".into()), PlayerErrorCode::Decode),
+            (AudioError::Seek("x".into()), PlayerErrorCode::Decode),
+            (AudioError::InvalidArgument("x"), PlayerErrorCode::Decode),
+            (
+                AudioError::DeviceUnavailable("x".into()),
+                PlayerErrorCode::DeviceLost,
+            ),
+            (
+                AudioError::DeviceOpen("x".into()),
+                PlayerErrorCode::DeviceLost,
+            ),
+            (AudioError::DeviceLost, PlayerErrorCode::DeviceLost),
+            (
+                AudioError::UnsupportedFormat("x".into()),
+                PlayerErrorCode::Unsupported,
+            ),
+            (AudioError::NoSupportedFormat, PlayerErrorCode::Unsupported),
+            (
+                AudioError::UnsupportedSampleFormat(SampleFormat::F32),
+                PlayerErrorCode::Unsupported,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(map_audio_error(error).code, expected);
+        }
+    }
+}
