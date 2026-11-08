@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { previewSkin, previewTheme } from "./dev-preview";
 import { PlayerView } from "../features/player/PlayerView";
 import { TerminalView } from "../features/terminal/TerminalView";
+import { installThemeLoader } from "../shared/theme-loader";
 import type { WindowLabel } from "./window-label";
 
 /*
@@ -38,6 +39,20 @@ export function App({ label }: { label: WindowLabel }) {
       url.searchParams.set("theme", "phosphor");
       window.history.replaceState(null, "", url);
     }
+  }, []);
+
+  /*
+   * 启动时恢复用户主题（T-0029 §5.1「入口 / 路由」）。
+   *
+   * dev 预览（`?skin=` / `?theme=`）存在时让预览赢，不写 inline 变量；
+   * 生产构建 previewTheme 恒为 null，主题加载器只在有 `np.theme.id` 时动作。
+   */
+  useEffect(() => {
+    if (previewTheme !== null) {
+      return;
+    }
+
+    void installThemeLoader();
   }, []);
 
   return label === "terminal" ? <TerminalView /> : <PlayerView />;
