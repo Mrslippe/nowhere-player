@@ -6,6 +6,9 @@ import "./reset.css";
 import "./tokens.css";
 import "./themes.css";
 import "./typography.css";
+// 结构层：先铺默认值（= plain），再由具体 skin 覆写；颜色始终留在 tokens/themes。
+import "./skin/base.css";
+import "./skin/plain.css";
 
 import { installThemePersistence } from "../shared/theme";
 

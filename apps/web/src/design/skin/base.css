@@ -1,0 +1,47 @@
+/*
+ * 结构层底座（T-0027）。
+ *
+ * 分层：
+ *   tokens.css / typography.css  原始值（颜色、字号、间距、动效、字体栈）
+ *   skin/base.css + skin/*.css   结构决策（圆角、描边、阴影、字体角色、密度、出血）
+ *   components / features        只引用 --np-* 结构变量
+ *
+ * 默认值 = plain。`data-skin` 尚未挂载（或挂到未知 skin）时也保持当前外观；
+ * 每个 skin 覆写同一组变量，不覆盖颜色。
+ */
+:root {
+  /* ── 圆角：按角色命名，skin 作者不用猜编号 ─────────── */
+  --np-radius-card: 18px; /* 窗口卡片 */
+  --np-radius-inner: 12px; /* 卡片内的大块（封面） */
+  --np-radius-control: 8px; /* 主控件：按钮、媒体块 */
+  --np-radius-control-sm: 6px; /* 小控件：图标按钮、Kbd、输入控件 */
+  --np-radius-tag: 4px; /* 标签、评分格 */
+  --np-radius-micro: 3px; /* 极小块：键帽、补全类型 */
+  --np-radius-pill: 999px; /* 进度条轨道 */
+  --np-radius-circle: 50%; /* 圆点、圆形托底 */
+
+  /* ── 描边：宽度与线型是结构，颜色继续引用 token ────── */
+  --np-border-card: 1px solid var(--line);
+  --np-border-control: 1px solid var(--line);
+  --np-border-control-strong: 1px solid var(--line-strong);
+  --np-border-hairline: 1px solid var(--line); /* 分隔线：border-bottom / top / left */
+  --np-border-transparent: 1px solid transparent; /* 预留描边位，避免 hover 时跳动 */
+  --np-border-error: 2px solid var(--danger); /* 错误块左侧强调条 */
+  --np-border-width-emphasis: 2px; /* Kbd 底部厚边 */
+
+  /* ── 阴影 ─────────────────────────────────────────── */
+  --np-shadow-card: var(--shadow-1);
+  --np-shadow-float: var(--shadow-1); /* 浮层：补全弹层、提示、圆形托底 */
+  --np-shadow-focus-line: inset 0 -2px 0 var(--accent); /* 输入行焦点线 */
+
+  /* ── 字体角色：映射到 typography.css 的原始字体栈 ─── */
+  --np-font-ui: var(--font-ui);
+  --np-font-mono: var(--font-mono);
+
+  /* ── 密度 ─────────────────────────────────────────── */
+  --np-density-line: 1.6; /* 终端正文行高 */
+  --np-density-line-dense: 1.4; /* 小字、角标 */
+
+  /* ── 出血：0 = 有内边距、有卡片；后续 skin 可置 1 ─── */
+  --np-bleed: 0;
+}

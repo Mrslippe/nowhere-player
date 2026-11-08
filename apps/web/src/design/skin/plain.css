@@ -1,0 +1,37 @@
+/*
+ * plain skin（默认回退，T-0027）。
+ *
+ * 这里只是当前外观的结构快照，保证拆分前后逐像素一致。
+ * 只允许出现结构变量；颜色一律由 tokens.css / themes.css 决定。
+ * 新增 skin（如 T-0028 的 phosphor）复制本文件、只改结构值，不碰颜色。
+ */
+[data-skin="plain"] {
+  --np-radius-card: 18px;
+  --np-radius-inner: 12px;
+  --np-radius-control: 8px;
+  --np-radius-control-sm: 6px;
+  --np-radius-tag: 4px;
+  --np-radius-micro: 3px;
+  --np-radius-pill: 999px;
+  --np-radius-circle: 50%;
+
+  --np-border-card: 1px solid var(--line);
+  --np-border-control: 1px solid var(--line);
+  --np-border-control-strong: 1px solid var(--line-strong);
+  --np-border-hairline: 1px solid var(--line);
+  --np-border-transparent: 1px solid transparent;
+  --np-border-error: 2px solid var(--danger);
+  --np-border-width-emphasis: 2px;
+
+  --np-shadow-card: var(--shadow-1);
+  --np-shadow-float: var(--shadow-1);
+  --np-shadow-focus-line: inset 0 -2px 0 var(--accent);
+
+  --np-font-ui: var(--font-ui);
+  --np-font-mono: var(--font-mono);
+
+  --np-density-line: 1.6;
+  --np-density-line-dense: 1.4;
+
+  --np-bleed: 0;
+}
