@@ -64,11 +64,17 @@ pub struct PlaybackState {
     pub duration_ms: Option<u64>,
     /// 用户音量（0.0–1.0，感知曲线由 `np-audio` 负责）。
     pub volume: f32,
-    /// 播放模式；T-0013 恒为默认值，T-0015 队列接线后才会变化。
+    /// 播放模式；由队列的 `repeat/shuffle` 决定（T-0015）。
     pub mode: PlaybackMode,
     /// 最近一次异步错误；成功 `play` 或打开新曲目后清空。
     #[serde(default)]
     pub error: Option<PlayerError>,
+    /// 队列长度；`None` 表示未知（T-0015 新增，可空）。
+    #[serde(default)]
+    pub queue_length: Option<usize>,
+    /// 当前曲目在队列播放顺序里的下标；空队列为 `None`（T-0015 新增，可空）。
+    #[serde(default)]
+    pub queue_index: Option<usize>,
 }
 
 impl Default for PlaybackState {
@@ -81,6 +87,8 @@ impl Default for PlaybackState {
             volume: 1.0,
             mode: PlaybackMode::default(),
             error: None,
+            queue_length: None,
+            queue_index: None,
         }
     }
 }
@@ -294,6 +302,39 @@ impl PlaybackMachine {
         PlayerEvent::StateChanged(self.snapshot())
     }
 
+    /// 把队列的长度/指针/模式同步进快照（不发事件；由 actor 决定何时推送）。
+    pub fn sync_queue(&mut self, length: usize, index: Option<usize>, mode: PlaybackMode) {
+        self.state.queue_length = Some(length);
+        self.state.queue_index = index;
+        self.state.mode = mode;
+    }
+
+    /// 队列播完/在最后一首按 `next`（`repeat = off`）：停在该曲目并置 `Ended`。
+    ///
+    /// 与 [`PlaybackMachine::tick`] 的 ended 边沿不同，这里不要求当前是
+    /// `Playing`，因为命令可能在暂停状态下到达；同时把边沿标为已上报。
+    pub fn end(&mut self, position_ms: u64) -> PlayerEvent {
+        self.ended_reported = true;
+        self.state.status = PlaybackStatus::Ended;
+        self.state.position_ms = self.state.duration_ms.unwrap_or(position_ms);
+        self.state.error = None;
+        PlayerEvent::StateChanged(self.snapshot())
+    }
+
+    /// 清空队列后回到 `Idle`；保留音量与播放模式。
+    pub fn reset(&mut self) -> PlayerEvent {
+        self.ended_reported = false;
+        let volume = self.state.volume;
+        let mode = self.state.mode;
+        self.state = PlaybackState {
+            volume,
+            mode,
+            queue_length: Some(0),
+            ..PlaybackState::default()
+        };
+        PlayerEvent::StateChanged(self.snapshot())
+    }
+
     /// 只同步位置（`snapshot` 命令用），不产生事件。
     pub fn sync_position(&mut self, position_ms: u64) {
         self.state.position_ms = position_ms;
@@ -366,6 +407,8 @@ mod tests {
         assert_eq!(state.volume, 1.0);
         assert_eq!(state.mode, PlaybackMode::default());
         assert!(state.error.is_none());
+        assert!(state.queue_length.is_none(), "queue length is optional");
+        assert!(state.queue_index.is_none(), "queue index is optional");
     }
 
     #[test]
@@ -508,6 +551,8 @@ mod tests {
                 shuffle: true,
             },
             error: Some(PlayerError::decode("boom")),
+            queue_length: Some(3),
+            queue_index: Some(1),
         };
 
         let value: Value = serde_json::to_value(&state).expect("state serializes");
@@ -519,6 +564,8 @@ mod tests {
         assert_eq!(value["mode"]["repeat"], json!("all"));
         assert_eq!(value["mode"]["shuffle"], json!(true));
         assert_eq!(value["error"]["code"], json!("E_DECODE"));
+        assert_eq!(value["queueLength"], json!(3));
+        assert_eq!(value["queueIndex"], json!(1));
 
         let tick = serde_json::to_value(PlayerEvent::PositionTick(PositionTick { position_ms: 7 }))
             .expect("tick serializes");
@@ -529,6 +576,92 @@ mod tests {
             serde_json::to_value(PlayerEvent::StateChanged(state)).expect("state event serializes");
         assert_eq!(changed["type"], json!("state_changed"));
         assert_eq!(changed["status"], json!("playing"));
+    }
+
+    #[test]
+    fn optional_queue_fields_serialize_as_null() {
+        let value = serde_json::to_value(PlaybackState::default()).expect("state serializes");
+        assert_eq!(value["queueLength"], Value::Null);
+        assert_eq!(value["queueIndex"], Value::Null);
+    }
+
+    #[test]
+    fn queue_fields_travel_with_state_snapshots() {
+        let mut machine = playing_machine();
+        machine.sync_queue(
+            3,
+            Some(1),
+            PlaybackMode {
+                repeat: RepeatMode::All,
+                shuffle: true,
+            },
+        );
+        let state = machine.snapshot();
+        assert_eq!(state.queue_length, Some(3));
+        assert_eq!(state.queue_index, Some(1));
+        assert_eq!(state.mode.repeat, RepeatMode::All);
+        assert!(state.mode.shuffle);
+
+        match machine.tick(250, false) {
+            Some(PlayerEvent::PositionTick(_)) => {}
+            other => panic!("expected a position tick, got {other:?}"),
+        }
+        assert_eq!(machine.snapshot().queue_length, Some(3));
+    }
+
+    #[test]
+    fn end_stays_on_the_last_track_and_reports_ended_once() {
+        let mut machine = playing_machine();
+        machine.sync_queue(2, Some(1), PlaybackMode::default());
+        match machine.end(5_000) {
+            PlayerEvent::StateChanged(state) => {
+                assert_eq!(state.status, PlaybackStatus::Ended);
+                assert_eq!(state.position_ms, 180_000, "ended parks at the duration");
+                assert_eq!(state.track_id.as_deref(), Some("C:/music/a.flac"));
+                assert_eq!(state.queue_index, Some(1));
+            }
+            PlayerEvent::PositionTick(_) => panic!("end must emit a state snapshot"),
+        }
+        assert!(
+            machine.tick(180_000, true).is_none(),
+            "ended edge must not repeat"
+        );
+        // 暂停状态下也能置 ended（命令路径，不依赖 Playing）。
+        let mut paused = PlaybackMachine::new();
+        paused.open("a", Some(1_000));
+        paused.end(400);
+        assert_eq!(paused.snapshot().status, PlaybackStatus::Ended);
+        assert_eq!(paused.snapshot().position_ms, 1_000);
+    }
+
+    #[test]
+    fn reset_returns_to_idle_and_keeps_volume_and_mode() {
+        let mut machine = playing_machine();
+        machine.set_volume(0.3);
+        machine.sync_queue(
+            2,
+            Some(1),
+            PlaybackMode {
+                repeat: RepeatMode::One,
+                shuffle: true,
+            },
+        );
+        match machine.reset() {
+            PlayerEvent::StateChanged(state) => {
+                assert_eq!(state.status, PlaybackStatus::Idle);
+                assert!(state.track_id.is_none());
+                assert_eq!(state.position_ms, 0);
+                assert!(state.duration_ms.is_none());
+                assert_eq!(state.volume, 0.3);
+                assert_eq!(state.mode.repeat, RepeatMode::One);
+                assert!(state.mode.shuffle);
+                assert_eq!(state.queue_length, Some(0));
+                assert_eq!(state.queue_index, None);
+                assert!(state.error.is_none());
+            }
+            PlayerEvent::PositionTick(_) => panic!("reset must emit a state snapshot"),
+        }
+        assert!(machine.tick(0, false).is_none());
     }
 
     #[test]
