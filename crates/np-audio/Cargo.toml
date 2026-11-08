@@ -5,3 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+
+[dependencies]
+cpal = "0.18.2"
+ringbuf = "0.6.0"
+rubato = "5.0.1"
+symphonia = { version = "0.6.1", features = ["all"] }
+thiserror = "2.0"
