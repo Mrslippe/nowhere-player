@@ -189,7 +189,9 @@ pub(crate) fn execute(api: &dyn PlayerApi, block_id: &str, input: &str) -> Execu
     let clock = Instant::now();
     let result = match &parsed {
         Ok(parsed) => Executor { api }.run(parsed),
-        Err(error) => Err(error.clone()),
+        // 引号未闭合这类错误定位不到命令，没有 usage / 建议，给一句通用提示
+        // 保证失败块里的 `hint` 恒不为空（T-0018 §2.5）。
+        Err(error) => Err(error.clone().with_hint("输入 help 查看全部命令与用法")),
     };
     let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -1487,6 +1489,16 @@ mod tests {
             hint.contains("用法：seek <ms|mm:ss|±s>"),
             "unexpected hint: {hint}"
         );
+    }
+
+    #[test]
+    fn unclosed_quote_error_still_has_a_hint() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "play \"unterminated");
+
+        let (code, _, hint) = error_fields(&block);
+        assert_eq!(code, "E_CMD_ARG");
+        assert!(hint.is_some_and(|hint| !hint.is_empty()));
     }
 
     #[test]
