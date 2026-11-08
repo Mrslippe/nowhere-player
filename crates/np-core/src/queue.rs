@@ -203,6 +203,9 @@ impl Queue {
     /// - `repeat = one`：重播当前曲目（返回当前下标）；
     /// - `repeat = off`：前进一首，已在末尾则 [`QueueStep::Exhausted`]；
     /// - `repeat = all`：前进一首，末尾回绕到第一首。
+    ///
+    /// `Queue` 不是迭代器：这里只返回「下一次切歌的决策」，不借用队列元素。
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> QueueStep {
         let Some(cursor) = self.cursor else {
             return QueueStep::Exhausted;
@@ -327,7 +330,7 @@ mod tests {
 
     #[test]
     fn push_points_at_the_first_track_and_view_keeps_play_order() {
-        let mut queue = queue_with(&["a", "b", "c"]);
+        let queue = queue_with(&["a", "b", "c"]);
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.position(), Some(0));
         assert_eq!(queue.current(), Some("a"));
