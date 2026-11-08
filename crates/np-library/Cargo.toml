@@ -14,3 +14,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2.0"
 walkdir = "2.5"
+
+[dev-dependencies]
+# 测试现场生成图片并读回校验；与被测代码是同一个 crate、同一组 features。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
