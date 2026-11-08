@@ -3240,6 +3240,15 @@ mod tests {
     }
 
     #[test]
+    fn covers_dir_is_the_database_sibling() {
+        // 与 `Database::open` 的默认约定一致；asset scope 的 $APPDATA/covers
+        // 只有在 db 位于 app_data_dir 根上时才对齐。
+        let handle = LibraryHandle::new(PathBuf::from("/data/nowhere/library.db"));
+
+        assert_eq!(handle.covers_dir(), PathBuf::from("/data/nowhere/covers"));
+    }
+
+    #[test]
     fn reply_body_is_camel_case_json() {
         let reply = CmdExecReply {
             block_id: "block-1".to_owned(),
