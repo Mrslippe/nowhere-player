@@ -13,9 +13,12 @@
 //! - `mode` 一次下发完整 `{ repeat, shuffle }`，避免两次调用互相覆盖。
 //! - `clear` 是视图操作，由前端处理；执行器只留一条防御性错误。
 
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use np_core::command::{parse, registry};
 use np_core::{
-    CommandErrorCode, Parsed, ParseError, PlaybackMode, PlaybackState, PlayerError,
-    PlayerErrorCode, QueueView,
+    Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
+    PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, Span,
 };
 
 /// 执行器依赖的播放器能力（T-0018 §6.1）。
@@ -81,7 +84,8 @@ impl CmdError {
             message: error.message.clone(),
             hint: error
                 .usage
-                .clone()
+                .as_deref()
+                .map(|usage| format!("用法：{usage}"))
                 .or_else(|| error.suggestion.as_ref().map(|name| suggestion(name))),
         }
     }
@@ -135,6 +139,559 @@ fn player_error_code(code: PlayerErrorCode) -> &'static str {
         PlayerErrorCode::Unsupported => "E_UNSUPPORTED",
         PlayerErrorCode::Busy => "E_BUSY",
     }
+}
+
+/// 一条命令的执行结果（不含块壳）。
+struct Outcome {
+    outputs: Vec<Output>,
+    footer: Option<String>,
+}
+
+/// `execute` 的结果：空输入不做任何事，否则给出要按顺序推送的两个块。
+pub(crate) enum Execution {
+    /// 纯空白输入：不是错误，也不产生块。
+    Ignored,
+    /// 先推 `running`（空输出），再由 `done` 覆盖同一个 `id`。
+    Blocks {
+        /// 开始执行时推送的空块。
+        running: Box<Block>,
+        /// 执行结束的最终块。
+        done: Box<Block>,
+    },
+}
+
+/// 解析并执行一条终端输入，返回可推送的块。
+///
+/// 空输入（`Ok(None)`）不产生块；解析失败也走 `running → error` 两个块，
+/// 这样前端只要按 `id` 覆盖即可。
+pub(crate) fn execute(api: &dyn PlayerApi, block_id: &str, input: &str) -> Execution {
+    let parsed = match parse(input) {
+        Ok(None) => return Execution::Ignored,
+        Ok(Some(parsed)) => Ok(parsed),
+        Err(error) => Err(CmdError::from_parse(&error)),
+    };
+
+    let started_at = now_millis();
+    let running = Block {
+        id: block_id.to_owned(),
+        input: input.to_owned(),
+        started_at,
+        duration_ms: None,
+        status: BlockStatus::Running,
+        outputs: Vec::new(),
+        footer: None,
+        schema_version: SCHEMA_VERSION,
+    };
+
+    let clock = Instant::now();
+    let result = match &parsed {
+        Ok(parsed) => Executor { api }.run(parsed),
+        Err(error) => Err(error.clone()),
+    };
+    let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    let (status, outputs, footer) = match result {
+        Ok(outcome) => (BlockStatus::Done, outcome.outputs, outcome.footer),
+        Err(error) => (BlockStatus::Error, vec![error.to_output()], None),
+    };
+
+    let done = Block {
+        duration_ms: Some(duration_ms),
+        status,
+        outputs,
+        footer,
+        ..running.clone()
+    };
+
+    Execution::Blocks {
+        running: Box::new(running),
+        done: Box::new(done),
+    }
+}
+
+/// 把 [`Parsed`] 映射成 [`PlayerApi`] 调用并构造输出。
+struct Executor<'a> {
+    api: &'a dyn PlayerApi,
+}
+
+impl Executor<'_> {
+    /// 执行一条已解析的命令；失败时补上命令用法作为提示。
+    fn run(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        self.dispatch(parsed)
+            .map_err(|error| error.with_usage(parsed))
+    }
+
+    fn dispatch(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        match parsed.spec.name {
+            "play" => self.play(parsed),
+            "pause" => self.simple("暂停", self.api.pause()),
+            "resume" => self.simple("继续播放", self.api.resume()),
+            "next" => self.simple("下一首", self.api.next()),
+            "prev" => self.simple("上一首", self.api.prev()),
+            "seek" => self.seek(parsed),
+            "vol" => self.volume(parsed),
+            "queue" => self.queue(parsed),
+            "mode" => self.mode(parsed),
+            "help" => self.help(parsed),
+            "version" => Ok(Self::version()),
+            "clear" => Err(CmdError::new("E_CMD_ARG", "clear 由终端本地处理")
+                .with_hint("clear 是视图操作，前端直接清屏，不经过后端")),
+            other => Err(CmdError::new(
+                "E_CMD_UNKNOWN",
+                format!("命令表与执行器不一致：{other}"),
+            )),
+        }
+    }
+
+    /// `play`：无参 = 继续；纯数字 = 1 基序号；其余 = 文件路径。
+    fn play(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let Some(value) = parsed.positional.first() else {
+            return Ok(state_outcome("继续播放", &self.api.resume()?));
+        };
+
+        if is_unsigned_integer(value) {
+            let index = user_index(value)?;
+            let view = self.api.queue_jump(index)?;
+            return Ok(jump_outcome("播放", index, &view));
+        }
+
+        Ok(state_outcome("播放", &self.api.play(Some(value.clone()))?))
+    }
+
+    /// 播放类命令的公共收尾：一句标题 + 当前曲目 / 位置。
+    fn simple(
+        &self,
+        headline: &str,
+        result: Result<PlaybackState, CmdError>,
+    ) -> Result<Outcome, CmdError> {
+        Ok(state_outcome(headline, &result?))
+    }
+
+    /// `seek`：`mm:ss` / 纯毫秒是绝对位置，`±N`（秒）与 `±mm:ss` 相对当前位置。
+    fn seek(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let raw = positional_arg(parsed, "播放位置")?;
+        let target = if raw.starts_with('+') || raw.starts_with('-') {
+            let state = self.api.snapshot()?;
+            parse_relative_seek(raw, state.position_ms, state.duration_ms)?
+        } else {
+            parse_absolute_seek(raw)?
+        };
+
+        Ok(state_outcome("跳转", &self.api.seek(target)?))
+    }
+
+    /// `vol`：`±N` 先读当前音量；无论哪种写法都在调用前钳到 0–100。
+    fn volume(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let raw = positional_arg(parsed, "音量")?;
+        let level = if raw.starts_with('+') || raw.starts_with('-') {
+            let state = self.api.snapshot()?;
+            relative_volume(raw, state.volume)?
+        } else {
+            raw.parse::<i64>()
+                .map_err(|_| CmdError::new("E_CMD_ARG", format!("无效的音量：{raw}")))?
+        };
+        let clamped = level.clamp(0, 100);
+        self.api.volume(clamped as f32 / 100.0)?;
+
+        Ok(Outcome {
+            outputs: vec![text_of(vec![bold("音量"), plain(format!(" · {clamped}%"))])],
+            footer: None,
+        })
+    }
+
+    /// `mode`：先取当前模式，再一次性下发完整的 `{ repeat, shuffle }`。
+    fn mode(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let subcommand = parsed
+            .subcommand
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "mode 缺少子命令"))?;
+        let raw = positional_arg(parsed, "模式取值")?;
+        let current = self.api.snapshot()?.mode;
+
+        let mode = match subcommand.name {
+            "repeat" => PlaybackMode {
+                repeat: repeat_of(raw),
+                shuffle: current.shuffle,
+            },
+            "shuffle" => PlaybackMode {
+                repeat: current.repeat,
+                shuffle: raw == "on",
+            },
+            other => {
+                return Err(CmdError::new(
+                    "E_CMD_UNKNOWN",
+                    format!("mode 没有子命令：{other}"),
+                ));
+            }
+        };
+
+        let state = self.api.mode(mode)?;
+        Ok(Outcome {
+            outputs: vec![text_of(mode_spans(&state.mode))],
+            footer: None,
+        })
+    }
+
+    /// `queue`：`list` / `add` / `remove` / `clear` / `jump`。
+    fn queue(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let subcommand = parsed
+            .subcommand
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "queue 缺少子命令"))?;
+
+        match subcommand.name {
+            "list" => self.queue_list(),
+            "add" => self.add_paths(&parsed.positional),
+            "remove" => {
+                let index = user_index(positional_arg(parsed, "队列序号")?)?;
+                let view = self.api.queue_remove(index)?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已移除"),
+                        plain(format!(" · 第 {} 首", index + 1)),
+                    ])],
+                    footer: Some(format!("队列还剩 {} 首", view.tracks.len())),
+                })
+            }
+            "clear" => {
+                let view = self.api.queue_clear()?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![bold("队列已清空")])],
+                    footer: Some(format!("队列 {} 首", view.tracks.len())),
+                })
+            }
+            "jump" => {
+                let index = user_index(positional_arg(parsed, "队列序号")?)?;
+                let view = self.api.queue_jump(index)?;
+                Ok(jump_outcome("跳转", index, &view))
+            }
+            other => Err(CmdError::new(
+                "E_CMD_UNKNOWN",
+                format!("queue 没有子命令：{other}"),
+            )),
+        }
+    }
+
+    /// `queue list`：序号（1 基）/ 曲目 / 是否当前。
+    fn queue_list(&self) -> Result<Outcome, CmdError> {
+        let view = self.api.queue_list()?;
+        let rows = view
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(index, track)| {
+                vec![
+                    (index + 1).to_string(),
+                    track_display(track),
+                    if view.index == Some(index) {
+                        "▶".to_owned()
+                    } else {
+                        String::new()
+                    },
+                ]
+            })
+            .collect();
+
+        let footer = if view.tracks.is_empty() {
+            "队列为空 · 用 queue add <路径> 加入曲目".to_owned()
+        } else {
+            format!("{} 首 · 输入 play 1 开始播放", view.tracks.len())
+        };
+
+        Ok(Outcome {
+            outputs: vec![Output::Table {
+                columns: vec!["#".to_owned(), "曲目".to_owned(), "当前".to_owned()],
+                rows,
+                selectable: true,
+            }],
+            footer: Some(footer),
+        })
+    }
+
+    /// `queue add`：逐个加入、汇总成功数，中途失败不回滚已加入的曲目。
+    fn add_paths(&self, paths: &[String]) -> Result<Outcome, CmdError> {
+        let mut added = 0usize;
+        let mut failed = 0usize;
+        let mut first_error: Option<CmdError> = None;
+        let mut view: Option<QueueView> = None;
+
+        for path in paths {
+            match self.api.queue_add(vec![path.clone()]) {
+                Ok(updated) => {
+                    added += 1;
+                    view = Some(updated);
+                }
+                Err(error) => {
+                    failed += 1;
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+
+        if added == 0 {
+            return Err(
+                first_error.unwrap_or_else(|| CmdError::new("E_CMD_ARG", "没有要加入的曲目"))
+            );
+        }
+
+        let mut spans = vec![bold(format!("已加入 {added} 首"))];
+        if failed > 0 {
+            spans.push(dim(format!(" · 失败 {failed} 首")));
+        }
+        let footer = match (&first_error, view) {
+            (Some(error), _) => Some(format!("首条失败：{} {}", error.code, error.message)),
+            (None, Some(view)) => Some(format!("队列现有 {} 首", view.tracks.len())),
+            (None, None) => None,
+        };
+
+        Ok(Outcome {
+            outputs: vec![text_of(spans)],
+            footer,
+        })
+    }
+
+    /// `help`：不带参数列全部命令；带参数显示该命令的用法与说明。
+    fn help(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let registry = registry();
+
+        match parsed.positional.first() {
+            Some(name) => {
+                let Some(spec) = registry.find(name) else {
+                    return Err(CmdError {
+                        code: "E_CMD_UNKNOWN".to_owned(),
+                        message: format!("未识别的命令：{name}"),
+                        hint: registry.suggest(name).map(|spec| suggestion(spec.name)),
+                    });
+                };
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold(spec.usage),
+                        plain(format!("  {}", spec.summary)),
+                    ])],
+                    footer: None,
+                })
+            }
+            None => {
+                let outputs = registry
+                    .specs()
+                    .iter()
+                    .map(|spec| {
+                        text_of(vec![bold(format!("{:<8}", spec.name)), plain(spec.summary)])
+                    })
+                    .collect();
+                Ok(Outcome {
+                    outputs,
+                    footer: Some("输入 help <命令> 查看用法".to_owned()),
+                })
+            }
+        }
+    }
+
+    /// `version`：执行 crate 的版本。
+    fn version() -> Outcome {
+        Outcome {
+            outputs: vec![text_of(vec![
+                bold("Nowhere Player"),
+                plain(format!(" {}", env!("CARGO_PKG_VERSION"))),
+            ])],
+            footer: None,
+        }
+    }
+}
+
+/// 现在时刻（Unix 毫秒）。
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// 取第一个位置参数。
+fn positional_arg<'a>(parsed: &'a Parsed, name: &str) -> Result<&'a str, CmdError> {
+    parsed
+        .positional
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| CmdError::new("E_CMD_ARG", format!("缺少参数：{name}")))
+}
+
+/// 纯 ASCII 数字（无符号）——只有这种位置参数才是序号，其余按路径处理。
+fn is_unsigned_integer(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// 用户输入的 1 基序号 → 队列的 0 基下标（T-0018 §6.2 定死）。
+fn user_index(value: &str) -> Result<usize, CmdError> {
+    let number: u64 = value
+        .parse()
+        .map_err(|_| CmdError::new("E_CMD_ARG", format!("序号超出范围：{value}")))?;
+    if number == 0 {
+        return Err(CmdError::new("E_CMD_ARG", "序号从 1 开始"));
+    }
+    usize::try_from(number - 1)
+        .map_err(|_| CmdError::new("E_CMD_ARG", format!("序号超出范围：{value}")))
+}
+
+/// `mm:ss` → 毫秒。
+fn parse_mm_ss(text: &str) -> Option<u64> {
+    let (minutes, seconds) = text.split_once(':')?;
+    let minutes: u64 = minutes.parse().ok()?;
+    let seconds: u64 = seconds.parse().ok()?;
+    minutes
+        .checked_mul(60_000)?
+        .checked_add(seconds.checked_mul(1_000)?)
+}
+
+/// 绝对位置：带冒号按 `mm:ss`，否则按毫秒。
+fn parse_absolute_seek(raw: &str) -> Result<u64, CmdError> {
+    if raw.contains(':') {
+        parse_mm_ss(raw).ok_or_else(|| CmdError::new("E_CMD_ARG", format!("无效的播放位置：{raw}")))
+    } else {
+        raw.parse::<u64>()
+            .map_err(|_| CmdError::new("E_CMD_ARG", format!("无效的播放位置：{raw}")))
+    }
+}
+
+/// 相对位置：`±N` 是秒，`±mm:ss` 是分钟秒；结果钳在 `[0, duration]`。
+fn parse_relative_seek(
+    raw: &str,
+    current_ms: u64,
+    duration_ms: Option<u64>,
+) -> Result<u64, CmdError> {
+    let (negative, body) = match raw.strip_prefix('-') {
+        Some(body) => (true, body),
+        None => (false, raw.strip_prefix('+').unwrap_or(raw)),
+    };
+
+    let delta_ms: i128 = if body.contains(':') {
+        i128::from(
+            parse_mm_ss(body)
+                .ok_or_else(|| CmdError::new("E_CMD_ARG", format!("无效的播放位置：{raw}")))?,
+        )
+    } else {
+        let seconds: u64 = body
+            .parse()
+            .map_err(|_| CmdError::new("E_CMD_ARG", format!("无效的播放位置：{raw}")))?;
+        i128::from(
+            seconds
+                .checked_mul(1_000)
+                .ok_or_else(|| CmdError::new("E_CMD_ARG", format!("无效的播放位置：{raw}")))?,
+        )
+    };
+
+    let target = i128::from(current_ms) + if negative { -delta_ms } else { delta_ms };
+    let upper = duration_ms.map_or(i128::MAX, i128::from);
+
+    Ok(u64::try_from(target.clamp(0, upper)).unwrap_or(0))
+}
+
+/// 相对音量：当前百分比（0–100）+ 增量，钳制留给调用方。
+fn relative_volume(raw: &str, current: f32) -> Result<i64, CmdError> {
+    let delta: i64 = raw
+        .parse()
+        .map_err(|_| CmdError::new("E_CMD_ARG", format!("无效的音量：{raw}")))?;
+    let current_percent = (current * 100.0).round().clamp(0.0, 100.0) as i64;
+
+    Ok(current_percent + delta)
+}
+
+/// 枚举值 → 循环模式（解析层已归一化，未知值按 `off` 兜底）。
+fn repeat_of(value: &str) -> RepeatMode {
+    match value {
+        "one" => RepeatMode::One,
+        "all" => RepeatMode::All,
+        _ => RepeatMode::Off,
+    }
+}
+
+fn plain(text: impl Into<String>) -> Span {
+    Span::plain(text)
+}
+
+fn bold(text: impl Into<String>) -> Span {
+    Span {
+        bold: true,
+        ..Span::plain(text)
+    }
+}
+
+fn dim(text: impl Into<String>) -> Span {
+    Span {
+        dim: true,
+        ..Span::plain(text)
+    }
+}
+
+fn text_of(spans: Vec<Span>) -> Output {
+    Output::Text { spans, tone: None }
+}
+
+/// 播放类命令的输出：标题 + 曲目名 + 位置/时长。
+fn state_outcome(headline: &str, state: &PlaybackState) -> Outcome {
+    let mut spans = vec![bold(headline)];
+
+    if let Some(track) = state.track_id.as_deref() {
+        spans.push(dim(format!(" · {}", track_display(track))));
+        let position = format_position(state.position_ms);
+        let duration = state
+            .duration_ms
+            .map_or_else(|| "--:--".to_owned(), format_position);
+        spans.push(dim(format!(" · {position} / {duration}")));
+    }
+
+    let footer = match state.queue_length {
+        Some(length) if length > 0 => Some(format!("队列 {length} 首")),
+        _ => None,
+    };
+
+    Outcome {
+        outputs: vec![text_of(spans)],
+        footer,
+    }
+}
+
+/// 队列跳转类命令的输出；序号对用户按 1 基显示。
+fn jump_outcome(headline: &str, index: usize, view: &QueueView) -> Outcome {
+    let mut spans = vec![bold(headline), plain(format!(" · 第 {} 首", index + 1))];
+    if let Some(track) = view.tracks.get(index) {
+        spans.push(dim(format!(" · {}", track_display(track))));
+    }
+
+    Outcome {
+        outputs: vec![text_of(spans)],
+        footer: Some(format!("队列 {} 首", view.tracks.len())),
+    }
+}
+
+fn mode_spans(mode: &PlaybackMode) -> Vec<Span> {
+    let repeat = match mode.repeat {
+        RepeatMode::Off => "关",
+        RepeatMode::One => "单曲",
+        RepeatMode::All => "列表",
+    };
+    let shuffle = if mode.shuffle { "开" } else { "关" };
+
+    vec![
+        bold("模式"),
+        plain(format!(" · 循环：{repeat} · 随机：{shuffle}")),
+    ]
+}
+
+/// 曲目 id（本地文件为绝对路径）在终端里只显示文件名。
+fn track_display(track_id: &str) -> String {
+    std::path::Path::new(track_id)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| track_id.to_owned())
+}
+
+/// 毫秒 → `mm:ss`（超过一小时时分钟继续累加）。
+fn format_position(position_ms: u64) -> String {
+    let total_seconds = position_ms / 1_000;
+    format!("{:02}:{:02}", total_seconds / 60, total_seconds % 60)
 }
 
 #[cfg(test)]
@@ -416,5 +973,444 @@ mod tests {
             shuffle: false,
         };
         assert_eq!(mode, PlaybackMode::default());
+    }
+
+    // ---- 执行器：命令映射 ----
+
+    fn done_block(api: &FakeApi, input: &str) -> Block {
+        match execute(api, "block-1", input) {
+            Execution::Blocks { done, .. } => *done,
+            Execution::Ignored => panic!("expected a block for input: {input}"),
+        }
+    }
+
+    fn text_of_block(block: &Block) -> String {
+        block
+            .outputs
+            .iter()
+            .filter_map(|output| match output {
+                Output::Text { spans, .. } => Some(
+                    spans
+                        .iter()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn error_fields(block: &Block) -> (&str, &str, Option<&str>) {
+        block
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Error {
+                    code,
+                    message,
+                    hint,
+                    ..
+                } => Some((code.as_str(), message.as_str(), hint.as_deref())),
+                _ => None,
+            })
+            .expect("block must contain an error output")
+    }
+
+    #[test]
+    fn play_without_argument_resumes() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "play");
+
+        assert_eq!(api.calls(), vec![Call::Resume]);
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("继续播放"));
+    }
+
+    #[test]
+    fn play_number_is_one_based_and_jumps() {
+        let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], None));
+        let block = done_block(&api, "play 3");
+
+        assert_eq!(api.calls(), vec![Call::QueueJump(2)]);
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("第 3 首"));
+    }
+
+    #[test]
+    fn play_zero_is_rejected_before_any_call() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "play 0");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn play_path_is_passed_through() {
+        let api = FakeApi::new();
+        let block = done_block(&api, r"play C:\Music\a.flac");
+
+        assert_eq!(
+            api.calls(),
+            vec![Call::Play(Some(r"C:\Music\a.flac".to_owned()))]
+        );
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("a.flac"));
+    }
+
+    #[test]
+    fn pause_resume_next_prev_map_to_same_named_calls() {
+        let api = FakeApi::new();
+
+        for input in ["pause", "resume", "next", "prev"] {
+            assert_eq!(done_block(&api, input).status, BlockStatus::Done);
+        }
+
+        assert_eq!(
+            api.calls(),
+            vec![Call::Pause, Call::Resume, Call::Next, Call::Prev]
+        );
+    }
+
+    #[test]
+    fn vol_absolute_sets_level_and_clamps_high() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "vol 150");
+
+        assert_eq!(api.calls(), vec![Call::Volume(1.0)]);
+        assert!(text_of_block(&block).contains("100%"));
+    }
+
+    #[test]
+    fn vol_absolute_zero_is_allowed() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "vol 0");
+
+        assert_eq!(api.calls(), vec![Call::Volume(0.0)]);
+        assert!(text_of_block(&block).contains("0%"));
+    }
+
+    #[test]
+    fn vol_relative_reads_current_level_first() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            volume: 0.42,
+            ..PlaybackState::default()
+        });
+        let block = done_block(&api, "vol +8");
+
+        let calls = api.calls();
+        assert_eq!(calls.first(), Some(&Call::Snapshot));
+        match calls.get(1) {
+            Some(Call::Volume(volume)) => assert!((volume - 0.5).abs() < 1e-6),
+            other => panic!("expected volume call, got {other:?}"),
+        }
+        assert!(text_of_block(&block).contains("50%"));
+    }
+
+    #[test]
+    fn vol_relative_clamps_low() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            volume: 0.5,
+            ..PlaybackState::default()
+        });
+        let block = done_block(&api, "vol -200");
+
+        assert_eq!(api.calls(), vec![Call::Snapshot, Call::Volume(0.0)]);
+        assert!(text_of_block(&block).contains("0%"));
+    }
+
+    #[test]
+    fn seek_plain_number_is_milliseconds() {
+        let api = FakeApi::new();
+        done_block(&api, "seek 90000");
+
+        assert_eq!(api.calls(), vec![Call::Seek(90_000)]);
+    }
+
+    #[test]
+    fn seek_mm_ss_is_absolute() {
+        let api = FakeApi::new();
+        done_block(&api, "seek 1:30");
+
+        assert_eq!(api.calls(), vec![Call::Seek(90_000)]);
+    }
+
+    #[test]
+    fn seek_relative_seconds_uses_current_position() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            position_ms: 30_000,
+            duration_ms: Some(180_000),
+            ..PlaybackState::default()
+        });
+        done_block(&api, "seek +15");
+
+        assert_eq!(api.calls(), vec![Call::Snapshot, Call::Seek(45_000)]);
+    }
+
+    #[test]
+    fn seek_relative_clamps_to_track_bounds() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            position_ms: 30_000,
+            duration_ms: Some(180_000),
+            ..PlaybackState::default()
+        });
+
+        done_block(&api, "seek -40");
+        done_block(&api, "seek +999");
+
+        assert_eq!(
+            api.calls(),
+            vec![
+                Call::Snapshot,
+                Call::Seek(0),
+                Call::Snapshot,
+                Call::Seek(180_000)
+            ]
+        );
+    }
+
+    #[test]
+    fn mode_repeat_sends_complete_mode_once() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            mode: PlaybackMode {
+                repeat: RepeatMode::Off,
+                shuffle: true,
+            },
+            ..PlaybackState::default()
+        });
+        let block = done_block(&api, "mode repeat all");
+
+        let calls = api.calls();
+        assert_eq!(calls.first(), Some(&Call::Snapshot));
+        let modes: Vec<&Call> = calls
+            .iter()
+            .filter(|call| matches!(call, Call::Mode(_)))
+            .collect();
+        assert_eq!(modes.len(), 1, "mode 必须一次下发完整对象");
+        assert_eq!(
+            modes[0],
+            &Call::Mode(PlaybackMode {
+                repeat: RepeatMode::All,
+                shuffle: true,
+            })
+        );
+        assert!(text_of_block(&block).contains("循环：列表"));
+    }
+
+    #[test]
+    fn mode_shuffle_keeps_repeat_from_snapshot() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            mode: PlaybackMode {
+                repeat: RepeatMode::All,
+                shuffle: false,
+            },
+            ..PlaybackState::default()
+        });
+        let block = done_block(&api, "mode shuffle on");
+
+        assert_eq!(
+            api.calls(),
+            vec![
+                Call::Snapshot,
+                Call::Mode(PlaybackMode {
+                    repeat: RepeatMode::All,
+                    shuffle: true,
+                })
+            ]
+        );
+        assert!(text_of_block(&block).contains("随机：开"));
+    }
+
+    #[test]
+    fn queue_list_renders_rows_and_current_marker() {
+        let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], Some(1)));
+        let block = done_block(&api, "queue list");
+
+        let table = block
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Table { columns, rows, .. } => Some((columns, rows)),
+                _ => None,
+            })
+            .expect("queue list must render a table");
+
+        assert_eq!(
+            table.0,
+            &vec!["#".to_owned(), "曲目".to_owned(), "当前".to_owned()]
+        );
+        assert_eq!(table.1.len(), 3);
+        assert_eq!(table.1[0][0], "1");
+        assert_eq!(table.1[1][2], "▶");
+        assert_eq!(table.1[0][2], "");
+    }
+
+    #[test]
+    fn queue_add_reports_success_count() {
+        let api = FakeApi::new();
+        let block = done_block(&api, r"queue add C:\Music\a.flac");
+
+        assert_eq!(
+            api.calls(),
+            vec![Call::QueueAdd(vec![r"C:\Music\a.flac".to_owned()])]
+        );
+        assert!(text_of_block(&block).contains("已加入 1 首"));
+        assert_eq!(block.footer.as_deref(), Some("队列现有 1 首"));
+    }
+
+    #[test]
+    fn queue_add_keeps_going_after_partial_failure() {
+        let api = FakeApi::new().with_reject_paths(&["b.flac"]);
+        let paths = vec![
+            "a.flac".to_owned(),
+            "b.flac".to_owned(),
+            "c.flac".to_owned(),
+        ];
+        let outcome = Executor { api: &api }
+            .add_paths(&paths)
+            .expect("partial success is still a success");
+
+        assert_eq!(api.calls().len(), 3);
+        assert_eq!(
+            outcome.footer.as_deref(),
+            Some("首条失败：E_DECODE 无法加入：b.flac")
+        );
+    }
+
+    #[test]
+    fn queue_remove_uses_one_based_index() {
+        let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], Some(0)));
+        let block = done_block(&api, "queue remove 2");
+
+        assert_eq!(api.calls(), vec![Call::QueueRemove(1)]);
+        assert!(text_of_block(&block).contains("第 2 首"));
+        assert_eq!(block.footer.as_deref(), Some("队列还剩 2 首"));
+    }
+
+    #[test]
+    fn queue_jump_uses_one_based_index() {
+        let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], Some(0)));
+        let block = done_block(&api, "queue jump 3");
+
+        assert_eq!(api.calls(), vec![Call::QueueJump(2)]);
+        assert!(text_of_block(&block).contains("第 3 首"));
+    }
+
+    #[test]
+    fn queue_clear_empties_the_queue() {
+        let api = FakeApi::new().with_queue(queue_view(&["a.flac"], Some(0)));
+        let block = done_block(&api, "queue clear");
+
+        assert_eq!(api.calls(), vec![Call::QueueClear]);
+        assert!(text_of_block(&block).contains("清空"));
+    }
+
+    #[test]
+    fn parse_error_becomes_error_block_with_hint() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "plya");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        let (code, _, hint) = error_fields(&block);
+        assert_eq!(code, "E_CMD_UNKNOWN");
+        assert_eq!(hint, Some("did you mean 'play'?"));
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn argument_error_carries_usage_hint() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "seek 1:2:3");
+
+        let (code, _, hint) = error_fields(&block);
+        assert_eq!(code, "E_CMD_ARG");
+        let hint = hint.expect("hint must not be empty");
+        assert!(
+            hint.contains("用法：seek <ms|mm:ss|±s>"),
+            "unexpected hint: {hint}"
+        );
+    }
+
+    #[test]
+    fn api_error_becomes_error_block_with_usage_hint() {
+        let api =
+            FakeApi::new().with_playback_error(CmdError::new("E_UNSUPPORTED", "没有可暂停的曲目"));
+        let block = done_block(&api, "pause");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        let (code, message, hint) = error_fields(&block);
+        assert_eq!(code, "E_UNSUPPORTED");
+        assert_eq!(message, "没有可暂停的曲目");
+        assert_eq!(hint, Some("用法：pause"));
+    }
+
+    #[test]
+    fn help_lists_every_registered_command() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "help");
+        let text = text_of_block(&block);
+
+        for spec in registry().specs() {
+            assert!(text.contains(spec.name), "help 缺少命令：{}", spec.name);
+        }
+    }
+
+    #[test]
+    fn help_with_argument_shows_usage() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "help seek");
+
+        assert!(text_of_block(&block).contains("seek <ms|mm:ss|±s>"));
+    }
+
+    #[test]
+    fn version_reports_crate_version() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "version");
+
+        assert!(text_of_block(&block).contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn clear_is_rejected_with_explanation() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "clear");
+
+        let (code, message, hint) = error_fields(&block);
+        assert_eq!(code, "E_CMD_ARG");
+        assert!(message.contains("clear 由终端本地处理"));
+        assert!(hint.is_some_and(|hint| !hint.is_empty()));
+    }
+
+    #[test]
+    fn blank_input_produces_no_block() {
+        let api = FakeApi::new();
+
+        assert!(matches!(
+            execute(&api, "block-1", "   "),
+            Execution::Ignored
+        ));
+    }
+
+    #[test]
+    fn block_is_running_then_done_with_the_same_id() {
+        let api = FakeApi::new();
+        let Execution::Blocks { running, done } = execute(&api, "id-1", "pause") else {
+            panic!("expected blocks");
+        };
+
+        assert_eq!(running.id, "id-1");
+        assert_eq!(running.status, BlockStatus::Running);
+        assert!(running.outputs.is_empty());
+        assert_eq!(running.duration_ms, None);
+
+        assert_eq!(done.id, running.id);
+        assert_eq!(done.input, "pause");
+        assert_eq!(done.status, BlockStatus::Done);
+        assert!(done.duration_ms.is_some());
+        assert!(done.started_at > 0);
+        assert_eq!(done.schema_version, SCHEMA_VERSION);
     }
 }
