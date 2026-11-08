@@ -111,14 +111,25 @@ pub(crate) fn remove_orphans(dir: &Path, referenced: &HashSet<String>) -> usize 
         };
         let orphan = if let Some(stem) = name.strip_suffix(".jpg") {
             !referenced.contains(stem)
+        } else if let Some(stem) = name.strip_suffix(".tmp") {
+            // 只认本模块写出的 `<16 位 hex>.tmp`，别碰目录里的其他临时文件。
+            is_cover_key(stem)
         } else {
-            name.ends_with(".tmp")
+            false
         };
         if orphan && fs::remove_file(&path).is_ok() {
             removed += 1;
         }
     }
     removed
+}
+
+/// `cover_key` 的形状：16 位小写 hex。
+fn is_cover_key(key: &str) -> bool {
+    key.len() == 16
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 /// 解码 → 缩放 → JPEG 编码；任何一步失败都返回 `None`。
@@ -316,10 +327,12 @@ mod tests {
         fs::create_dir_all(&covers_dir).expect("create covers dir");
         let kept = covers_dir.join("kept.jpg");
         let orphan = covers_dir.join("orphan.jpg");
-        let stale = covers_dir.join("partial.tmp");
+        let stale = covers_dir.join("0123456789abcdef.tmp");
+        let unrelated = covers_dir.join("notes.tmp");
         fs::write(&kept, b"jpeg").expect("write kept");
         fs::write(&orphan, b"jpeg").expect("write orphan");
         fs::write(&stale, b"partial").expect("write tmp");
+        fs::write(&unrelated, b"keep me").expect("write unrelated tmp");
 
         Scanner::new(&db, &NoopObserver)
             .full()
@@ -329,6 +342,7 @@ mod tests {
         assert!(kept.is_file(), "referenced cover was removed");
         assert!(!orphan.exists(), "orphan cover survived full scan");
         assert!(!stale.exists(), "stale tmp survived full scan");
+        assert!(unrelated.is_file(), "unrelated tmp must be untouched");
 
         // 增量扫描不清理：新出现的孤儿文件要留到下一次全量。
         let later_orphan = covers_dir.join("later.jpg");
