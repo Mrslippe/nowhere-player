@@ -91,11 +91,11 @@ describe("runMockCommand", () => {
     });
   });
 
-  it("play 序号越界时返回 E_QUEUE_RANGE，而不是假装播放", () => {
+  it("play 序号越界时返回 E_CMD_ARG，而不是假装播放", () => {
     const block = runMockCommand("play 99");
 
     expect(block.status).toBe("error");
-    expect(block.outputs[0]).toMatchObject({ type: "error", code: "E_QUEUE_RANGE" });
+    expect(block.outputs[0]).toMatchObject({ type: "error", code: "E_CMD_ARG" });
   });
 
   it("cover 返回 media/cover，尺寸与 fixture 一致", () => {

@@ -128,9 +128,9 @@ function playResult(index: number): MockResult {
       outputs: [
         {
           type: "error",
-          code: "E_QUEUE_RANGE",
-          message: `队列里没有第 ${index} 首`,
-          hint: `输入 search 晴天 查看可播结果（当前 ${TRACKS.length} 首）`,
+          code: "E_CMD_ARG",
+          message: `play 的序号超出范围：队列只有 ${TRACKS.length} 首`,
+          hint: `用法：play 1-${TRACKS.length}`,
           actions: null,
         },
       ],
