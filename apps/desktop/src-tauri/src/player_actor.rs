@@ -976,10 +976,12 @@ mod tests {
 
     /// 端到端切歌：真实 `Player` + 临时 wav。
     ///
+    /// 覆盖：坏文件自动跳过 → 自然播完进下一首 → 移除当前项停止播放。
     /// 需要音频设备；无设备环境（如 CI 的 Ubuntu runner）会先探测并跳过。
     #[test]
-    fn real_player_advances_on_end_and_stops_when_current_is_removed() {
+    fn real_player_skips_broken_track_advances_on_end_and_stops_on_removal() {
         let dir = temp_dir("auto-advance");
+        let missing = dir.join("missing.wav");
         let first = dir.join("first.wav");
         let second = dir.join("second.wav");
         write_wav(&first, 300);
@@ -995,15 +997,26 @@ mod tests {
             }
         }
 
+        let missing = missing.to_string_lossy().into_owned();
         let first = first.to_string_lossy().into_owned();
         let second = second.to_string_lossy().into_owned();
         let sink = RecordingSink::default();
         let mut actor = PlayerActor::new(sink.clone());
 
         actor
-            .queue_add(vec![first.clone(), second.clone()])
+            .queue_add(vec![missing.clone(), first.clone(), second.clone()])
             .unwrap();
-        actor.play(Some(first.clone())).expect("first track opens");
+
+        // 坏文件：打开失败后自动跳到下一首并开始播放。
+        actor
+            .play(Some(missing.clone()))
+            .expect("broken track must be skipped");
+        assert_eq!(actor.queue.current(), Some(first.as_str()));
+        assert_eq!(
+            actor.machine.snapshot().status,
+            PlaybackStatus::Playing,
+            "the next track must start playing"
+        );
 
         // 等自然播完：tick 应该自动切到第二首。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1021,13 +1034,14 @@ mod tests {
 
         let state = sink.last_state().expect("switching must emit a snapshot");
         assert_eq!(state.track_id.as_deref(), Some(second.as_str()));
-        assert_eq!(state.queue_index, Some(1));
+        assert_eq!(state.queue_index, Some(2));
         assert_eq!(state.status, PlaybackStatus::Playing);
 
-        // 移除正在播放的当前项：停止输出、不自动播下一首，指针落到新的当前项。
-        let view = actor.queue_remove(1).unwrap();
-        assert_eq!(view.tracks, vec![first.clone()]);
-        assert_eq!(view.index, Some(0));
+        // 移除正在播放的当前项（最后一首）：停止输出、不自动播下一首，
+        // 指针退到新的最后一项。
+        let view = actor.queue_remove(2).unwrap();
+        assert_eq!(view.tracks, vec![missing.clone(), first.clone()]);
+        assert_eq!(view.index, Some(1));
         assert!(
             actor.player.is_none(),
             "the live player must be released on removal"
@@ -1035,7 +1049,7 @@ mod tests {
         let state = sink.last_state().unwrap();
         assert_eq!(state.status, PlaybackStatus::Idle);
         assert!(state.track_id.is_none());
-        assert_eq!(state.queue_index, Some(0));
+        assert_eq!(state.queue_index, Some(1));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
