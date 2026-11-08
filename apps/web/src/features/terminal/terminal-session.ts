@@ -13,6 +13,18 @@ import { toCommandError } from "../../shared/command-bridge";
 let sequence = 0;
 
 /**
+ * 展示用版本号。
+ *
+ * 与 `Cargo.toml` 工作区版本 / `tauri.conf.json` 的 `version` 保持一致（当前均为
+ * `0.0.0`）。前端没有构建期版本注入点（`vite.config.ts` 本卡禁改），
+ * 版本号提升时这里要同步改；后端 `version` 命令是权威值。
+ */
+export const APP_VERSION = "0.0.0";
+
+/** 首屏欢迎块的固定 id（不随刷新变化，便于测试与截图）。 */
+export const WELCOME_BLOCK_ID = "blk_welcome";
+
+/**
  * 生成 `cmd.exec` 的 `blockId`（前端生成，后端原样回填到两次事件里）。
  *
  * 优先 `crypto.randomUUID()`；运行环境没有时退回「时间戳 + 自增序号」，
@@ -122,5 +134,47 @@ export function ipcErrorBlock(
       },
     ],
     footer: null,
+  };
+}
+
+/**
+ * 首屏欢迎块（T-0019 §6）：版本号 + “输入 help 查看命令”。
+ *
+ * **不发命令**，纯本地构造；`input` 故意留空——没有跑过任何命令。
+ */
+export function createWelcomeBlock(
+  version: string = APP_VERSION,
+  now: number = Date.now(),
+): Block {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: WELCOME_BLOCK_ID,
+    input: "",
+    startedAt: now,
+    durationMs: null,
+    status: "done",
+    outputs: [
+      {
+        type: "text",
+        tone: null,
+        spans: [
+          {
+            text: "Nowhere Player",
+            bold: true,
+            dim: false,
+            italic: false,
+            color: "accent",
+          },
+          {
+            text: ` ${version}`,
+            bold: false,
+            dim: false,
+            italic: false,
+            color: null,
+          },
+        ],
+      },
+    ],
+    footer: "输入 help 查看命令",
   };
 }

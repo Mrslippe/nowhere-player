@@ -15,6 +15,7 @@ import {
 import { parseVariant, type LabVariant } from "./components/variant";
 import { runMockCommand } from "./mock-commands";
 import { blocksToAnsi } from "./renderers/xterm/blocks-to-ansi";
+import { APP_VERSION, WELCOME_BLOCK_ID } from "./terminal-session";
 
 const OUTPUT_MARKERS = [
   "np-blocks-text",
@@ -111,6 +112,33 @@ describe("TerminalLab 三种视图", () => {
 
     expect(html).toContain('data-window="terminal"');
     expect(html).toContain('data-testid="terminal-lab"');
+  });
+});
+
+describe("首屏真实链路（T-0019）", () => {
+  it("首屏只有欢迎块：版本号 + 输入 help 查看命令，默认走结构化视图", () => {
+    const html = renderToStaticMarkup(<TerminalView />);
+
+    const start = html.indexOf(`data-block-id="${WELCOME_BLOCK_ID}"`);
+    expect(start).toBeGreaterThanOrEqual(0);
+
+    // 只截欢迎块附近，避免匹配到输入框 placeholder 里的同一句话。
+    const welcome = html.slice(start, start + 600);
+    expect(welcome).toContain("Nowhere Player");
+    expect(welcome).toContain(APP_VERSION);
+    expect(welcome).toContain("输入 help 查看命令");
+
+    // 默认不再是分屏实验室：只有 A 侧，xterm 仍然可通过 ?variant=xterm 进入。
+    expect(html).toContain('data-pane="blocks"');
+    expect(html).not.toContain('data-pane="xterm"');
+    expect(html.match(/data-block-count="1"/g) ?? []).toHaveLength(1);
+  });
+
+  it("实验室入口 ?variant=xterm 仍然可用（保留 M0 演示内容）", () => {
+    const html = renderLab("xterm", [demoBlock()]);
+
+    expect(html).toContain('data-pane="xterm"');
+    expect(html).toContain('data-testid="xterm-surface"');
   });
 });
 

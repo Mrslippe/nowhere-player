@@ -2,12 +2,17 @@
  * T-0008 §6.2：假命令生成器。
  *
  * `input → Block`，不接 IPC、不解析真实命令、不访问网络。
- * 只认六个演示命令；其余输入一律返回 `E_CMD_UNKNOWN`，不做“输入什么都能跑”的假象。
+ * 只认演示命令（`scan` / `search` / `play` / `perm` / `hint` / `cover` /
+ * `help` / `version`）；其余输入一律返回 `E_CMD_UNKNOWN`，不做“输入什么都能跑”的假象。
+ *
+ * T-0019 起它只作为浏览器（无 Tauri）预览的兜底，由 `command-bridge` 的 `fallback`
+ * 注入；终端窗默认走真实 `cmd.exec`。
  *
  * 一个命令 = 一个 Block；`progress` 等原语只是输出，不在这里做原地刷新。
  */
 import type { Block, BlockStatus, Output, Span } from "../../shared/terminal-model";
 import { SCHEMA_VERSION } from "../../shared/terminal-model";
+import { APP_VERSION } from "./terminal-session";
 
 interface DemoTrack {
   title: string;
@@ -36,7 +41,16 @@ export interface MockCommandOptions {
   id?: string;
 }
 
-type MockKind = "scan" | "search" | "play" | "perm" | "hint" | "cover" | "unknown";
+type MockKind =
+  | "scan"
+  | "search"
+  | "play"
+  | "perm"
+  | "hint"
+  | "cover"
+  | "help"
+  | "version"
+  | "unknown";
 
 interface ParsedCommand {
   kind: MockKind;
@@ -64,6 +78,10 @@ function span(text: string, style: Partial<Omit<Span, "text">> = {}): Span {
 
 function table(columns: string[], rows: string[][]): Output {
   return { type: "table", columns, rows, selectable: true };
+}
+
+function textOutput(spans: Span[]): Output {
+  return { type: "text", tone: null, spans };
 }
 
 function trackRows(withPlayable: boolean): string[][] {
@@ -204,6 +222,46 @@ function coverResult(): MockResult {
   };
 }
 
+/** 浏览器预览也没有可跑的命令表：`help` 至少要给出一份能照抄的清单。 */
+const MOCK_HELP: readonly (readonly [string, string])[] = [
+  ["play [序号|路径]", "播放或继续当前"],
+  ["pause / resume", "暂停 / 继续"],
+  ["next / prev", "队列上一首 / 下一首"],
+  ["seek <ms|mm:ss|±s>", "跳转"],
+  ["vol <0-100|±N>", "音量"],
+  ["queue [list|add|remove|clear|jump]", "队列"],
+  ["mode repeat <off|one|all>", "循环模式"],
+  ["mode shuffle <on|off>", "随机模式"],
+  ["help [命令]", "命令表"],
+  ["version", "版本"],
+  ["clear", "清屏（前端本地处理）"],
+];
+
+function helpResult(): MockResult {
+  return {
+    status: "done",
+    durationMs: 2,
+    outputs: MOCK_HELP.map(([usage, summary]) =>
+      textOutput([span(usage, { bold: true }), span(`  ${summary}`)]),
+    ),
+    footer: "浏览器 mock · 真实后端（T-0018）返回完整命令表",
+  };
+}
+
+function versionResult(): MockResult {
+  return {
+    status: "done",
+    durationMs: 1,
+    outputs: [
+      textOutput([
+        span("Nowhere Player", { bold: true, color: "accent" }),
+        span(` ${APP_VERSION}`),
+      ]),
+    ],
+    footer: null,
+  };
+}
+
 function unknownResult(input: string): MockResult {
   const trimmed = input.trim();
 
@@ -246,6 +304,11 @@ function parseCommand(input: string): ParsedCommand {
       return rest === "" ? { kind: "hint" } : { kind: "unknown" };
     case "cover":
       return rest === "" ? { kind: "cover" } : { kind: "unknown" };
+    case "help":
+      // mock 不解析子命令：带参数也给全表（真实后端会只给该命令的用法）。
+      return { kind: "help" };
+    case "version":
+      return rest === "" ? { kind: "version" } : { kind: "unknown" };
     default:
       return { kind: "unknown" };
   }
@@ -267,6 +330,10 @@ function resolve(input: string): MockResult {
       return hintResult();
     case "cover":
       return coverResult();
+    case "help":
+      return helpResult();
+    case "version":
+      return versionResult();
     case "unknown":
       return unknownResult(input);
   }
@@ -280,7 +347,8 @@ function createId(now: number): string {
 /**
  * 把一条演示命令包装成契约里的 {@link Block}。
  *
- * 六个命令：`scan` / `search <关键词>` / `play <序号>` / `perm` / `hint` / `cover`。
+ * 八个命令：`scan` / `search <关键词>` / `play <序号>` / `perm` / `hint` /
+ * `cover` / `help` / `version`。
  * 其他输入返回 `E_CMD_UNKNOWN`。
  */
 export function runMockCommand(input: string, options: MockCommandOptions = {}): Block {

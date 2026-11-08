@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Block, BlockStatus, Output } from "../../shared/terminal-model";
 import { isBlock } from "../../shared/terminal-model.guard";
 import { runMockCommand } from "./mock-commands";
+import { APP_VERSION } from "./terminal-session";
 
 function outputTypes(block: Block): string[] {
   return block.outputs.map((output: Output) => output.type);
@@ -21,6 +22,27 @@ const COMMAND_CASES: CommandCase[] = [
   { input: "hint", status: "done", outputs: ["hint"] },
   { input: "cover", status: "done", outputs: ["media"] },
 ];
+
+describe("浏览器兜底的 help / version（T-0019）", () => {
+  it("help 给出可照抄的命令清单，而不是 E_CMD_UNKNOWN", () => {
+    const block = runMockCommand("help", { now: 5 });
+
+    expect(block.status).toBe("done");
+    expect(block.outputs.length).toBeGreaterThanOrEqual(10);
+    expect(block.outputs.every((output) => output.type === "text")).toBe(true);
+    expect(block.footer).toContain("mock");
+    expect(isBlock(block)).toBe(true);
+  });
+
+  it("version 报 APP_VERSION，与欢迎块同一口径", () => {
+    const block = runMockCommand("version");
+
+    expect(block.status).toBe("done");
+    const serialized = JSON.stringify(block.outputs);
+    expect(serialized).toContain("Nowhere Player");
+    expect(serialized).toContain(APP_VERSION);
+  });
+});
 
 describe("runMockCommand", () => {
   for (const testCase of COMMAND_CASES) {

@@ -33,7 +33,7 @@ import {
   type LabVariant,
 } from "./components/variant";
 import { DEMO_TIME, runMockCommand } from "./mock-commands";
-import { createBlockId, submitInput } from "./terminal-session";
+import { createBlockId, createWelcomeBlock, submitInput } from "./terminal-session";
 import "./terminal.css";
 
 function readParam(name: string): string | null {
@@ -55,9 +55,18 @@ function writeParam(name: string, value: string): void {
   window.history.replaceState(null, "", url);
 }
 
-/** 首屏种子：shared fixture（覆盖 6 种原语）+ 两条可输入的演示命令。 */
-function createInitialBlocks(): Block[] {
-  const blocks: Block[] = [];
+/**
+ * 首屏种子：欢迎块必在。
+ *
+ * 默认 `blocks` 是真实链路，不塞假命令输出；实验室视图（`?variant=xterm|both`）
+ * 额外带上 shared fixture（覆盖 6 种原语）与两条演示命令，便于对比两套渲染器。
+ */
+function createInitialBlocks(variant: LabVariant): Block[] {
+  const blocks: Block[] = [createWelcomeBlock()];
+
+  if (variant === "blocks") {
+    return blocks;
+  }
 
   if (isBlock(fixture)) {
     blocks.push(fixture);
@@ -111,7 +120,10 @@ export function TerminalLab({
   const [theme, setTheme] = useState<LabTheme>(
     () => initialTheme ?? parseTheme(readParam("theme")),
   );
-  const [blocks, setBlocks] = useState<Block[]>(() => initialBlocks ?? createInitialBlocks());
+  // 首屏块只在首次渲染构造；`variant` 此时就是初始视图（之后切换视图不重置块）。
+  const [blocks, setBlocks] = useState<Block[]>(
+    () => initialBlocks ?? createInitialBlocks(variant),
+  );
   const [scores, setScores] = useState<ComparisonScores>(
     () =>
       initialScores ??

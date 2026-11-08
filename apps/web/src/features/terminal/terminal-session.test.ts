@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { Block } from "../../shared/terminal-model";
 import { isBlock } from "../../shared/terminal-model.guard";
 import {
+  APP_VERSION,
+  WELCOME_BLOCK_ID,
   createBlockId,
+  createWelcomeBlock,
   ipcErrorBlock,
   planInput,
   submitInput,
@@ -146,6 +149,32 @@ describe("ipcErrorBlock", () => {
       type: "error",
       hint: "确认 Tauri 运行时已启动，或检查 cmd.exec 是否注册",
     });
+  });
+});
+
+describe("createWelcomeBlock（首屏欢迎块）", () => {
+  it("含版本号与 help 提示，且符合 Block 契约", () => {
+    const block = createWelcomeBlock("0.0.0", 123);
+
+    expect(isBlock(block)).toBe(true);
+    expect(block.id).toBe(WELCOME_BLOCK_ID);
+    // 欢迎块没有跑过命令，所以 input 为空（不发 IPC）。
+    expect(block.input).toBe("");
+    expect(block.startedAt).toBe(123);
+    expect(block.status).toBe("done");
+    expect(block.footer).toBe("输入 help 查看命令");
+    expect(block.outputs[0]).toMatchObject({ type: "text", tone: null });
+
+    const serialized = JSON.stringify(block.outputs);
+    expect(serialized).toContain("Nowhere Player");
+    expect(serialized).toContain("0.0.0");
+  });
+
+  it("默认用 APP_VERSION，且没有耗时（不是一次真实执行）", () => {
+    const block = createWelcomeBlock();
+
+    expect(JSON.stringify(block.outputs)).toContain(APP_VERSION);
+    expect(block.durationMs).toBeNull();
   });
 });
 
