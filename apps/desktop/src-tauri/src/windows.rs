@@ -11,13 +11,23 @@ const TERMINAL_LABEL: &str = "terminal";
 const APP_ENTRY: &str = "index.html";
 
 /// 创建播放器小窗；启动即建，之后只隐藏、不销毁。
+///
+/// 外壳参数（T-0032）：
+/// - `decorations(false)`：桌面挂件不需要系统标题栏。
+/// - `resizable(false)`：产品不需要改宽高。Win32 层同时去掉 `WS_THICKFRAME`
+///   （tao 的 `WM_NCHITTEST` 只在 `RESIZABLE` 时处理边缘拖拽），因此边缘
+///   resize 热区与 Windows 11 给厚边框窗口画的 1px 边框/圆角一起消失。
+/// - `shadow(false)`：无边框窗不要 DWM 阴影，避免阴影内缩带来的视觉描边。
+///
+/// 这里**没有**启用 `transparent`：透明窗有合成开销与点击穿透风险，先按
+/// 「`resizable(false)` 已移除 THICKFRAME」验证；真机若仍有 1px 亮边再加。
 pub(crate) fn create_player(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, PLAYER_LABEL, WebviewUrl::App(APP_ENTRY.into()))
         .title("Nowhere Player")
         .inner_size(340.0, 120.0)
-        .min_inner_size(300.0, 104.0)
         .decorations(false)
-        .resizable(true)
+        .resizable(false)
+        .shadow(false)
         .maximizable(false)
         .center()
         .build()?;
