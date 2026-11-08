@@ -60,6 +60,18 @@ pub struct DeviceInfo {
     pub is_default: bool,
 }
 
+/// 默认输出设备的稳定标识（T-0016 §2.1）。
+///
+/// cpal 没有热插拔事件 API，上层 tick 循环只能周期性地取一次默认设备签名
+/// 做比较。名字 + 通道数复合判断，降低驱动改名的误报。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceSignature {
+    /// 设备名（`cpal::Device::to_string()`）。
+    pub name: String,
+    /// 设备默认输出配置的通道数；拿不到默认配置时为 `0`。
+    pub channels: u16,
+}
+
 /// Device enumeration / capability queries (ARCH-006 §2).
 pub trait DeviceProvider {
     fn devices(&self) -> Result<Vec<DeviceInfo>, AudioError>;
@@ -273,6 +285,15 @@ impl CpalDevices {
         }
     }
 
+    /// 当前默认输出设备的签名；没有可用设备时为 `None`。
+    ///
+    /// 只做一次默认设备查询 + 默认配置读取（廉价），供 actor 在 tick 里复用；
+    /// 不新开线程，也不修改 [`AudioSink`] trait 的形状（T-0016 §3/§6）。
+    pub fn default_output_signature(&self) -> Option<DeviceSignature> {
+        let device = self.host.default_output_device()?;
+        Some(device_signature(&device))
+    }
+
     fn default_device_handle(&self) -> Result<cpal::Device, AudioError> {
         self.host
             .default_output_device()
@@ -362,6 +383,15 @@ fn audio_format_from_cpal(
     Some(AudioFormat::new(sample_rate, channels, sample_format))
 }
 
+fn device_signature(device: &cpal::Device) -> DeviceSignature {
+    let name = device.to_string();
+    let channels = device
+        .default_output_config()
+        .map(|config| config.channels())
+        .unwrap_or(0);
+    DeviceSignature { name, channels }
+}
+
 fn device_caps_from(device: &cpal::Device) -> Result<DeviceCaps, AudioError> {
     let ranges = device
         .supported_output_configs()
@@ -418,6 +448,36 @@ mod tests {
 
         let rates = candidate_rates(44_100, 44_100);
         assert_eq!(rates, vec![44_100]);
+    }
+
+    #[test]
+    fn device_signature_compares_name_and_channels() {
+        let signature = DeviceSignature {
+            name: "Speakers (Realtek)".into(),
+            channels: 2,
+        };
+        assert_eq!(
+            signature,
+            DeviceSignature {
+                name: "Speakers (Realtek)".into(),
+                channels: 2,
+            }
+        );
+        assert_ne!(
+            signature,
+            DeviceSignature {
+                name: "Speakers (Realtek)".into(),
+                channels: 6,
+            },
+            "the same name with a different channel count is a different device"
+        );
+        assert_ne!(
+            signature,
+            DeviceSignature {
+                name: "Headphones".into(),
+                channels: 2,
+            }
+        );
     }
 
     #[test]

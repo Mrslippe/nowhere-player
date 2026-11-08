@@ -18,7 +18,9 @@ pub use format::{
     AudioFormat, Codec, DeviceCaps, SampleFormat, frames_to_ms, ms_to_frames, negotiate,
 };
 pub use resample::{GainPolicy, ProcessingPlan};
-pub use sink::{AudioSink, CpalDevices, CpalSharedSink, DeviceInfo, DeviceProvider, RenderFn};
+pub use sink::{
+    AudioSink, CpalDevices, CpalSharedSink, DeviceInfo, DeviceProvider, DeviceSignature, RenderFn,
+};
 pub use source::{AudioSource, FileSource};
 pub use volume::{clamp_volume, gain_for_volume};
 
@@ -116,5 +118,13 @@ impl Player {
     /// 解码线程或设备运行期错误（只记录第一条）。
     pub fn last_error(&self) -> Option<String> {
         self.engine.last_error()
+    }
+
+    /// 输出流是否在运行中报过错（消费式探测）。
+    ///
+    /// 设备热插拔检测用（T-0016 §2.1）：与 [`Player::last_error`] 不同，
+    /// 设备回调不写错误文本，只翻转标志；actor 的 tick 里调用一次。
+    pub fn take_device_error(&self) -> bool {
+        self.engine.take_device_error()
     }
 }

@@ -433,6 +433,14 @@ impl Engine {
         self.shared.error.lock().ok().and_then(|slot| slot.clone())
     }
 
+    /// 消费一次「输出流在运行中报错」的标志。
+    ///
+    /// 设备热插拔检测用（T-0016 §2.1）：错误回调只翻转一个原子，
+    /// 这里把它转成一次布尔探测，不修改 [`AudioSink`] trait 的形状。
+    pub fn take_device_error(&self) -> bool {
+        self.sink.take_device_error()
+    }
+
     fn check_device(&self) -> Result<(), AudioError> {
         if self.sink.take_device_error() {
             Err(AudioError::DeviceLost)
