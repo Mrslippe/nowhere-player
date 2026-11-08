@@ -3,7 +3,12 @@ import { useEffect } from "react";
 import { previewSkin, previewTheme } from "./dev-preview";
 import { PlayerView } from "../features/player/PlayerView";
 import { TerminalView } from "../features/terminal/TerminalView";
-import { installThemeLoader } from "../shared/theme-loader";
+import {
+  applyThemeById,
+  exportBuiltinTheme,
+  installThemeLoader,
+  listThemes,
+} from "../shared/theme-loader";
 import type { WindowLabel } from "./window-label";
 
 /*
@@ -53,6 +58,23 @@ export function App({ label }: { label: WindowLabel }) {
     }
 
     void installThemeLoader();
+  }, []);
+
+  /*
+   * dev 手动验证入口（T-0029 §7）：控制台里 `__npTheme.apply("<id>")` 就能走
+   * 真实 IPC → inline 变量 → 安全模式，不必等 M6 的主题编辑器 UI。
+   * 生产构建不挂这个全局。
+   */
+  useEffect(() => {
+    if (!import.meta.env.DEV || typeof window === "undefined") {
+      return;
+    }
+
+    (window as unknown as { __npTheme?: unknown }).__npTheme = {
+      apply: applyThemeById,
+      list: listThemes,
+      exportBuiltin: exportBuiltinTheme,
+    };
   }, []);
 
   return label === "terminal" ? <TerminalView /> : <PlayerView />;
