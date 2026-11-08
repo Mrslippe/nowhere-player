@@ -110,6 +110,11 @@ export function normalizeOutput(value: unknown): Output {
     return value;
   }
 
+  const media = normalizeMedia(value);
+  if (media) {
+    return media;
+  }
+
   return {
     type: "text",
     tone: null,
@@ -122,6 +127,26 @@ export function normalizeOutput(value: unknown): Output {
         color: null,
       },
     ],
+  };
+}
+
+/**
+ * 未知 `media.kind` 按契约降级为 `cover`，而不是整条丢弃（ARCH-005 §7.3）。
+ * 仅在 `ref` / `size` 合法时生效，否则交给未知类型兜底。
+ */
+function normalizeMedia(value: unknown): Output | null {
+  if (!isRecord(value) || value.type !== "media") {
+    return null;
+  }
+  if (!isString(value.ref) || !isFiniteNumber(value.size)) {
+    return null;
+  }
+
+  return {
+    type: "media",
+    kind: value.kind === "thumb" ? "thumb" : "cover",
+    ref: value.ref,
+    size: value.size,
   };
 }
 

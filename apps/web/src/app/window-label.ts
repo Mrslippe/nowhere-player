@@ -7,9 +7,20 @@ export const DEFAULT_WINDOW_LABEL: WindowLabel = "player";
 
 /**
  * 读取当前窗口 label 并映射为视图名。
- * 不在 Tauri 里运行时 `getCurrentWindow()` 会抛错，按浏览器默认值处理。
+ *
+ * 优先级：
+ * 1. 查询参数 `?window=player|terminal`（浏览器预览用，Tauri 运行时也可强制指定）
+ * 2. Tauri 窗口 label
+ * 3. 浏览器兜底 `player`
  */
 export function resolveWindowLabel(): WindowLabel {
+  if (typeof window !== "undefined") {
+    const fromQuery = new URLSearchParams(window.location.search).get("window");
+    if (fromQuery === "player" || fromQuery === "terminal") {
+      return fromQuery;
+    }
+  }
+
   try {
     return getCurrentWindow().label === "terminal" ? "terminal" : "player";
   } catch {

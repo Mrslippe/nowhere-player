@@ -71,4 +71,19 @@ describe("terminal-demo.json", () => {
     expect(output.spans).toHaveLength(1);
     expect(output.spans[0].text).toBe(UNSUPPORTED_OUTPUT_TEXT);
   });
+
+  it("未知 media.kind 降级为 cover 而非整条丢弃", () => {
+    const output = normalizeOutput({
+      type: "media",
+      kind: "poster",
+      ref: "np://cover/1",
+      size: 48,
+    });
+
+    expect(output.type).toBe("media");
+    if (output.type !== "media") {
+      throw new Error("unreachable");
+    }
+    expect(output.kind).toBe("cover");
+  });
 });
