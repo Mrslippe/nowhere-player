@@ -189,6 +189,8 @@
 
 /* ── 进度条 + 时间 ───────────────────────────────────── */
 .np-player-card__progress-row {
+  /* 音量浮层相对进度行定位（T-0032）：浮在进度条上方居中。 */
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -267,21 +269,36 @@
   cursor: help;
 }
 
-/* 滚轮调音量后的短暂提示，不拦截指针。 */
+/*
+ * 滚轮调音量后的短暂浮层（T-0032 §6.3）。
+ * 相对进度行居中、浮在进度条上方：不遮封面与标题，也不拦截指针；
+ * 半透明底用 color-mix 从 --bg-elev 派生（旧 WebView 回退到不透明底）。
+ */
 .np-player-card__volume {
   position: absolute;
-  top: 6px;
-  right: 20px;
-  padding: 1px var(--sp-2);
+  bottom: calc(100% + var(--sp-2));
+  left: 50%;
+  z-index: 2;
+  padding: 2px var(--sp-3);
   border: var(--np-border-control);
   border-radius: var(--np-radius-control-sm);
   background: var(--bg-elev);
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
   box-shadow: var(--np-shadow-float);
-  color: var(--fg-muted);
+  color: var(--fg);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-10);
+  font-variant-numeric: tabular-nums;
   line-height: var(--np-density-line-dense);
   white-space: nowrap;
+  transform: translateX(-50%);
   pointer-events: none;
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.np-player-card__volume[data-fading="true"] {
+  opacity: 0;
 }
 
 /* 一次性提示（如 next 返回 E_UNSUPPORTED）：浮在卡片底部，不拦截指针。 */

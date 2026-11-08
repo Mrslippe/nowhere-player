@@ -62,6 +62,7 @@ export function PlayerView() {
         onSeekCommit: player.onSeekCommit,
         onVolumeNudge: player.onVolumeNudge,
         volumeHint: player.volumeHint,
+        volumeHintFading: player.volumeHintFading,
         dragging: player.dragging,
       }
     : {};

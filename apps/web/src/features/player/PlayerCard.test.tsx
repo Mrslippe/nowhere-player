@@ -47,7 +47,9 @@ describe("PlayerCard", () => {
   it("渲染拖拽区、副标题、进度与时间格式", () => {
     const html = renderCard("playing");
 
-    expect(html).toContain('data-tauri-drag-region="true"');
+    expect(html).toContain('data-tauri-drag-region="deep"');
+    // 控件与进度条显式退出拖拽区，点按钮/拖进度不会带窗移动。
+    expect(html).toContain('data-tauri-drag-region="false"');
     expect(html).toContain("Tame Impala · Currents");
     expect(html).toContain("00:42/03:36");
     expect(html).toContain('role="progressbar"');
@@ -228,5 +230,19 @@ describe("PlayerCard", () => {
     expect(renderCard("playing", { volumeHint: "85%" })).toContain(
       "音量 85%",
     );
+  });
+
+  it("音量浮层：静音不带“音量”前缀，淡出由 data-fading 驱动", () => {
+    const quiet = renderCard("playing", { volumeHint: "静音" });
+    expect(quiet).toContain("np-player-card__volume");
+    expect(quiet).toContain('title="静音"');
+    expect(quiet).not.toContain("音量 静音");
+
+    const fading = renderCard("playing", {
+      volumeHint: "42%",
+      volumeHintFading: true,
+    });
+    expect(fading).toContain('data-fading="true"');
+    expect(fading).toContain("音量 42%");
   });
 });

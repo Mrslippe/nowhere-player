@@ -149,13 +149,15 @@ export function previewStateFromStatus(status: PlaybackStatus): PlayerState {
   }
 }
 
-/** 音量（0–1）→ 百分比文案。 */
+/** 音量（0–1）→ 百分比文案；0 显示「静音」（T-0032 §6.3）。 */
 export function formatVolume(volume: number): string {
   if (!Number.isFinite(volume)) {
     return "0%";
   }
 
-  return `${Math.round(Math.min(1, Math.max(0, volume)) * 100)}%`;
+  const percent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
+
+  return percent === 0 ? "静音" : `${percent}%`;
 }
 
 /** 播放中是否允许拖动 / 键盘跳转。 */

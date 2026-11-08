@@ -27,6 +27,11 @@ import {
   isTickStale,
 } from "./playback";
 import type { PositionAnchor } from "./playback";
+import {
+  createVolumeHint,
+  type VolumeHintController,
+  type VolumeHintVisual,
+} from "./volume-hint";
 
 /** seek 之后多久内丢弃“旧位置” tick。 */
 const SEEK_GUARD_MS = 1200;
@@ -34,8 +39,6 @@ const SEEK_GUARD_MS = 1200;
 const SEEK_STALE_TOLERANCE_MS = 1500;
 /** 一次性提示停留时长。 */
 const NOTICE_MS = 2600;
-/** 音量提示停留时长。 */
-const VOLUME_HINT_MS = 1200;
 
 const IDLE_STATE: PlaybackState = {
   status: "idle",
@@ -62,6 +65,8 @@ export type PlayerController = {
   notice: string | null;
   /** 音量提示（滚轮调节后短暂显示）。 */
   volumeHint: string | null;
+  /** 音量提示是否进入淡出阶段（T-0032）。 */
+  volumeHintFading: boolean;
   dragging: boolean;
   isMock: boolean;
   onToggle: () => void;
@@ -85,7 +90,7 @@ export function usePlayer({ enabled = true }: UsePlayerOptions = {}): PlayerCont
   const [position, setPosition] = useState(0);
   const [commandError, setCommandError] = useState<PlayerErrorInfo | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [volumeHint, setVolumeHint] = useState<string | null>(null);
+  const [volumeHint, setVolumeHint] = useState<VolumeHintVisual | null>(null);
   const [dragging, setDragging] = useState(false);
 
   const snapshotRef = useRef<PlaybackState>(IDLE_STATE);
@@ -93,7 +98,7 @@ export function usePlayer({ enabled = true }: UsePlayerOptions = {}): PlayerCont
   const draggingRef = useRef(false);
   const pendingSeekRef = useRef<{ positionMs: number; untilMs: number } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const volumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const volumeHintRef = useRef<VolumeHintController | null>(null);
 
   const showNotice = useCallback((text: string) => {
     setNotice(text);
@@ -214,13 +219,21 @@ export function usePlayer({ enabled = true }: UsePlayerOptions = {}): PlayerCont
     return () => cancelAnimationFrame(frame);
   }, [enabled, snapshot.status, snapshot.durationMs, dragging]);
 
+  // 音量浮层的计时器随组件生命周期创建/销毁（T-0032）；状态归 useState。
+  useEffect(() => {
+    const controller = createVolumeHint(setVolumeHint);
+    volumeHintRef.current = controller;
+
+    return () => {
+      controller.dispose();
+      volumeHintRef.current = null;
+    };
+  }, []);
+
   useEffect(
     () => () => {
       if (noticeTimer.current) {
         clearTimeout(noticeTimer.current);
-      }
-      if (volumeTimer.current) {
-        clearTimeout(volumeTimer.current);
       }
     },
     [],
@@ -293,12 +306,8 @@ export function usePlayer({ enabled = true }: UsePlayerOptions = {}): PlayerCont
   const onVolumeNudge = useCallback(
     (delta: number) => {
       const target = clampVolume(snapshotRef.current.volume + delta);
-      setVolumeHint(formatVolume(target));
-
-      if (volumeTimer.current) {
-        clearTimeout(volumeTimer.current);
-      }
-      volumeTimer.current = setTimeout(() => setVolumeHint(null), VOLUME_HINT_MS);
+      // 复用同一条滚轮链路：每次滚动重置浮层计时，不新增监听（T-0032 §6.3）。
+      volumeHintRef.current?.show(formatVolume(target));
 
       void run("player.volume", { volume: target }, "调节音量");
     },
@@ -310,7 +319,8 @@ export function usePlayer({ enabled = true }: UsePlayerOptions = {}): PlayerCont
     positionMs: position,
     error: commandError ?? snapshot.error,
     notice,
-    volumeHint,
+    volumeHint: volumeHint?.text ?? null,
+    volumeHintFading: volumeHint?.fading ?? false,
     dragging,
     isMock: !isTauriRuntime(),
     onToggle,

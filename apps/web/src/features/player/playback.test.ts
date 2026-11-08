@@ -151,10 +151,12 @@ describe("previewStateFromStatus", () => {
 });
 
 describe("formatVolume / isSeekable", () => {
-  it("音量百分比", () => {
+  it("音量百分比，0 显示静音", () => {
     expect(formatVolume(0.8)).toBe("80%");
     expect(formatVolume(1)).toBe("100%");
     expect(formatVolume(2)).toBe("100%");
+    expect(formatVolume(0)).toBe("静音");
+    expect(formatVolume(-1)).toBe("静音");
     expect(formatVolume(Number.NaN)).toBe("0%");
   });
 

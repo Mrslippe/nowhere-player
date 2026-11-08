@@ -49,6 +49,8 @@ export type PlayerCardProps = {
   notice?: string | null;
   /** 滚轮调音量后的短暂提示。 */
   volumeHint?: string | null;
+  /** 音量提示是否进入淡出阶段（T-0032）。 */
+  volumeHintFading?: boolean;
   /** 正在拖动进度条（暂停外推由外层负责）。 */
   dragging?: boolean;
   onToggle?: () => void;
@@ -75,6 +77,7 @@ export function PlayerCard({
   error = null,
   notice = null,
   volumeHint = null,
+  volumeHintFading = false,
   dragging = false,
   onToggle,
   onPrev,
@@ -193,7 +196,8 @@ export function PlayerCard({
       data-state={state}
       data-controls={controlsVisible ? "visible" : "hidden"}
       data-seeking={isScrubbing ? "true" : "false"}
-      data-tauri-drag-region="true"
+      /* deep：整卡（含封面/标题/空白）都可拖动；button 与滑块会自行拦截。 */
+      data-tauri-drag-region="deep"
       aria-busy={isLoading || undefined}
       onWheel={handleWheel}
     >
@@ -235,6 +239,7 @@ export function PlayerCard({
         <div className="np-player-card__progress-row">
           <div
             className="np-player-card__seek"
+            data-tauri-drag-region="false"
             role="slider"
             tabIndex={canSeek ? 0 : -1}
             aria-label="播放进度（左右键跳转 5 秒）"
@@ -257,10 +262,21 @@ export function PlayerCard({
             />
           </div>
           <span className="np-player-card__time">{time}</span>
+
+          {volumeHint ? (
+            <span
+              className="np-player-card__volume"
+              role="status"
+              data-fading={volumeHintFading ? "true" : undefined}
+              title={volumeHint === "静音" ? "静音" : `音量 ${volumeHint}`}
+            >
+              {volumeHint === "静音" ? "静音" : `音量 ${volumeHint}`}
+            </span>
+          ) : null}
         </div>
       </div>
 
-      <div className="np-player-card__controls">
+      <div className="np-player-card__controls" data-tauri-drag-region="false">
         <IconButton
           aria-label="上一首"
           size="sm"
@@ -286,16 +302,6 @@ export function PlayerCard({
           <Icon name="skip-forward" size={14} />
         </IconButton>
       </div>
-
-      {volumeHint ? (
-        <span
-          className="np-player-card__volume"
-          role="status"
-          title={`音量 ${volumeHint}`}
-        >
-          音量 {volumeHint}
-        </span>
-      ) : null}
 
       {isError || error ? (
         <span
