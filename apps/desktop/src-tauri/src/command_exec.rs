@@ -13,6 +13,10 @@
 //! - `mode` 一次下发完整 `{ repeat, shuffle }`，避免两次调用互相覆盖。
 //! - `clear` 是视图操作，由前端处理；执行器只留一条防御性错误。
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use np_core::command::{Completion, complete, parse, registry};
@@ -20,6 +24,7 @@ use np_core::{
     Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
     PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, Span,
 };
+use np_library::{Database, LibraryError, ScanObserver, ScanReport, Scanner, Stats, Track};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::player_actor::PlayerHandle;
@@ -57,6 +62,104 @@ pub(crate) trait PlayerApi {
     fn queue_clear(&self) -> Result<QueueView, CmdError>;
     /// 跳到播放顺序里的第 `index` 首（0 基）并播放。
     fn queue_jump(&self, index: usize) -> Result<QueueView, CmdError>;
+}
+
+/// 执行器依赖的媒体库能力（T-0023 §6.3）。
+///
+/// 生产实现是 `LibraryHandle`；单测实现是 `FakeLibraryApi`。执行器只按 trait
+/// 调用，所以命令映射、`E_BUSY` 与会话语义都能在不碰真实文件系统的情况下测试。
+pub(crate) trait LibraryApi {
+    /// 登记扫描根并返回当前根数量；已存在时回 `E_CMD_ARG`。
+    fn add_root(&self, path: &str) -> Result<usize, CmdError>;
+    /// 全部扫描根（绝对路径，按添加顺序）。
+    fn list_roots(&self) -> Result<Vec<String>, CmdError>;
+    /// 受理一次后台扫描并立即返回；进度经 `observer` 回调。
+    fn scan(&self, full: bool, observer: Arc<dyn LibraryObserver>) -> Result<(), CmdError>;
+    /// 在标题 / 艺人 / 专辑上检索。
+    fn search(&self, keyword: &str, limit: usize) -> Result<Vec<Track>, CmdError>;
+    /// 最近入库的曲目。
+    fn list_recent(&self, limit: usize) -> Result<Vec<Track>, CmdError>;
+    /// 曲目 / 专辑 / 艺人 / 时长 / 最近扫描。
+    fn stats(&self) -> Result<Stats, CmdError>;
+    /// 把最近一次 `search` 结果存进会话上下文（最多 100 条）。
+    fn remember_search(&self, tracks: Vec<Track>);
+    /// 当前会话上下文里的搜索结果。
+    fn search_results(&self) -> Vec<Track>;
+}
+
+/// 前台观察者：后台扫描通过它把进度与结果送回 UI 线程。
+pub(crate) trait LibraryObserver: Send + Sync {
+    /// 每处理完一个文件调用；实现方负责节流。
+    fn on_progress(&self, scanned: usize, total: usize, current: &Path);
+    /// 扫描正常结束（含取消）。
+    fn on_finished(&self, report: &ScanReport);
+    /// 扫描无法开始或异常结束。
+    fn on_failed(&self, error: &CmdError);
+}
+
+/// 什么都不做的观察者：仅用于不需要进度的场景与播放器单测。
+pub(crate) struct NoopLibraryObserver;
+
+impl LibraryObserver for NoopLibraryObserver {
+    fn on_progress(&self, _scanned: usize, _total: usize, _current: &Path) {}
+
+    fn on_finished(&self, _report: &ScanReport) {}
+
+    fn on_failed(&self, _error: &CmdError) {}
+}
+
+/// 搜索结果上限（T-0023 §6.4）。
+pub(crate) const MAX_SEARCH_RESULTS: usize = 100;
+
+/// 扫描进度节流的默认间隔：2 Hz。
+pub(crate) const PROGRESS_INTERVAL_MS: u64 = 500;
+
+/// 把 `np-library` 错误映射成稳定的 IPC 码。
+fn library_error(error: LibraryError) -> CmdError {
+    let code = match &error {
+        LibraryError::Sqlite(_) => "E_LIB_DB",
+        LibraryError::Io(_) => "E_LIB_IO",
+        LibraryError::Tag { .. } => "E_LIB_TAG",
+        LibraryError::WorkerPanicked => "E_LIB_SCAN",
+    };
+    CmdError::new(code, error.to_string())
+}
+
+/// 播放器单测用的空库：不碰文件系统，搜索结果恒为空。
+#[cfg(test)]
+struct EmptyLibraryApi;
+
+#[cfg(test)]
+impl LibraryApi for EmptyLibraryApi {
+    fn add_root(&self, _path: &str) -> Result<usize, CmdError> {
+        Err(CmdError::new("E_LIB_DB", "单测没有媒体库"))
+    }
+
+    fn list_roots(&self) -> Result<Vec<String>, CmdError> {
+        Ok(Vec::new())
+    }
+
+    fn scan(&self, _full: bool, _observer: Arc<dyn LibraryObserver>) -> Result<(), CmdError> {
+        Err(CmdError::new("E_LIB_SCAN", "单测没有媒体库"))
+    }
+
+    fn search(&self, _keyword: &str, _limit: usize) -> Result<Vec<Track>, CmdError> {
+        Ok(Vec::new())
+    }
+
+    fn list_recent(&self, _limit: usize) -> Result<Vec<Track>, CmdError> {
+        Ok(Vec::new())
+    }
+
+    fn stats(&self) -> Result<Stats, CmdError> {
+        Ok(Stats::default())
+    }
+
+    fn remember_search(&self, _tracks: Vec<Track>) {}
+
+    fn search_results(&self) -> Vec<Track> {
+        Vec::new()
+    }
 }
 
 /// 执行期错误：稳定的 IPC 码 + 一句原因 + 可选的修复提示。
@@ -150,7 +253,15 @@ struct Outcome {
     footer: Option<String>,
 }
 
-/// `execute` 的结果：空输入不做任何事，否则给出要按顺序推送的两个块。
+/// 执行器内部结果：普通命令已完成，`library scan` 则只是“已受理”。
+enum Executed {
+    /// 命令已执行完，`done` 块可立即推送。
+    Finished(Outcome),
+    /// 后台任务已受理；调用方只推 `running` 块，后续由观察者更新同一 id。
+    Accepted(Outcome),
+}
+
+/// `execute` 的结果：空输入不做任何事，否则给出要按顺序推送的块。
 pub(crate) enum Execution {
     /// 纯空白输入：不是错误，也不产生块。
     Ignored,
@@ -161,13 +272,41 @@ pub(crate) enum Execution {
         /// 执行结束的最终块。
         done: Box<Block>,
     },
+    /// 后台命令已受理（`library scan`）：只推 `running` 块，最终块由观察者推送。
+    Accepted {
+        /// 已受理的块，输出里写明“扫描已开始”。
+        running: Box<Block>,
+    },
 }
 
 /// 解析并执行一条终端输入，返回可推送的块。
 ///
 /// 空输入（`Ok(None)`）不产生块；解析失败也走 `running → error` 两个块，
 /// 这样前端只要按 `id` 覆盖即可。
+///
+/// 播放器单测不需要真实媒体库：这条入口用空实现（搜索结果恒为空）。
+#[cfg(test)]
 pub(crate) fn execute(api: &dyn PlayerApi, block_id: &str, input: &str) -> Execution {
+    execute_with_library(
+        api,
+        &EmptyLibraryApi,
+        block_id,
+        input,
+        Arc::new(NoopLibraryObserver),
+    )
+}
+
+/// 带媒体库的执行入口；`observer` 只被 `library scan` 使用。
+///
+/// `library scan` 的后台线程可能很快结束，所以 `cmd_exec` 会在调用本函数
+/// **之前**先推 `running` 块，保证进度事件不会先于它到达前端。
+pub(crate) fn execute_with_library(
+    api: &dyn PlayerApi,
+    library: &dyn LibraryApi,
+    block_id: &str,
+    input: &str,
+    observer: Arc<dyn LibraryObserver>,
+) -> Execution {
     let parsed = match parse(input) {
         Ok(None) => return Execution::Ignored,
         Ok(Some(parsed)) => Ok(parsed),
@@ -188,24 +327,41 @@ pub(crate) fn execute(api: &dyn PlayerApi, block_id: &str, input: &str) -> Execu
 
     let clock = Instant::now();
     let result = match &parsed {
-        Ok(parsed) => Executor { api }.run(parsed),
+        Ok(parsed) => Executor {
+            api,
+            library,
+            observer,
+        }
+        .run(parsed),
         // 引号未闭合这类错误定位不到命令，没有 usage / 建议，给一句通用提示
         // 保证失败块里的 `hint` 恒不为空（T-0018 §2.5）。
         Err(error) => Err(error.clone().with_hint("输入 help 查看全部命令与用法")),
     };
     let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    let (status, outputs, footer) = match result {
-        Ok(outcome) => (BlockStatus::Done, outcome.outputs, outcome.footer),
-        Err(error) => (BlockStatus::Error, vec![error.to_output()], None),
-    };
-
-    let done = Block {
-        duration_ms: Some(duration_ms),
-        status,
-        outputs,
-        footer,
-        ..running.clone()
+    let done = match result {
+        Ok(Executed::Accepted(outcome)) => {
+            return Execution::Accepted {
+                running: Box::new(Block {
+                    outputs: outcome.outputs,
+                    footer: outcome.footer,
+                    ..running
+                }),
+            };
+        }
+        Ok(Executed::Finished(outcome)) => Block {
+            duration_ms: Some(duration_ms),
+            status: BlockStatus::Done,
+            outputs: outcome.outputs,
+            footer: outcome.footer,
+            ..running.clone()
+        },
+        Err(error) => Block {
+            duration_ms: Some(duration_ms),
+            status: BlockStatus::Error,
+            outputs: vec![error.to_output()],
+            ..running.clone()
+        },
     };
 
     Execution::Blocks {
@@ -214,15 +370,24 @@ pub(crate) fn execute(api: &dyn PlayerApi, block_id: &str, input: &str) -> Execu
     }
 }
 
-/// 把 [`Parsed`] 映射成 [`PlayerApi`] 调用并构造输出。
+/// 把 [`Parsed`] 映射成 [`PlayerApi`] / [`LibraryApi`] 调用并构造输出。
 struct Executor<'a> {
     api: &'a dyn PlayerApi,
+    library: &'a dyn LibraryApi,
+    observer: Arc<dyn LibraryObserver>,
 }
 
 impl Executor<'_> {
     /// 执行一条已解析的命令；失败时补上命令用法作为提示。
-    fn run(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+    fn run(&self, parsed: &Parsed) -> Result<Executed, CmdError> {
+        if is_library_scan(parsed) {
+            return self
+                .library_scan(parsed)
+                .map(Executed::Accepted)
+                .map_err(|error| error.with_usage(parsed));
+        }
         self.dispatch(parsed)
+            .map(Executed::Finished)
             .map_err(|error| error.with_usage(parsed))
     }
 
@@ -237,6 +402,8 @@ impl Executor<'_> {
             "vol" => self.volume(parsed),
             "queue" => self.queue(parsed),
             "mode" => self.mode(parsed),
+            "library" => self.library(parsed),
+            "search" => self.search(parsed),
             "help" => self.help(parsed),
             "version" => Ok(Self::version()),
             "clear" => Err(CmdError::new("E_CMD_ARG", "clear 由终端本地处理")
@@ -249,6 +416,9 @@ impl Executor<'_> {
     }
 
     /// `play`：无参 = 继续；纯数字 = 1 基序号；其余 = 文件路径。
+    ///
+    /// 数字序号**优先用播放队列**；队列为空且存在搜索结果时用搜索结果，
+    /// 输出会写明来源（T-0023 §6.4）。
     fn play(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let Some(value) = parsed.positional.first() else {
             return Ok(state_outcome("继续播放", &self.api.resume()?));
@@ -256,8 +426,41 @@ impl Executor<'_> {
 
         if is_unsigned_integer(value) {
             let index = user_index(value)?;
-            let view = self.api.queue_jump(index)?;
-            return Ok(jump_outcome("播放", index, &view));
+            let queue = self.api.queue_list()?;
+            if !queue.tracks.is_empty() {
+                let view = self.api.queue_jump(index)?;
+                return Ok(queue_jump_outcome(index, &view));
+            }
+
+            let results = self.library.search_results();
+            if results.is_empty() {
+                return Err(CmdError::new("E_CMD_ARG", "播放队列为空，也没有搜索结果")
+                    .with_hint("先用 search <关键词> 搜索，或 queue add <路径> 加入队列"));
+            }
+            let track = results.get(index).ok_or_else(|| {
+                CmdError::new(
+                    "E_CMD_ARG",
+                    format!("搜索结果只有 {} 条，没有第 {} 条", results.len(), index + 1),
+                )
+            })?;
+
+            let state = self.api.play(Some(track.path.clone()))?;
+            let mut spans = vec![
+                bold("播放"),
+                plain(format!(" · 搜索结果第 {} 首", index + 1)),
+                dim(format!(" · {}", track.title)),
+            ];
+            if !track.artist.is_empty() {
+                spans.push(dim(format!(" · {}", track.artist)));
+            }
+            return Ok(Outcome {
+                outputs: vec![text_of(spans)],
+                footer: Some(format!(
+                    "来源：搜索结果（共 {} 条） · {}",
+                    results.len(),
+                    state_footer(&state)
+                )),
+            });
         }
 
         Ok(state_outcome("播放", &self.api.play(Some(value.clone()))?))
@@ -455,6 +658,175 @@ impl Executor<'_> {
         })
     }
 
+    /// `library`：`add` / `list` / `stat`（`scan` 在 `run` 里提前处理）。
+    fn library(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let subcommand = parsed
+            .subcommand
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "library 缺少子命令"))?;
+
+        match subcommand.name {
+            "add" => {
+                let path = positional_arg(parsed, "目录")?;
+                let roots = self.library.add_root(path)?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已添加扫描根"),
+                        dim(format!(" · {path}")),
+                    ])],
+                    footer: Some(format!(
+                        "当前 {roots} 个扫描根 · 输入 library scan 开始扫描"
+                    )),
+                })
+            }
+            "list" => self.library_list(parsed),
+            "stat" => self.library_stat(),
+            "scan" => Err(CmdError::new(
+                "E_CMD_UNKNOWN",
+                "library scan 应由后台扫描入口处理",
+            )),
+            other => Err(CmdError::new(
+                "E_CMD_UNKNOWN",
+                format!("library 没有子命令：{other}"),
+            )),
+        }
+    }
+
+    /// `library list [--limit=N]`：最近入库的曲目，序号 1 基。
+    fn library_list(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let limit = flag_limit(parsed, 20)?;
+        let tracks = self.library.list_recent(limit)?;
+        let rows = tracks
+            .iter()
+            .enumerate()
+            .map(|(index, track)| {
+                vec![
+                    (index + 1).to_string(),
+                    track.title.clone(),
+                    track.artist.clone(),
+                    format_track_duration(track.duration_ms),
+                ]
+            })
+            .collect();
+
+        let footer = if tracks.is_empty() {
+            "库里还没有曲目 · 先 library add <path> 再 library scan".to_owned()
+        } else {
+            format!(
+                "最近 {} 首 · 输入 search <关键词> 可按序号播放",
+                tracks.len()
+            )
+        };
+
+        Ok(Outcome {
+            outputs: vec![Output::Table {
+                columns: vec![
+                    "序号".to_owned(),
+                    "标题".to_owned(),
+                    "艺人".to_owned(),
+                    "时长".to_owned(),
+                ],
+                rows,
+                selectable: true,
+            }],
+            footer: Some(footer),
+        })
+    }
+
+    /// `library stat`：曲目 / 专辑 / 艺人 / 总时长 / 最近扫描。
+    fn library_stat(&self) -> Result<Outcome, CmdError> {
+        let stats = self.library.stats()?;
+        let last_scan = if stats.last_scan_at == 0 {
+            "从未扫描".to_owned()
+        } else {
+            format_relative_time(stats.last_scan_at)
+        };
+        let lines = [
+            ("曲目", stats.tracks.to_string()),
+            ("专辑", stats.albums.to_string()),
+            ("艺人", stats.artists.to_string()),
+            ("总时长", format_total_duration(stats.total_duration_ms)),
+            ("最近扫描", last_scan),
+        ];
+
+        Ok(Outcome {
+            outputs: lines
+                .into_iter()
+                .map(|(name, value)| text_of(vec![bold(name), plain(format!(" · {value}"))]))
+                .collect(),
+            footer: Some("输入 library list 查看最近入库".to_owned()),
+        })
+    }
+
+    /// `search <关键词>`：结果带 1 基序号，并存进会话上下文供 `play <n>`。
+    fn search(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let keyword = positional_arg(parsed, "关键词")?.trim();
+        if keyword.is_empty() {
+            return Err(CmdError::new("E_CMD_ARG", "搜索关键词不能为空"));
+        }
+
+        // 多取一条用来判断是否超过上限，避免“100 条正好”被误报为截断。
+        let mut tracks = self.library.search(keyword, MAX_SEARCH_RESULTS + 1)?;
+        let truncated = tracks.len() > MAX_SEARCH_RESULTS;
+        tracks.truncate(MAX_SEARCH_RESULTS);
+        self.library.remember_search(tracks.clone());
+
+        if tracks.is_empty() {
+            return Ok(Outcome {
+                outputs: vec![text_of(vec![
+                    bold("没有找到"),
+                    dim(format!(" · {keyword}")),
+                ])],
+                footer: Some("换个关键词试试".to_owned()),
+            });
+        }
+
+        let rows = tracks
+            .iter()
+            .enumerate()
+            .map(|(index, track)| {
+                vec![
+                    (index + 1).to_string(),
+                    track.title.clone(),
+                    track.artist.clone(),
+                    format_track_duration(track.duration_ms),
+                ]
+            })
+            .collect();
+        let mut outputs = vec![
+            text_of(vec![bold("搜索结果"), dim(format!(" · {keyword}"))]),
+            Output::Table {
+                columns: vec![
+                    "序号".to_owned(),
+                    "标题".to_owned(),
+                    "艺人".to_owned(),
+                    "时长".to_owned(),
+                ],
+                rows,
+                selectable: true,
+            },
+        ];
+        if truncated {
+            outputs.push(text_of(vec![dim("结果超过 100 条，只显示前 100 条")]));
+        }
+
+        Ok(Outcome {
+            outputs,
+            footer: Some(format!(
+                "{} 条结果 · 输入 play <序号> 播放（来源：搜索结果）",
+                tracks.len()
+            )),
+        })
+    }
+
+    /// `library scan [--full]`：受理后台扫描并立即返回（`ok` = 已受理）。
+    fn library_scan(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let full = parsed.flags.contains_key("full");
+        self.library.scan(full, Arc::clone(&self.observer))?;
+        let (outputs, footer) = scan_started_output(full);
+
+        Ok(Outcome { outputs, footer })
+    }
+
     /// `help`：不带参数列全部命令；带参数显示该命令的用法与说明。
     fn help(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let registry = registry();
@@ -511,6 +883,97 @@ fn now_millis() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+/// 这条命令是否是后台扫描（需要先推 `running` 再启动线程）。
+fn is_library_scan(parsed: &Parsed) -> bool {
+    parsed.spec.name == "library"
+        && parsed
+            .subcommand
+            .is_some_and(|subcommand| subcommand.name == "scan")
+}
+
+/// 解析出 `library scan` 的 `--full`；不是扫描命令时返回 `None`。
+fn scan_full_flag(input: &str) -> Option<bool> {
+    match parse(input) {
+        Ok(Some(parsed)) if is_library_scan(&parsed) => Some(parsed.flags.contains_key("full")),
+        _ => None,
+    }
+}
+
+/// `library scan` 的“已受理”输出：文案必须写明“扫描已开始”（T-0023 §11）。
+fn scan_started_output(full: bool) -> (Vec<Output>, Option<String>) {
+    let kind = if full { "全量扫描" } else { "增量扫描" };
+    (
+        vec![text_of(vec![bold("扫描已开始"), dim(format!(" · {kind}"))])],
+        Some("进度会更新到本块；扫描完成前可继续使用其他命令".to_owned()),
+    )
+}
+
+/// 读取 `--limit=N`；缺省走 `default`，非数字或 0 回 `E_CMD_ARG`。
+fn flag_limit(parsed: &Parsed, default: usize) -> Result<usize, CmdError> {
+    let Some(raw) = parsed.flags.get("limit") else {
+        return Ok(default);
+    };
+    let value: usize = raw
+        .parse()
+        .map_err(|_| CmdError::new("E_CMD_ARG", format!("limit 需要正整数，收到：{raw}")))?;
+    if value == 0 {
+        return Err(CmdError::new("E_CMD_ARG", "limit 必须大于 0"));
+    }
+    Ok(value)
+}
+
+/// 曲目时长：未知（0）显示 `--:--`。
+fn format_track_duration(duration_ms: i64) -> String {
+    if duration_ms <= 0 {
+        return "--:--".to_owned();
+    }
+    format_position(u64::try_from(duration_ms).unwrap_or(0))
+}
+
+/// 库总时长：`X 小时 Y 分` / `Y 分` / `Z 秒`。
+fn format_total_duration(total_ms: u64) -> String {
+    let seconds = total_ms / 1_000;
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if hours > 0 {
+        format!("{hours} 小时 {minutes} 分")
+    } else if minutes > 0 {
+        format!("{minutes} 分")
+    } else {
+        format!("{seconds} 秒")
+    }
+}
+
+/// 最近扫描的粗粒度相对时间；只用于终端文案，精度到天。
+fn format_relative_time(timestamp_ms: i64) -> String {
+    let now = i64::try_from(now_millis()).unwrap_or(i64::MAX);
+    let seconds = now.saturating_sub(timestamp_ms).max(0) / 1_000;
+    if seconds < 60 {
+        "刚刚".to_owned()
+    } else if seconds < 3_600 {
+        format!("{} 分钟前", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{} 小时前", seconds / 3_600)
+    } else {
+        format!("{} 天前", seconds / 86_400)
+    }
+}
+
+/// `play <n>` 命中队列时的输出：写明来源是播放队列。
+fn queue_jump_outcome(index: usize, view: &QueueView) -> Outcome {
+    let mut outcome = jump_outcome("播放", index, view);
+    outcome.footer = Some(format!("来源：播放队列 · 队列 {} 首", view.tracks.len()));
+    outcome
+}
+
+/// 播放类结果的简短尾部；`queue_length` 未知时给一句通用文案。
+fn state_footer(state: &PlaybackState) -> String {
+    state.queue_length.map_or_else(
+        || "已开始播放".to_owned(),
+        |length| format!("队列 {length} 首"),
+    )
 }
 
 /// 取第一个位置参数。
@@ -705,6 +1168,438 @@ fn format_position(position_ms: u64) -> String {
 /// 所以这里用冒号（`cmd.exec` 是命令名，不受同一限制）。
 pub(crate) const EVENT_TERMINAL_BLOCK: &str = "terminal:block";
 
+/// 扫描进度节流器：按**时间**而不是文件数放行（T-0023 §6.2）。
+///
+/// 时间由调用方注入，单测用合成时钟，不依赖真实睡眠。
+struct TimeThrottle {
+    interval_ms: u64,
+    last_emitted_ms: Option<u64>,
+}
+
+impl TimeThrottle {
+    const fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms,
+            last_emitted_ms: None,
+        }
+    }
+
+    /// 第一次调用立即放行，之后每满 `interval_ms` 放行一次。
+    fn allow(&mut self, now_ms: u64) -> bool {
+        match self.last_emitted_ms {
+            None => {
+                self.last_emitted_ms = Some(now_ms);
+                true
+            }
+            Some(last) if now_ms.saturating_sub(last) >= self.interval_ms => {
+                self.last_emitted_ms = Some(now_ms);
+                true
+            }
+            Some(_) => false,
+        }
+    }
+}
+
+/// 进度事件的发射函数；单测用闭包捕获推送的块。
+type EmitFn = dyn Fn(&Block) + Send + Sync;
+/// 时钟注入点（毫秒）。
+type ClockFn = dyn Fn() -> u64 + Send + Sync;
+
+/// 把后台扫描的进度写到 `terminal:block`，同一个 `blockId` 原地更新。
+pub(crate) struct EventObserver {
+    block_id: String,
+    input: String,
+    started_at: u64,
+    origin_ms: u64,
+    emit: Arc<EmitFn>,
+    clock: Arc<ClockFn>,
+    throttle: Mutex<TimeThrottle>,
+}
+
+impl EventObserver {
+    fn with_port(
+        emit: Arc<EmitFn>,
+        clock: Arc<ClockFn>,
+        block_id: String,
+        input: String,
+        started_at: u64,
+    ) -> Self {
+        let origin_ms = clock();
+        Self {
+            block_id,
+            input,
+            started_at,
+            origin_ms,
+            emit,
+            clock,
+            throttle: Mutex::new(TimeThrottle::new(PROGRESS_INTERVAL_MS)),
+        }
+    }
+
+    /// 生产实现：通过 Tauri 事件推块。
+    pub(crate) fn for_app(app: AppHandle, block_id: String, input: String) -> Self {
+        let started_at = now_millis();
+        let emitter: Arc<EmitFn> = Arc::new(move |block| emit_block(&app, block));
+        Self::with_port(emitter, Arc::new(now_millis), block_id, input, started_at)
+    }
+
+    fn block(&self, status: BlockStatus, outputs: Vec<Output>, footer: Option<String>) -> Block {
+        let now = (self.clock)();
+        Block {
+            id: self.block_id.clone(),
+            input: self.input.clone(),
+            started_at: self.started_at,
+            duration_ms: Some(now.saturating_sub(self.origin_ms)),
+            status,
+            outputs,
+            footer,
+            schema_version: SCHEMA_VERSION,
+        }
+    }
+}
+
+impl LibraryObserver for EventObserver {
+    fn on_progress(&self, scanned: usize, total: usize, current: &Path) {
+        let now = (self.clock)().saturating_sub(self.origin_ms);
+        {
+            let mut throttle = self
+                .throttle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !throttle.allow(now) {
+                return;
+            }
+        }
+
+        let file = current
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty());
+        let block = Block {
+            id: self.block_id.clone(),
+            input: self.input.clone(),
+            started_at: self.started_at,
+            duration_ms: None,
+            status: BlockStatus::Running,
+            outputs: vec![
+                text_of(vec![bold("扫描中"), plain(format!(" · {scanned}/{total}"))]),
+                Output::Progress {
+                    label: "扫描媒体库".to_owned(),
+                    current: u64::try_from(scanned).unwrap_or(u64::MAX),
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                    unit: "首".to_owned(),
+                },
+            ],
+            footer: file.map(|name| format!("当前：{name}")),
+            schema_version: SCHEMA_VERSION,
+        };
+        (self.emit)(&block);
+    }
+
+    fn on_finished(&self, report: &ScanReport) {
+        let status = if report.cancelled {
+            BlockStatus::Cancelled
+        } else {
+            BlockStatus::Done
+        };
+        let headline = if report.cancelled {
+            "扫描已取消"
+        } else {
+            "扫描完成"
+        };
+        let outputs = vec![
+            text_of(vec![
+                bold(headline),
+                plain(format!(" · 扫描 {}", report.scanned)),
+            ]),
+            text_of(vec![
+                plain(format!("入库 {}", report.indexed)),
+                dim(format!(" · 跳过 {}", report.skipped)),
+                dim(format!(" · 失败 {}", report.failed)),
+                dim(format!(" · 缺失 {}", report.missing)),
+            ]),
+        ];
+        let footer = if report.cancelled {
+            "已入库部分保留；再次 library scan 可继续增量".to_owned()
+        } else {
+            "输入 library list 查看最近入库".to_owned()
+        };
+        (self.emit)(&self.block(status, outputs, Some(footer)));
+    }
+
+    fn on_failed(&self, error: &CmdError) {
+        (self.emit)(&self.block(BlockStatus::Error, vec![error.to_output()], None));
+    }
+}
+
+/// 后台扫描线程与前台之间的桥：把 `np-library` 的观察者接口转成
+/// [`LibraryObserver`]，并向上暴露取消标志。
+struct ScanBridge {
+    sink: Arc<dyn LibraryObserver>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl ScanObserver for ScanBridge {
+    fn on_progress(&self, scanned: usize, total: usize, current_path: &Path) {
+        self.sink.on_progress(scanned, total, current_path);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+
+/// 扫描线程退出时（含 panic）把 `active` 复位，避免永久 `E_BUSY`。
+struct ActiveGuard(Arc<AtomicBool>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 正在跑的扫描。
+struct ScanJob {
+    cancel: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    join: JoinHandle<()>,
+}
+
+struct LibraryInner {
+    db_path: PathBuf,
+    db: Mutex<Option<Database>>,
+    scan: Mutex<Option<ScanJob>>,
+    search: Mutex<Vec<Track>>,
+}
+
+/// 生产版 [`LibraryApi`]：持有库路径、主线程连接、扫描任务与会话搜索结果。
+pub(crate) struct LibraryHandle {
+    inner: Arc<LibraryInner>,
+}
+
+impl LibraryHandle {
+    pub(crate) fn new(db_path: PathBuf) -> Self {
+        Self {
+            inner: Arc::new(LibraryInner {
+                db_path,
+                db: Mutex::new(None),
+                scan: Mutex::new(None),
+                search: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    /// 退出时打断后台扫描并等它提交已入库部分（复用 T-0013 的 shutdown 路径）。
+    pub(crate) fn shutdown(&self) {
+        if let Ok(mut slot) = self.inner.scan.lock()
+            && let Some(job) = slot.take()
+        {
+            job.cancel.store(true, Ordering::SeqCst);
+            let _ = job.join.join();
+        }
+    }
+
+    /// 懒打开（必要时建库）主线程连接；单测不经过这里。
+    fn with_db<T>(
+        &self,
+        action: impl FnOnce(&Database) -> np_library::Result<T>,
+    ) -> Result<T, CmdError> {
+        let mut guard = self
+            .inner
+            .db
+            .lock()
+            .map_err(|_| CmdError::new("E_LIB_DB", "媒体库连接锁已损坏"))?;
+        if guard.is_none() {
+            *guard = Some(Database::open(&self.inner.db_path).map_err(library_error)?);
+        }
+        let db = guard
+            .as_ref()
+            .ok_or_else(|| CmdError::new("E_LIB_DB", "媒体库连接未初始化"))?;
+        action(db).map_err(library_error)
+    }
+}
+
+impl LibraryApi for LibraryHandle {
+    fn add_root(&self, path: &str) -> Result<usize, CmdError> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(CmdError::new("E_CMD_ARG", "扫描根路径不能为空"));
+        }
+        let root = std::path::absolute(path)
+            .map_err(|error| CmdError::new("E_LIB_IO", format!("无效路径：{error}")))?;
+        if !root.is_dir() {
+            return Err(CmdError::new(
+                "E_CMD_ARG",
+                format!("目录不存在：{}", root.display()),
+            ));
+        }
+        if !self.with_db(|db| db.add_root(&root))? {
+            return Err(CmdError::new(
+                "E_CMD_ARG",
+                format!("扫描根已存在：{}", root.display()),
+            ));
+        }
+        let roots = self.with_db(|db| db.list_roots())?;
+        Ok(roots.len())
+    }
+
+    fn list_roots(&self) -> Result<Vec<String>, CmdError> {
+        self.with_db(|db| db.list_roots())
+    }
+
+    fn scan(&self, full: bool, observer: Arc<dyn LibraryObserver>) -> Result<(), CmdError> {
+        let mut slot = self
+            .inner
+            .scan
+            .lock()
+            .map_err(|_| CmdError::new("E_LIB_SCAN", "扫描状态锁已损坏"))?;
+        if slot
+            .as_ref()
+            .is_some_and(|job| job.active.load(Ordering::SeqCst))
+        {
+            return Err(CmdError::new("E_BUSY", "已有扫描在进行中"));
+        }
+        if let Some(finished) = slot.take() {
+            // 上一轮已经结束（active 为 false），join 只回收线程。
+            let _ = finished.join.join();
+        }
+
+        let roots = self.list_roots()?;
+        if roots.is_empty() {
+            return Err(CmdError::new("E_CMD_ARG", "还没有扫描根")
+                .with_hint("先 library add <path> 添加目录"));
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicBool::new(true));
+        let bridge = Arc::new(ScanBridge {
+            sink: observer,
+            cancel: Arc::clone(&cancel),
+        });
+        let db_path = self.inner.db_path.clone();
+        let thread_active = Arc::clone(&active);
+        let join = std::thread::Builder::new()
+            .name("np-library-scan".to_owned())
+            .spawn(move || {
+                let _guard = ActiveGuard(thread_active);
+                run_scan(&db_path, full, bridge);
+            })
+            .map_err(|error| CmdError::new("E_LIB_SCAN", format!("无法启动扫描线程：{error}")))?;
+
+        *slot = Some(ScanJob {
+            cancel,
+            active,
+            join,
+        });
+        Ok(())
+    }
+
+    fn search(&self, keyword: &str, limit: usize) -> Result<Vec<Track>, CmdError> {
+        self.with_db(|db| db.search(keyword, limit))
+    }
+
+    fn list_recent(&self, limit: usize) -> Result<Vec<Track>, CmdError> {
+        self.with_db(|db| db.list_recent(limit))
+    }
+
+    fn stats(&self) -> Result<Stats, CmdError> {
+        self.with_db(|db| db.stats())
+    }
+
+    fn remember_search(&self, tracks: Vec<Track>) {
+        let mut tracks = tracks;
+        tracks.truncate(MAX_SEARCH_RESULTS);
+        if let Ok(mut slot) = self.inner.search.lock() {
+            *slot = tracks;
+        }
+    }
+
+    fn search_results(&self) -> Vec<Track> {
+        self.inner
+            .search
+            .lock()
+            .map(|tracks| tracks.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// 后台线程：打开独立的库连接、读根、跑扫描，把结果交给观察者。
+fn run_scan(db_path: &Path, full: bool, observer: Arc<ScanBridge>) {
+    let db = match Database::open(db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            observer.sink.on_failed(&library_error(error));
+            return;
+        }
+    };
+    let roots = match db.list_roots() {
+        Ok(roots) => roots,
+        Err(error) => {
+            observer.sink.on_failed(&library_error(error));
+            return;
+        }
+    };
+    if roots.is_empty() {
+        observer
+            .sink
+            .on_failed(&CmdError::new("E_CMD_ARG", "还没有扫描根"));
+        return;
+    }
+
+    let scanner = Scanner::new(&db, observer.as_ref());
+    let result = if full {
+        scanner.full().scan(&roots)
+    } else {
+        scanner.scan(&roots)
+    };
+    match result {
+        Ok(report) => observer.sink.on_finished(&report),
+        Err(error) => observer.sink.on_failed(&library_error(error)),
+    }
+}
+
+/// `cmd.exec` / `library.scan` 的“已受理”回执。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ScanAcceptedReply {
+    pub(crate) accepted: bool,
+}
+
+/// IPC 错误载荷（`{ code, message, hint? }`），与终端 `error` 原语同形。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CmdErrorPayload {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) hint: Option<String>,
+}
+
+impl From<CmdError> for CmdErrorPayload {
+    fn from(error: CmdError) -> Self {
+        Self {
+            code: error.code,
+            message: error.message,
+            hint: error.hint,
+        }
+    }
+}
+
+/// 先于后台线程推给前端的 `running` 块（避免进度事件抢跑）。
+pub(crate) fn scan_started_block(block_id: &str, input: &str, full: bool) -> Block {
+    let (outputs, footer) = scan_started_output(full);
+    Block {
+        id: block_id.to_owned(),
+        input: input.to_owned(),
+        started_at: now_millis(),
+        duration_ms: None,
+        status: BlockStatus::Running,
+        outputs,
+        footer,
+        schema_version: SCHEMA_VERSION,
+    }
+}
+
 /// `cmd.exec` 的立即回执：`{ blockId, ok }`（camelCase）。
 ///
 /// 字段名经 `serde` 的 `rename_all = "camelCase"` 序列化，与 T-0018 契约一致；
@@ -798,12 +1693,28 @@ impl PlayerApi for HandleApi<'_> {
 pub(crate) fn cmd_exec(
     app: AppHandle,
     handle: State<'_, PlayerHandle>,
+    library: State<'_, LibraryHandle>,
     input: String,
     block_id: String,
 ) -> CmdExecReply {
     let api = HandleApi::new(&handle);
 
-    match execute(&api, &block_id, &input) {
+    // 后台扫描可能瞬间结束：先推 running，再启动线程，避免 done 抢在 running 前。
+    let full = scan_full_flag(&input);
+    if let Some(full) = full {
+        emit_block(&app, &scan_started_block(&block_id, &input, full));
+    }
+    let observer: Arc<dyn LibraryObserver> = if full.is_some() {
+        Arc::new(EventObserver::for_app(
+            app.clone(),
+            block_id.clone(),
+            input.clone(),
+        ))
+    } else {
+        Arc::new(NoopLibraryObserver)
+    };
+
+    match execute_with_library(&api, &*library, &block_id, &input, observer) {
         Execution::Ignored => CmdExecReply { block_id, ok: true },
         Execution::Blocks { running, done } => {
             emit_block(&app, &running);
@@ -811,10 +1722,15 @@ pub(crate) fn cmd_exec(
             emit_block(&app, &done);
             CmdExecReply { block_id, ok }
         }
+        // 已受理：running 已在启动后台线程前推送，最终块由观察者推送。
+        Execution::Accepted { running } => CmdExecReply {
+            block_id: running.id,
+            ok: true,
+        },
     }
 }
 
-fn emit_block(app: &AppHandle, block: &Block) {
+pub(crate) fn emit_block(app: &AppHandle, block: &Block) {
     if let Err(error) = app.emit(EVENT_TERMINAL_BLOCK, block) {
         eprintln!("[cmd] emit {EVENT_TERMINAL_BLOCK} failed: {error}");
     }
@@ -847,6 +1763,7 @@ pub(crate) fn cmd_complete(
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
 
     use np_core::command::parse;
     use np_core::{PlaybackMode, PlaybackStatus, RepeatMode};
@@ -1078,6 +1995,169 @@ mod tests {
         }
     }
 
+    /// 构造一首假曲目；只填命令层用得到的字段。
+    fn track(id: i64, title: &str, artist: &str, path: &str, duration_ms: i64) -> Track {
+        Track {
+            id,
+            kind: "local".to_owned(),
+            path: path.to_owned(),
+            source: "local".to_owned(),
+            source_id: String::new(),
+            title: title.to_owned(),
+            album_id: None,
+            album: String::new(),
+            artist: artist.to_owned(),
+            album_artist: String::new(),
+            track_no: 0,
+            disc_no: 0,
+            year: 0,
+            duration_ms,
+            sample_rate: 44_100,
+            channels: 2,
+            bitrate: 320,
+            codec: "flac".to_owned(),
+            cover_key: None,
+            size_bytes: 0,
+            mtime_ms: 0,
+            added_at: 0,
+            last_seen_at: 0,
+        }
+    }
+
+    /// `FakeLibraryApi` 记录的一次调用。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum LibraryCall {
+        AddRoot(String),
+        ListRoots,
+        Scan(bool),
+        Search(String, usize),
+        ListRecent(usize),
+        Stats,
+    }
+
+    struct FakeLibraryState {
+        roots: Vec<String>,
+        list_tracks: Vec<Track>,
+        search_tracks: Vec<Track>,
+        stats: Stats,
+        busy: bool,
+        session: Vec<Track>,
+        calls: Vec<LibraryCall>,
+    }
+
+    /// 单测用媒体库：不碰文件系统，行为完全由构造值决定。
+    struct FakeLibraryApi {
+        state: Mutex<FakeLibraryState>,
+    }
+
+    impl FakeLibraryApi {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new(FakeLibraryState {
+                    roots: Vec::new(),
+                    list_tracks: Vec::new(),
+                    search_tracks: Vec::new(),
+                    stats: Stats::default(),
+                    busy: false,
+                    session: Vec::new(),
+                    calls: Vec::new(),
+                }),
+            }
+        }
+
+        fn with_roots(self, roots: &[&str]) -> Self {
+            self.state.lock().expect("state mutex").roots =
+                roots.iter().map(|root| (*root).to_owned()).collect();
+            self
+        }
+
+        fn with_list_tracks(self, tracks: Vec<Track>) -> Self {
+            self.state.lock().expect("state mutex").list_tracks = tracks;
+            self
+        }
+
+        fn with_search_tracks(self, tracks: Vec<Track>) -> Self {
+            self.state.lock().expect("state mutex").search_tracks = tracks;
+            self
+        }
+
+        fn with_stats(self, stats: Stats) -> Self {
+            self.state.lock().expect("state mutex").stats = stats;
+            self
+        }
+
+        fn busy(self) -> Self {
+            self.state.lock().expect("state mutex").busy = true;
+            self
+        }
+
+        fn calls(&self) -> Vec<LibraryCall> {
+            self.state.lock().expect("state mutex").calls.clone()
+        }
+
+        fn session(&self) -> Vec<Track> {
+            self.state.lock().expect("state mutex").session.clone()
+        }
+
+        fn record(&self, call: LibraryCall) {
+            self.state.lock().expect("state mutex").calls.push(call);
+        }
+    }
+
+    impl LibraryApi for FakeLibraryApi {
+        fn add_root(&self, path: &str) -> Result<usize, CmdError> {
+            self.record(LibraryCall::AddRoot(path.to_owned()));
+            let mut state = self.state.lock().expect("state mutex");
+            if state.roots.iter().any(|root| root == path) {
+                return Err(CmdError::new("E_CMD_ARG", format!("扫描根已存在：{path}")));
+            }
+            state.roots.push(path.to_owned());
+            Ok(state.roots.len())
+        }
+
+        fn list_roots(&self) -> Result<Vec<String>, CmdError> {
+            self.record(LibraryCall::ListRoots);
+            Ok(self.state.lock().expect("state mutex").roots.clone())
+        }
+
+        fn scan(&self, full: bool, _observer: Arc<dyn LibraryObserver>) -> Result<(), CmdError> {
+            self.record(LibraryCall::Scan(full));
+            let state = self.state.lock().expect("state mutex");
+            if state.busy {
+                return Err(CmdError::new("E_BUSY", "已有扫描在进行中"));
+            }
+            if state.roots.is_empty() {
+                return Err(CmdError::new("E_CMD_ARG", "还没有扫描根"));
+            }
+            Ok(())
+        }
+
+        fn search(&self, keyword: &str, limit: usize) -> Result<Vec<Track>, CmdError> {
+            self.record(LibraryCall::Search(keyword.to_owned(), limit));
+            let state = self.state.lock().expect("state mutex");
+            Ok(state.search_tracks.iter().take(limit).cloned().collect())
+        }
+
+        fn list_recent(&self, limit: usize) -> Result<Vec<Track>, CmdError> {
+            self.record(LibraryCall::ListRecent(limit));
+            let state = self.state.lock().expect("state mutex");
+            Ok(state.list_tracks.iter().take(limit).cloned().collect())
+        }
+
+        fn stats(&self) -> Result<Stats, CmdError> {
+            self.record(LibraryCall::Stats);
+            Ok(self.state.lock().expect("state mutex").stats)
+        }
+
+        fn remember_search(&self, tracks: Vec<Track>) {
+            self.state.lock().expect("state mutex").session = tracks;
+        }
+
+        fn search_results(&self) -> Vec<Track> {
+            self.state.lock().expect("state mutex").session.clone()
+        }
+    }
+
     #[test]
     fn fake_api_records_calls() {
         let api = FakeApi::new();
@@ -1130,6 +2210,7 @@ mod tests {
     fn done_block(api: &FakeApi, input: &str) -> Block {
         match execute(api, "block-1", input) {
             Execution::Blocks { done, .. } => *done,
+            Execution::Accepted { .. } => panic!("unexpected accepted block for input: {input}"),
             Execution::Ignored => panic!("expected a block for input: {input}"),
         }
     }
@@ -1182,9 +2263,15 @@ mod tests {
         let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], None));
         let block = done_block(&api, "play 3");
 
-        assert_eq!(api.calls(), vec![Call::QueueJump(2)]);
+        assert_eq!(api.calls(), vec![Call::QueueList, Call::QueueJump(2)]);
         assert_eq!(block.status, BlockStatus::Done);
         assert!(text_of_block(&block).contains("第 3 首"));
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：播放队列"))
+        );
     }
 
     #[test]
@@ -1418,9 +2505,14 @@ mod tests {
             "b.flac".to_owned(),
             "c.flac".to_owned(),
         ];
-        let outcome = Executor { api: &api }
-            .add_paths(&paths)
-            .expect("partial success is still a success");
+        let library = FakeLibraryApi::new();
+        let outcome = Executor {
+            api: &api,
+            library: &library,
+            observer: Arc::new(NoopLibraryObserver),
+        }
+        .add_paths(&paths)
+        .expect("partial success is still a success");
 
         assert_eq!(api.calls().len(), 3);
         assert_eq!(
@@ -1572,6 +2664,456 @@ mod tests {
         assert!(done.duration_ms.is_some());
         assert!(done.started_at > 0);
         assert_eq!(done.schema_version, SCHEMA_VERSION);
+    }
+
+    // ---- 媒体库命令（T-0023） ----
+
+    fn done_with_library(api: &FakeApi, library: &FakeLibraryApi, input: &str) -> Block {
+        match execute_with_library(
+            api,
+            library,
+            "block-lib",
+            input,
+            Arc::new(NoopLibraryObserver),
+        ) {
+            Execution::Blocks { done, .. } => *done,
+            Execution::Accepted { .. } => panic!("expected a finished block for: {input}"),
+            Execution::Ignored => panic!("expected a block for: {input}"),
+        }
+    }
+
+    fn accepted_with_library(api: &FakeApi, library: &FakeLibraryApi, input: &str) -> Block {
+        match execute_with_library(
+            api,
+            library,
+            "block-lib",
+            input,
+            Arc::new(NoopLibraryObserver),
+        ) {
+            Execution::Accepted { running } => *running,
+            Execution::Blocks { done, .. } => {
+                panic!("expected accepted block for {input}, got {:?}", done.status)
+            }
+            Execution::Ignored => panic!("expected a block for: {input}"),
+        }
+    }
+
+    #[test]
+    fn library_add_reports_the_root_count() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, r"library add C:\Music");
+
+        assert_eq!(
+            library.calls(),
+            vec![LibraryCall::AddRoot(r"C:\Music".to_owned())]
+        );
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("已添加扫描根"));
+        assert_eq!(
+            block.footer.as_deref(),
+            Some("当前 1 个扫描根 · 输入 library scan 开始扫描")
+        );
+    }
+
+    #[test]
+    fn library_add_rejects_a_duplicate_root() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_roots(&["C:\\Music"]);
+        let block = done_with_library(&api, &library, r"library add C:\Music");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        let (code, message, _) = error_fields(&block);
+        assert_eq!(code, "E_CMD_ARG");
+        assert!(message.contains("已存在"), "{message}");
+    }
+
+    #[test]
+    fn library_scan_is_accepted_immediately() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_roots(&["C:\\Music"]);
+        let block = accepted_with_library(&api, &library, "library scan");
+
+        assert_eq!(block.status, BlockStatus::Running);
+        assert!(text_of_block(&block).contains("扫描已开始"));
+        assert_eq!(library.calls(), vec![LibraryCall::Scan(false)]);
+    }
+
+    #[test]
+    fn library_scan_full_sets_the_flag() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_roots(&["C:\\Music"]);
+        let block = accepted_with_library(&api, &library, "library scan --full");
+
+        assert!(text_of_block(&block).contains("全量扫描"));
+        assert_eq!(library.calls(), vec![LibraryCall::Scan(true)]);
+    }
+
+    #[test]
+    fn library_scan_while_running_returns_busy() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_roots(&["C:\\Music"]).busy();
+        let block = done_with_library(&api, &library, "library scan");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_BUSY");
+    }
+
+    #[test]
+    fn library_scan_without_roots_returns_arg_error() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "library scan");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+    }
+
+    #[test]
+    fn library_list_defaults_to_twenty_and_renders_rows() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_list_tracks(vec![
+            track(1, "Kid A", "Radiohead", "/music/a.flac", 90_000),
+            track(2, "Untitled", "", "/music/b.flac", 0),
+        ]);
+        let block = done_with_library(&api, &library, "library list");
+
+        assert_eq!(library.calls(), vec![LibraryCall::ListRecent(20)]);
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns, vec!["序号", "标题", "艺人", "时长"]);
+        assert_eq!(rows[0], vec!["1", "Kid A", "Radiohead", "01:30"]);
+        assert_eq!(rows[1][3], "--:--");
+    }
+
+    #[test]
+    fn library_list_honors_limit_and_rejects_bad_values() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, "library list --limit=5");
+        assert_eq!(library.calls(), vec![LibraryCall::ListRecent(5)]);
+
+        let block = done_with_library(&api, &library, "library list --limit=abc");
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+
+        let block = done_with_library(&api, &library, "library list --limit=0");
+        assert_eq!(block.status, BlockStatus::Error);
+    }
+
+    #[test]
+    fn library_stat_renders_counts_and_scan_time() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_stats(Stats {
+            tracks: 3,
+            albums: 1,
+            artists: 2,
+            total_duration_ms: 3_723_000,
+            last_scan_at: 0,
+        });
+        let block = done_with_library(&api, &library, "library stat");
+        let text = text_of_block(&block);
+
+        assert!(text.contains("曲目 · 3"), "{text}");
+        assert!(text.contains("专辑 · 1"), "{text}");
+        assert!(text.contains("艺人 · 2"), "{text}");
+        assert!(text.contains("总时长 · 1 小时 2 分"), "{text}");
+        assert!(text.contains("最近扫描 · 从未扫描"), "{text}");
+    }
+
+    #[test]
+    fn search_renders_rows_and_remembers_results() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![
+            track(1, "Kid A", "Radiohead", "/music/a.flac", 90_000),
+            track(2, "Kid B", "Radiohead", "/music/b.flac", 0),
+        ]);
+        let block = done_with_library(&api, &library, "search kid");
+
+        assert_eq!(
+            library.calls(),
+            vec![LibraryCall::Search("kid".to_owned(), 101)]
+        );
+        assert_eq!(library.session().len(), 2);
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], "1");
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：搜索结果"))
+        );
+    }
+
+    #[test]
+    fn search_without_hits_explains_itself() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "search nothing");
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("没有找到"));
+        assert!(library.session().is_empty());
+    }
+
+    #[test]
+    fn search_truncates_results_at_one_hundred() {
+        let api = FakeApi::new();
+        let tracks: Vec<Track> = (0..101)
+            .map(|index| {
+                track(
+                    index,
+                    &format!("Track {index}"),
+                    "Artist",
+                    &format!("/music/{index}.flac"),
+                    1_000,
+                )
+            })
+            .collect();
+        let library = FakeLibraryApi::new().with_search_tracks(tracks);
+        let block = done_with_library(&api, &library, "search track");
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 100);
+        assert_eq!(library.session().len(), 100);
+        assert!(text_of_block(&block).contains("只显示前 100 条"));
+    }
+
+    #[test]
+    fn search_requires_a_keyword() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "search");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(library.calls().is_empty());
+    }
+
+    #[test]
+    fn play_prefers_the_queue_over_search_results() {
+        let api = FakeApi::new().with_queue(queue_view(&["a.flac"], None));
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Search Song",
+            "Artist",
+            "/music/search.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "search song");
+        let block = done_with_library(&api, &library, "play 1");
+
+        assert_eq!(api.calls(), vec![Call::QueueList, Call::QueueJump(0)]);
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：播放队列"))
+        );
+    }
+
+    #[test]
+    fn play_falls_back_to_search_results_when_the_queue_is_empty() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![
+            track(1, "First", "Artist", "/music/first.flac", 1_000),
+            track(2, "Second", "Artist", "/music/second.flac", 1_000),
+        ]);
+        done_with_library(&api, &library, "search artist");
+        let block = done_with_library(&api, &library, "play 2");
+
+        assert_eq!(
+            api.calls(),
+            vec![
+                Call::QueueList,
+                Call::Play(Some("/music/second.flac".to_owned()))
+            ]
+        );
+        assert!(text_of_block(&block).contains("搜索结果第 2 首"));
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：搜索结果"))
+        );
+    }
+
+    #[test]
+    fn play_number_without_queue_or_search_results_fails() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "play 2");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert_eq!(api.calls(), vec![Call::QueueList]);
+    }
+
+    #[test]
+    fn play_search_index_out_of_range_fails() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Only",
+            "Artist",
+            "/music/only.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "search only");
+        let block = done_with_library(&api, &library, "play 2");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("只有 1 条"));
+        assert_eq!(api.calls(), vec![Call::QueueList]);
+    }
+
+    // ---- 扫描进度（节流 + 块状态） ----
+
+    fn event_observer(now: Arc<AtomicU64>, emitted: Arc<Mutex<Vec<Block>>>) -> EventObserver {
+        let emit: Arc<EmitFn> = Arc::new(move |block: &Block| {
+            emitted.lock().expect("emitted mutex").push(block.clone());
+        });
+        let clock: Arc<ClockFn> = {
+            let now = Arc::clone(&now);
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        EventObserver::with_port(
+            emit,
+            clock,
+            "scan-block".to_owned(),
+            "library scan".to_owned(),
+            1_000,
+        )
+    }
+
+    fn progress_current(block: &Block) -> u64 {
+        block
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Progress { current, .. } => Some(*current),
+                _ => None,
+            })
+            .expect("progress output")
+    }
+
+    #[test]
+    fn progress_is_throttled_by_time_not_by_file_count() {
+        let now = Arc::new(AtomicU64::new(1_000));
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let observer = event_observer(Arc::clone(&now), Arc::clone(&emitted));
+
+        for (at, scanned) in [
+            (1_000, 1),
+            (1_100, 2),
+            (1_400, 3),
+            (1_500, 4),
+            (1_900, 5),
+            (2_000, 6),
+        ] {
+            now.store(at, Ordering::SeqCst);
+            observer.on_progress(scanned, 10, Path::new("song.flac"));
+        }
+
+        let blocks = emitted.lock().expect("emitted mutex");
+        let currents: Vec<u64> = blocks.iter().map(progress_current).collect();
+        // 1 Hz 下限：只在 0ms、500ms、1000ms 三个时间点放行。
+        assert_eq!(currents, vec![1, 4, 6]);
+        assert!(blocks.iter().all(|block| block.id == "scan-block"));
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block.status == BlockStatus::Running)
+        );
+    }
+
+    #[test]
+    fn scan_finished_block_summarizes_the_report() {
+        let now = Arc::new(AtomicU64::new(1_000));
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let observer = event_observer(Arc::clone(&now), Arc::clone(&emitted));
+
+        now.store(1_750, Ordering::SeqCst);
+        observer.on_finished(&ScanReport {
+            scanned: 10,
+            indexed: 8,
+            skipped: 1,
+            failed: 1,
+            missing: 2,
+            cancelled: false,
+        });
+
+        let blocks = emitted.lock().expect("emitted mutex");
+        let block = blocks.last().expect("finished block");
+        assert_eq!(block.id, "scan-block");
+        assert_eq!(block.status, BlockStatus::Done);
+        assert_eq!(block.duration_ms, Some(750));
+        let text = block
+            .outputs
+            .iter()
+            .filter_map(|output| match output {
+                Output::Text { spans, .. } => Some(
+                    spans
+                        .iter()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("扫描完成"), "{text}");
+        assert!(text.contains("扫描 10"), "{text}");
+        assert!(text.contains("入库 8"), "{text}");
+        assert!(text.contains("缺失 2"), "{text}");
+    }
+
+    #[test]
+    fn cancelled_scan_finishes_as_cancelled() {
+        let now = Arc::new(AtomicU64::new(1_000));
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let observer = event_observer(Arc::clone(&now), Arc::clone(&emitted));
+
+        observer.on_finished(&ScanReport {
+            scanned: 3,
+            indexed: 1,
+            cancelled: true,
+            ..ScanReport::default()
+        });
+
+        let blocks = emitted.lock().expect("emitted mutex");
+        let block = blocks.last().expect("cancelled block");
+        assert_eq!(block.status, BlockStatus::Cancelled);
+    }
+
+    #[test]
+    fn scan_failure_block_carries_the_error_code() {
+        let now = Arc::new(AtomicU64::new(1_000));
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let observer = event_observer(Arc::clone(&now), Arc::clone(&emitted));
+
+        observer.on_failed(&CmdError::new("E_LIB_IO", "无法读取目录"));
+
+        let blocks = emitted.lock().expect("emitted mutex");
+        let block = blocks.last().expect("failure block");
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(block).0, "E_LIB_IO");
+    }
+
+    fn table_of_block(block: &Block) -> (Vec<&str>, Vec<Vec<&str>>) {
+        block
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Table { columns, rows, .. } => Some((
+                    columns.iter().map(String::as_str).collect(),
+                    rows.iter()
+                        .map(|row| row.iter().map(String::as_str).collect())
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .expect("table output")
     }
 
     // ---- IPC 与事件 ----

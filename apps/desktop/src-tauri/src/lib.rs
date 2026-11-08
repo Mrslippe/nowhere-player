@@ -36,12 +36,20 @@ pub fn run() {
             ipc::queue_remove,
             ipc::queue_clear,
             ipc::queue_jump,
+            ipc::library_add_root,
+            ipc::library_scan,
+            ipc::library_list,
+            ipc::library_search,
+            ipc::library_stats,
             command_exec::cmd_exec,
             command_exec::cmd_complete,
         ])
         .setup(|app| {
             // actor 线程在此启动；`Player` 由线程内部惰性创建。
             app.manage(player_actor::PlayerHandle::spawn(app.handle().clone())?);
+            // 媒体库连接与扫描任务延迟到首次使用时打开；这里只记路径。
+            let db_path = app.path().app_data_dir()?.join("library.db");
+            app.manage(command_exec::LibraryHandle::new(db_path));
             let handle = app.handle();
             windows::create_player(handle)?;
             shortcut::register(handle);
@@ -53,8 +61,10 @@ pub fn run() {
         .expect("failed to build Nowhere Player");
 
     app.run(|app, event| {
-        // 退出前让 actor 在自己线程 drop `Player`，释放音频设备（T-0013 §7）。
+        // 退出前让 actor 在自己线程 drop `Player`，释放音频设备（T-0013 §7）；
+        // 同时打断媒体库扫描线程，让它提交已入库部分。
         if let tauri::RunEvent::Exit = event {
+            app.state::<command_exec::LibraryHandle>().shutdown();
             app.state::<player_actor::PlayerHandle>().shutdown();
         }
     });

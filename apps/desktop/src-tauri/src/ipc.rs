@@ -7,9 +7,16 @@
 //! 通道名带点（如 `player.snapshot`）；Tauri 命令参数默认 camelCase，
 //! 因此 `position_ms` 在前端写作 `positionMs`。
 
-use np_core::{PlaybackMode, PlaybackState, PlayerError, QueueView};
-use tauri::State;
+use std::sync::Arc;
 
+use np_core::{PlaybackMode, PlaybackState, PlayerError, QueueView};
+use np_library::{Stats, Track};
+use tauri::{AppHandle, State};
+
+use crate::command_exec::{
+    CmdErrorPayload, EventObserver, LibraryApi, LibraryHandle, LibraryObserver, MAX_SEARCH_RESULTS,
+    NoopLibraryObserver, ScanAcceptedReply, emit_block, scan_started_block,
+};
 use crate::player_actor::PlayerHandle;
 
 /// `player.snapshot`：取首帧状态。
@@ -113,6 +120,85 @@ pub(crate) fn queue_jump(
     handle.queue_jump(index)
 }
 
+/// `library.addRoot`：登记扫描根（绝对化后幂等写入），返回当前根数量。
+#[tauri::command(rename = "library.addRoot")]
+pub(crate) fn library_add_root(
+    library: State<'_, LibraryHandle>,
+    path: String,
+) -> Result<usize, CmdErrorPayload> {
+    library.add_root(&path).map_err(CmdErrorPayload::from)
+}
+
+/// `library.scan`：受理后台扫描；给了 `blockId` 时用 `terminal:block` 推进度。
+#[tauri::command(rename = "library.scan")]
+pub(crate) fn library_scan(
+    app: AppHandle,
+    library: State<'_, LibraryHandle>,
+    block_id: Option<String>,
+    full: Option<bool>,
+) -> Result<ScanAcceptedReply, CmdErrorPayload> {
+    let full = full.unwrap_or(false);
+    let observer: Arc<dyn LibraryObserver> = match &block_id {
+        Some(block_id) => {
+            // 与 cmd.exec 一样，先推 running 再启动线程，避免 done 抢跑。
+            emit_block(&app, &scan_started_block(block_id, "library scan", full));
+            Arc::new(EventObserver::for_app(
+                app.clone(),
+                block_id.clone(),
+                "library scan".to_owned(),
+            ))
+        }
+        None => Arc::new(NoopLibraryObserver),
+    };
+
+    if let Err(error) = library.scan(full, Arc::clone(&observer)) {
+        // 已推的 running 块不能永远停在 running：失败时用同一 id 收尾。
+        observer.on_failed(&error);
+        return Err(CmdErrorPayload::from(error));
+    }
+    Ok(ScanAcceptedReply { accepted: true })
+}
+
+/// `library.list`：最近入库的曲目，默认 20 条。
+#[tauri::command(rename = "library.list")]
+pub(crate) fn library_list(
+    library: State<'_, LibraryHandle>,
+    limit: Option<usize>,
+) -> Result<Vec<Track>, CmdErrorPayload> {
+    let limit = limit.unwrap_or(20).max(1);
+    library.list_recent(limit).map_err(CmdErrorPayload::from)
+}
+
+/// `library.search`：库检索，结果同时存进会话上下文供 `play <n>` 使用。
+#[tauri::command(rename = "library.search")]
+pub(crate) fn library_search(
+    library: State<'_, LibraryHandle>,
+    keyword: String,
+    limit: Option<usize>,
+) -> Result<Vec<Track>, CmdErrorPayload> {
+    if keyword.trim().is_empty() {
+        return Err(CmdErrorPayload {
+            code: "E_CMD_ARG".to_owned(),
+            message: "搜索关键词不能为空".to_owned(),
+            hint: None,
+        });
+    }
+    let limit = limit
+        .unwrap_or(MAX_SEARCH_RESULTS)
+        .clamp(1, MAX_SEARCH_RESULTS);
+    let tracks = library
+        .search(&keyword, limit)
+        .map_err(CmdErrorPayload::from)?;
+    library.remember_search(tracks.clone());
+    Ok(tracks)
+}
+
+/// `library.stats`：曲目 / 专辑 / 艺人 / 总时长 / 最近扫描。
+#[tauri::command(rename = "library.stats")]
+pub(crate) fn library_stats(library: State<'_, LibraryHandle>) -> Result<Stats, CmdErrorPayload> {
+    library.stats().map_err(CmdErrorPayload::from)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -130,5 +216,10 @@ mod tests {
         assert_eq!(__tauri_command_name_queue_remove!(), "queue.remove");
         assert_eq!(__tauri_command_name_queue_clear!(), "queue.clear");
         assert_eq!(__tauri_command_name_queue_jump!(), "queue.jump");
+        assert_eq!(__tauri_command_name_library_add_root!(), "library.addRoot");
+        assert_eq!(__tauri_command_name_library_scan!(), "library.scan");
+        assert_eq!(__tauri_command_name_library_list!(), "library.list");
+        assert_eq!(__tauri_command_name_library_search!(), "library.search");
+        assert_eq!(__tauri_command_name_library_stats!(), "library.stats");
     }
 }

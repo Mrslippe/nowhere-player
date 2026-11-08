@@ -2372,6 +2372,7 @@ version = "0.0.0"
 dependencies = [
  "np-audio",
  "np-core",
+ "np-library",
  "serde",
  "tauri",
  "tauri-build",

@@ -335,7 +335,8 @@ const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
     },
 ];
 
-const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[    SubcommandSpec {
+const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
         name: "repeat",
         summary: "设置循环模式",
         usage: "mode repeat <off|one|all>",
@@ -573,9 +574,15 @@ mod tests {
     fn library_and_search_are_registered_with_their_alias() {
         let registry = Registry::new();
 
-        assert_eq!(registry.find("library").map(|spec| spec.name), Some("library"));
+        assert_eq!(
+            registry.find("library").map(|spec| spec.name),
+            Some("library")
+        );
         assert_eq!(registry.find("lib").map(|spec| spec.name), Some("library"));
-        assert_eq!(registry.find("search").map(|spec| spec.name), Some("search"));
+        assert_eq!(
+            registry.find("search").map(|spec| spec.name),
+            Some("search")
+        );
         assert_eq!(
             registry.find("library").map(|spec| spec.subcommands.len()),
             Some(4)

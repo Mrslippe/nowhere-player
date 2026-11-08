@@ -202,7 +202,8 @@ fn now_ms() -> i64 {
 }
 
 /// 升级前把非空库复制成 `<path>.bak`。
-fn backup(path: &Path) -> Result<()> {    let is_non_empty = fs::metadata(path)
+fn backup(path: &Path) -> Result<()> {
+    let is_non_empty = fs::metadata(path)
         .map(|meta| meta.len() > 0)
         .unwrap_or(false);
     if !is_non_empty {

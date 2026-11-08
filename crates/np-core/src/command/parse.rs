@@ -504,10 +504,7 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("缺少子命令"), "{}", error.message);
-        assert_eq!(
-            error.usage.as_deref(),
-            Some("library [add|scan|list|stat]")
-        );
+        assert_eq!(error.usage.as_deref(), Some("library [add|scan|list|stat]"));
     }
 
     #[test]
@@ -563,10 +560,7 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("未知标志"), "{}", error.message);
-        assert_eq!(
-            error.usage.as_deref(),
-            Some("library list [--limit=N]")
-        );
+        assert_eq!(error.usage.as_deref(), Some("library list [--limit=N]"));
     }
 
     #[test]
