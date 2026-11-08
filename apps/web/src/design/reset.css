@@ -19,7 +19,8 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--font-ui);
+  /* 优先走 skin 决定的 UI 字体；未加载 skin 的独立页（如 xterm-lab）回落到原始栈。 */
+  font-family: var(--np-font-ui, var(--font-ui));
   font-size: var(--fs-13);
   line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;

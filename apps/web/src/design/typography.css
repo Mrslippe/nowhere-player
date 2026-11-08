@@ -31,6 +31,7 @@
 
 /* 等宽文本：终端输出、Kbd、命令示例 */
 .np-mono {
-  font-family: var(--font-mono);
+  /* skin 可决定等宽字体；未加载 skin 的页面回落到原始栈。 */
+  font-family: var(--np-font-mono, var(--font-mono));
   font-variant-ligatures: none;
 }
