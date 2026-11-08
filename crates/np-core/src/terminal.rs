@@ -599,4 +599,18 @@ mod tests {
             other => panic!("expected media output, got {}", other.kind()),
         }
     }
+
+    #[test]
+    fn demo_fixture_roundtrips_to_identical_wire_json() {
+        let raw = include_str!("../../../apps/web/src/shared/fixtures/terminal-demo.json");
+        let expected: serde_json::Value =
+            serde_json::from_str(raw).expect("terminal-demo.json must be valid JSON");
+        let block: Block =
+            serde_json::from_str(raw).expect("terminal-demo.json must deserialize as Block");
+        let actual: serde_json::Value =
+            serde_json::to_value(&block).expect("block must serialize to JSON");
+
+        // 字段名、枚举标签、null 形状必须与夹具（也就是 TS 镜像）逐字段一致。
+        assert_eq!(actual, expected);
+    }
 }
