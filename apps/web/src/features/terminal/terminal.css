@@ -14,7 +14,7 @@
   overflow: hidden;
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--font-ui);
+  font-family: var(--np-font-ui);
 }
 
 /* ── 顶栏 ───────────────────────────────────────────── */
@@ -25,13 +25,13 @@
   gap: var(--sp-2);
   height: 36px;
   padding: 0 var(--sp-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--np-border-hairline);
 }
 
 .np-lab__brand {
   margin-right: var(--sp-2);
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-12);
   white-space: nowrap;
 }
@@ -42,18 +42,18 @@
   gap: 2px;
   height: 24px;
   padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-control-sm);
 }
 
 .np-lab__chip {
   height: 18px;
   padding: 0 var(--sp-2);
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--np-radius-tag);
   background: transparent;
   color: var(--fg-muted);
-  font-family: var(--font-ui);
+  font-family: var(--np-font-ui);
   font-size: var(--fs-12);
   line-height: 1;
   white-space: nowrap;
@@ -94,7 +94,7 @@
 }
 
 .np-lab__pane + .np-lab__pane {
-  border-left: 1px solid var(--line);
+  border-left: var(--np-border-hairline);
 }
 
 .np-lab__pane-head {
@@ -104,7 +104,7 @@
   gap: var(--sp-2);
   height: 24px;
   padding: 0 var(--sp-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--np-border-hairline);
   color: var(--fg-muted);
   font-size: var(--fs-10);
   letter-spacing: var(--tracking-caps);
@@ -117,10 +117,10 @@
   justify-content: center;
   width: 14px;
   height: 14px;
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border: var(--np-border-control-strong);
+  border-radius: var(--np-radius-micro);
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-10);
   line-height: 1;
 }
@@ -153,7 +153,7 @@
   gap: var(--sp-2);
   height: 40px;
   padding: 0 var(--sp-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--np-border-hairline);
   background: var(--bg);
   /* 补全弹层相对输入行定位（T-0020）。 */
   position: relative;
@@ -162,7 +162,7 @@
 .np-lab__prompt {
   flex: none;
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-13);
   user-select: none;
 }
@@ -175,7 +175,7 @@
   border: 0;
   background: transparent;
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-13);
 }
 
@@ -185,7 +185,7 @@
 }
 
 .np-lab__input-row:focus-within {
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: var(--np-shadow-focus-line);
 }
 
 .np-lab__input::placeholder {
@@ -203,10 +203,10 @@
   max-height: 240px;
   overflow-y: auto;
   padding: var(--sp-1) 0;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
+  border: var(--np-border-control-strong);
+  border-radius: var(--np-radius-control-sm);
   background: var(--bg-elev);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--np-shadow-float);
 }
 
 .np-lab__completion-item {
@@ -215,7 +215,7 @@
   gap: var(--sp-2);
   padding: 4px var(--sp-2);
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-12);
   cursor: default;
 }
@@ -235,11 +235,11 @@
 .np-lab__completion-kind {
   flex: none;
   padding: 0 4px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-micro);
   color: var(--fg-muted);
   font-size: var(--fs-10);
-  line-height: 1.4;
+  line-height: var(--np-density-line-dense);
 }
 
 .np-lab__completion-summary {
@@ -255,11 +255,11 @@
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-control-sm);
   background: transparent;
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-12);
   line-height: 1;
   cursor: pointer;
@@ -282,7 +282,7 @@
 .np-score {
   flex: none;
   background: var(--bg);
-  border-top: 1px solid var(--line);
+  border-top: var(--np-border-hairline);
 }
 
 .np-score__head {
@@ -303,7 +303,7 @@
   border: 0;
   background: transparent;
   color: var(--fg);
-  font-family: var(--font-ui);
+  font-family: var(--np-font-ui);
   font-size: var(--fs-12);
   cursor: pointer;
 }
@@ -318,14 +318,14 @@
   align-items: center;
   gap: var(--sp-3);
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-12);
   white-space: nowrap;
 }
 
 .np-score__total {
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -347,7 +347,7 @@
 }
 
 .np-score__body {
-  border-top: 1px solid var(--line);
+  border-top: var(--np-border-hairline);
 }
 
 .np-score__table {
@@ -359,7 +359,7 @@
 .np-score__table th,
 .np-score__table td {
   padding: 2px var(--sp-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--np-border-hairline);
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
@@ -389,7 +389,7 @@
 .np-score__weight {
   width: 72px;
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -402,11 +402,11 @@
   width: 22px;
   height: 20px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-tag);
   background: transparent;
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-10);
   line-height: 1;
   cursor: pointer;

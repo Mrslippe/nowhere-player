@@ -9,9 +9,9 @@
   align-items: center;
   justify-content: center;
   gap: var(--sp-2);
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  font-family: var(--font-ui);
+  border: var(--np-border-transparent);
+  border-radius: var(--np-radius-control);
+  font-family: var(--np-font-ui);
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
@@ -101,8 +101,8 @@
   width: var(--np-icon-btn-size);
   height: var(--np-icon-btn-size);
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
+  border: var(--np-border-transparent);
+  border-radius: var(--np-radius-control-sm);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -152,7 +152,7 @@
   position: relative;
   width: 100%;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--np-radius-pill);
   background: var(--line);
 }
 
@@ -229,12 +229,12 @@
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  border: 1px solid var(--line-strong);
-  border-bottom-width: 2px;
-  border-radius: var(--r-sm);
+  border: var(--np-border-control-strong);
+  border-bottom-width: var(--np-border-width-emphasis);
+  border-radius: var(--np-radius-control-sm);
   background: var(--bg-elev);
   color: var(--fg-muted);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-10);
   line-height: 1;
   white-space: nowrap;

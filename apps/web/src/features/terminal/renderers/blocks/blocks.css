@@ -11,9 +11,9 @@
   gap: var(--sp-3);
   min-width: 0;
   color: var(--fg);
-  font-family: var(--font-mono);
+  font-family: var(--np-font-mono);
   font-size: var(--fs-13);
-  line-height: 1.6;
+  line-height: var(--np-density-line);
 }
 
 /* ── 块骨架 ─────────────────────────────────────────── */
@@ -130,7 +130,7 @@
 
 .np-blocks-table th {
   padding: var(--sp-1) var(--sp-2);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--np-border-hairline);
   color: var(--fg-muted);
   font-weight: 500;
   text-align: left;
@@ -139,7 +139,7 @@
 
 .np-blocks-table td {
   padding: var(--sp-1) var(--sp-2);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--np-border-hairline);
   white-space: nowrap;
 }
 
@@ -200,7 +200,7 @@
   flex-direction: column;
   gap: var(--sp-1);
   padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
-  border-left: 2px solid var(--danger);
+  border-left: var(--np-border-error);
 }
 
 .np-blocks-error__head {
@@ -253,8 +253,8 @@
 .np-blocks-media__image,
 .np-blocks-media__placeholder {
   display: block;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-control);
   object-fit: cover;
 }
 
@@ -280,7 +280,7 @@
   }
 
   .np-blocks-table tr + tr {
-    border-top: 1px solid var(--line);
+    border-top: var(--np-border-hairline);
   }
 
   .np-blocks-table td,
