@@ -24,6 +24,12 @@ export const APP_VERSION = "0.0.0";
 /** 首屏欢迎块的固定 id（不随刷新变化，便于测试与截图）。 */
 export const WELCOME_BLOCK_ID = "blk_welcome";
 
+/** 订阅失败时本地错误块的固定 id：同一次挂载只出现一条。 */
+export const STREAM_LOST_BLOCK_ID = "blk_stream_lost";
+
+/** 订阅失败的展示文案（T-0021 §2.2）。 */
+export const STREAM_LOST_MESSAGE = "实时输出不可用，请重开终端窗";
+
 /**
  * 生成 `cmd.exec` 的 `blockId`（前端生成，后端原样回填到两次事件里）。
  *
@@ -177,4 +183,55 @@ export function createWelcomeBlock(
     ],
     footer: "输入 help 查看命令",
   };
+}
+
+/**
+ * 订阅失败时补的本地错误块（T-0021 §2.2）。
+ *
+ * 不是命令失败：命令可能已经执行成功，只是实时块送不回来。
+ * `hint` 带上底层原因，方便判断是权限、事件系统还是运行时的问题。
+ */
+export function streamLostBlock(
+  error?: CommandError,
+  now: number = Date.now(),
+): Block {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: STREAM_LOST_BLOCK_ID,
+    input: "",
+    startedAt: now,
+    durationMs: null,
+    status: "error",
+    outputs: [
+      {
+        type: "error",
+        code: "E_STREAM_LOST",
+        message: STREAM_LOST_MESSAGE,
+        hint:
+          error === undefined
+            ? "订阅 terminal:block 失败；本条提示不会自动重试"
+            : `订阅 terminal:block 失败：${error.message}`,
+        actions: null,
+      },
+    ],
+    footer: null,
+  };
+}
+
+/**
+ * 推入订阅失败提示：同一次挂载只推一次（T-0021 §2.2）。
+ *
+ * 用固定 id 去重，避免桥或组件重试时刷屏；已有提示时原样返回，
+ * 不制造新的数组引用。
+ */
+export function withStreamLost(
+  blocks: Block[],
+  error?: CommandError,
+  now: number = Date.now(),
+): Block[] {
+  if (blocks.some((block) => block.id === STREAM_LOST_BLOCK_ID)) {
+    return blocks;
+  }
+
+  return [...blocks, streamLostBlock(error, now)];
 }

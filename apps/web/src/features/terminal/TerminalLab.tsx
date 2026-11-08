@@ -33,7 +33,12 @@ import {
   type LabVariant,
 } from "./components/variant";
 import { DEMO_TIME, runMockCommand } from "./mock-commands";
-import { createBlockId, createWelcomeBlock, submitInput } from "./terminal-session";
+import {
+  createBlockId,
+  createWelcomeBlock,
+  submitInput,
+  withStreamLost,
+} from "./terminal-session";
 import "./terminal.css";
 
 function readParam(name: string): string | null {
@@ -141,9 +146,16 @@ export function TerminalLab({
   // 同一 blockId 会来两次事件（running → 最终），一律按 id 覆盖。
   useEffect(
     () =>
-      bridge.subscribeBlocks((block) => {
-        setBlocks((previous) => upsertBlock(previous, block));
-      }),
+      bridge.subscribeBlocks(
+        (block) => {
+          setBlocks((previous) => upsertBlock(previous, block));
+        },
+        () => {
+          // 订阅失败：推一条本地 error 块，明确告诉用户实时输出不可用。
+          // 不自动重试（避免刷屏）；重开终端窗 = 重新订阅，是唯一的重试路径。
+          setBlocks((previous) => withStreamLost(previous));
+        },
+      ),
     [bridge],
   );
 

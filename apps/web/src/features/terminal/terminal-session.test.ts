@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Block } from "../../shared/terminal-model";
 import { isBlock } from "../../shared/terminal-model.guard";
+import { createCommandBridge, upsertBlock } from "../../shared/command-bridge";
 import {
   APP_VERSION,
+  STREAM_LOST_BLOCK_ID,
+  STREAM_LOST_MESSAGE,
   WELCOME_BLOCK_ID,
   createBlockId,
   createWelcomeBlock,
   ipcErrorBlock,
   planInput,
   submitInput,
+  withStreamLost,
   type TerminalRuntime,
 } from "./terminal-session";
 
@@ -185,3 +189,68 @@ describe("createBlockId", () => {
     expect(ids.size).toBe(200);
   });
 });
+
+describe("订阅失败提示（T-0021 §2.2）", () => {
+  it("推入一条 E_STREAM_LOST 本地错误块，文案说明实时输出不可用", () => {
+    const blocks = withStreamLost(
+      [],
+      { code: "E_UNKNOWN", message: "listen failed" },
+      7,
+    );
+
+    expect(blocks).toHaveLength(1);
+    expect(isBlock(blocks[0])).toBe(true);
+    expect(blocks[0]).toMatchObject({
+      id: STREAM_LOST_BLOCK_ID,
+      input: "",
+      status: "error",
+      startedAt: 7,
+    });
+    expect(blocks[0].outputs[0]).toMatchObject({
+      type: "error",
+      code: "E_STREAM_LOST",
+      message: STREAM_LOST_MESSAGE,
+    });
+    // 底层原因放 hint，便于排查是权限还是运行时问题。
+    expect(JSON.stringify(blocks[0].outputs)).toContain("listen failed");
+  });
+
+  it("只提示一次：重复失败不刷屏，且不制造新数组", () => {
+    const once = withStreamLost([], undefined, 7);
+    const twice = withStreamLost(once, undefined, 8);
+
+    expect(twice).toBe(once);
+    expect(twice).toHaveLength(1);
+  });
+
+  it("订阅失败链路（假 listen 注入错误）：块只出现一次", async () => {
+    const bridge = createCommandBridge({
+      transport: {
+        async exec(args) {
+          return { blockId: args.blockId, ok: true };
+        },
+        async listenBlocks() {
+          throw { code: "E_UNKNOWN", message: "listen 被拒绝" };
+        },
+      },
+    });
+    let blocks: Block[] = [];
+
+    bridge.subscribeBlocks(
+      (block) => {
+        blocks = upsertBlock(blocks, block);
+      },
+      () => {
+        blocks = withStreamLost(blocks);
+      },
+    );
+
+    await vi.waitFor(() => expect(blocks).toHaveLength(1));
+    expect(blocks[0].id).toBe(STREAM_LOST_BLOCK_ID);
+    expect(blocks[0].outputs[0]).toMatchObject({
+      type: "error",
+      code: "E_STREAM_LOST",
+    });
+  });
+});
+

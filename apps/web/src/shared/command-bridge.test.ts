@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Block } from "./terminal-model";
 import {
   CMD_EXEC_COMMAND,
@@ -8,6 +8,7 @@ import {
   toCommandError,
   upsertBlock,
   type BlockHandler,
+  type CommandError,
   type CommandTransport,
   type ExecArgs,
 } from "./command-bridge";
@@ -185,6 +186,58 @@ describe("createCommandBridge（真实通道）", () => {
     await Promise.resolve();
     expect(subscribed()).toBe(false);
   });
+
+  it("订阅失败时 onError 收到一次归一化错误，不向调用方抛", async () => {
+    const transport: CommandTransport = {
+      async exec(args) {
+        return { blockId: args.blockId, ok: true };
+      },
+      async listenBlocks() {
+        throw { code: "E_EVENT_DENIED", message: "listen 被拒绝" };
+      },
+    };
+    const bridge = createCommandBridge({ transport });
+    const errors: CommandError[] = [];
+
+    bridge.subscribeBlocks(
+      () => undefined,
+      (error) => errors.push(error),
+    );
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toEqual({
+      code: "E_EVENT_DENIED",
+      message: "listen 被拒绝",
+    });
+  });
+
+  it("订阅失败后 exec 不卡在 ready 上：命令仍能发出并拿到回执", async () => {
+    const calls: ExecArgs[] = [];
+    const transport: CommandTransport = {
+      async exec(args) {
+        calls.push(args);
+        return { blockId: args.blockId, ok: true };
+      },
+      async listenBlocks() {
+        throw new Error("listen failed");
+      },
+    };
+    const bridge = createCommandBridge({ transport });
+    const errors: CommandError[] = [];
+
+    bridge.subscribeBlocks(
+      () => undefined,
+      (error) => errors.push(error),
+    );
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+
+    const reply = await bridge.exec("help", "blk_after_failure");
+
+    expect(calls).toEqual([{ input: "help", blockId: "blk_after_failure" }]);
+    expect(reply.ok).toBe(true);
+    // Error 归一成 E_UNKNOWN，保留原文。
+    expect(errors[0]).toEqual({ code: "E_UNKNOWN", message: "listen failed" });
+  });
 });
 
 describe("upsertBlock（按 id 覆盖）", () => {
@@ -215,6 +268,7 @@ describe("upsertBlock（按 id 覆盖）", () => {
     expect(original[0].status).toBe("running");
   });
 });
+
 
 describe("浏览器 mock 模式（无 Tauri）", () => {
   it("无 window / 无 Tauri 时 isTauriRuntime 为 false", () => {

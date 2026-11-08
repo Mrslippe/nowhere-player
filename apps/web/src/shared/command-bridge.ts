@@ -86,6 +86,13 @@ export interface ExecReply {
 
 export type BlockHandler = (block: Block) => void;
 
+/**
+ * 订阅失败回调（T-0021 §2.2）。
+ *
+ * 只在 `listen` 建立失败时调用一次；是否重试由调用方决定（本桥不自动重试）。
+ */
+export type ErrorHandler = (error: CommandError) => void;
+
 export type Unsubscribe = () => void;
 
 /**
@@ -124,8 +131,13 @@ export interface CommandBridge {
   readonly isMock: boolean;
   /** 发一条命令；失败抛 {@link CommandError}。 */
   exec(input: string, blockId: string): Promise<ExecReply>;
-  /** 订阅块事件（含 `running` 与最终块）；返回取消函数，重复调用安全。 */
-  subscribeBlocks(handler: BlockHandler): Unsubscribe;
+  /**
+   * 订阅块事件（含 `running` 与最终块）；返回取消函数，重复调用安全。
+   *
+   * `onError` 可选：`listen` 建立失败时调用一次（T-0021 §2.2）。订阅是后台建立
+   * 的，调用方没有 await 点，所以失败只能走回调；不自动重试，避免刷屏。
+   */
+  subscribeBlocks(handler: BlockHandler, onError?: ErrorHandler): Unsubscribe;
   /**
    * 请求补全（`cmd.complete`）。`cursor` 是字符偏移。
    * 失败抛 {@link CommandError}；调用方负责降级（关弹层、不改输入）。
@@ -357,6 +369,8 @@ function createMockBridge(fallback: FallbackRunner | undefined): CommandBridge {
 
 function createTransportBridge(transport: CommandTransport): CommandBridge {
   const handlers = new Set<BlockHandler>();
+  /** 订阅失败回调；一次建立失败只通知一轮（见 `subscribeBlocks`）。 */
+  const errorHandlers = new Set<ErrorHandler>();
   let unsubscribe: Unsubscribe | null = null;
   /** 订阅建立 Promise；`exec` 发命令前先等它。 */
   let ready: Promise<void> | null = null;
@@ -372,8 +386,12 @@ function createTransportBridge(transport: CommandTransport): CommandBridge {
   return {
     isMock: false,
 
-    subscribeBlocks(handler) {
+    subscribeBlocks(handler, onError) {
       handlers.add(handler);
+
+      if (onError !== undefined) {
+        errorHandlers.add(onError);
+      }
 
       if (ready === null) {
         const current = generation + 1;
@@ -387,14 +405,31 @@ function createTransportBridge(transport: CommandTransport): CommandBridge {
             }
             unsubscribe = off;
           })
-          .catch(() => {
+          .catch((error: unknown) => {
+            if (current !== generation) {
+              return;
+            }
+
             // 订阅失败只影响实时块；命令回执与命令失败仍可展示。
-            // 不在这里抛：订阅是后台建立的，调用方（组件挂载）没有 await 点。
+            // 1) 回调一次，由 UI 决定怎么告知用户（不自动重试，避免刷屏）；
+            // 2) 清掉 `ready`，重开终端窗（重新订阅）时可以再试一次。
+            ready = null;
+            const failure = toCommandError(error);
+            const listeners = [...errorHandlers];
+            errorHandlers.clear();
+
+            for (const listener of listeners) {
+              listener(failure);
+            }
           });
       }
 
       return () => {
         handlers.delete(handler);
+
+        if (onError !== undefined) {
+          errorHandlers.delete(onError);
+        }
 
         if (handlers.size > 0) {
           return;
@@ -405,6 +440,7 @@ function createTransportBridge(transport: CommandTransport): CommandBridge {
         unsubscribe?.();
         unsubscribe = null;
         ready = null;
+        errorHandlers.clear();
       };
     },
 
