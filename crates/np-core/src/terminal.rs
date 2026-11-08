@@ -554,4 +554,49 @@ mod tests {
             other => panic!("expected degraded text output, got {}", other.kind()),
         }
     }
+
+    #[test]
+    fn demo_fixture_deserializes_and_covers_six_outputs() {
+        let raw = include_str!("../../../apps/web/src/shared/fixtures/terminal-demo.json");
+        let block: Block =
+            serde_json::from_str(raw).expect("terminal-demo.json must deserialize as Block");
+
+        assert_eq!(block.schema_version, SCHEMA_VERSION);
+        let kinds: Vec<&str> = block.outputs.iter().map(Output::kind).collect();
+        assert_eq!(
+            kinds,
+            ["text", "table", "progress", "error", "hint", "media"]
+        );
+
+        match &block.outputs[1] {
+            Output::Table {
+                columns,
+                rows,
+                selectable,
+            } => {
+                assert_eq!(columns.len(), 4);
+                assert_eq!(rows.len(), 5);
+                assert!(rows.iter().all(|row| row.len() == columns.len()));
+                assert!(*selectable);
+            }
+            other => panic!("expected table output, got {}", other.kind()),
+        }
+
+        match &block.outputs[3] {
+            Output::Error { code, hint, .. } => {
+                assert_eq!(code, "E_LIB_PERMISSION");
+                assert!(hint.is_some());
+            }
+            other => panic!("expected error output, got {}", other.kind()),
+        }
+
+        match &block.outputs[5] {
+            Output::Media { kind, r#ref, size } => {
+                assert_eq!(*kind, MediaKind::Cover);
+                assert!(r#ref.starts_with("np://"));
+                assert_eq!(*size, 48);
+            }
+            other => panic!("expected media output, got {}", other.kind()),
+        }
+    }
 }
