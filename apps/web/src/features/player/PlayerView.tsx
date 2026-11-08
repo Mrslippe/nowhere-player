@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "../../design";
 import { PlayerCard } from "./PlayerCard";
 import { mockForState } from "./mock";
-import { coverSeedForTrack, previewStateFromStatus, trackTitle } from "./playback";
+import { coverSeedForTrack, previewStateFromStatus } from "./playback";
 import {
   PLAYER_STATE_LABELS,
   PLAYER_STATES,
@@ -10,15 +10,11 @@ import {
 } from "./state";
 import type { PlayerState } from "./state";
 import { usePlayer } from "./use-player";
-import { useTrackCoverSrc } from "./use-track-cover";
+import { useTrackMeta } from "./use-track-meta";
 import "./player.css";
 
 /** dev 才允许 ?state= 钉住静态原型与状态面板；打包后小窗只跟真实状态走。 */
 const IS_DEV = import.meta.env.DEV;
-
-/** T-0013 还没有曲目元数据（`trackId` 只是本地路径），副标题只能给中性文案。 */
-const LIVE_ARTIST = "本地文件";
-const LIVE_ALBUM = "未知专辑";
 
 /**
  * 播放器小窗入口：订阅真实播放状态渲染卡片。
@@ -53,8 +49,8 @@ export function PlayerView() {
   const mock = live ? null : mockForState(pinned);
   // ended 时进度条归位（位置 0、按钮回到 ▶）。
   const livePositionMs = status === "ended" ? 0 : player.positionMs;
-  // 播放状态只带文件路径；封面走 trackByPath → coverUrl（T-0025）。
-  const coverSrc = useTrackCoverSrc(live ? player.state.trackId : null);
+  // 播放状态只带文件路径；标题/艺人/专辑与封面都走 trackByPath（T-0026）。
+  const meta = useTrackMeta(live ? player.state.trackId : null);
 
   // 静态原型（?state=）不接命令，只有实时模式才注入控件回调。
   const handlers = live
@@ -79,13 +75,13 @@ export function PlayerView() {
     >
       <div className="np-player-stage">
         <PlayerCard
-          title={live ? trackTitle(player.state.trackId) : mock?.title ?? ""}
-          artist={live ? LIVE_ARTIST : mock?.artist ?? ""}
-          album={live ? LIVE_ALBUM : mock?.album ?? ""}
+          title={live ? meta.title : mock?.title ?? ""}
+          artist={live ? meta.artist : mock?.artist ?? ""}
+          album={live ? meta.album : mock?.album ?? ""}
           coverSeed={
             live ? coverSeedForTrack(player.state.trackId) : mock?.coverSeed ?? ""
           }
-          coverSrc={coverSrc}
+          coverSrc={live ? meta.coverSrc : null}
           durationMs={live ? player.state.durationMs ?? 0 : mock?.durationMs ?? 0}
           positionMs={live ? livePositionMs : mock?.positionMs ?? 0}
           state={live ? previewStateFromStatus(status) : pinned}

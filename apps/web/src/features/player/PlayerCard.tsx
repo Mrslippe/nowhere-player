@@ -10,6 +10,7 @@ import { coverBackground, coverInitial } from "./cover";
 import { formatTime } from "./format";
 import { positionFromSeekRatio, seekRatioFromPointer } from "./playback";
 import type { PlayerState } from "./state";
+import { playerSubtitle } from "./track-meta";
 import "./player.css";
 
 /** 滚轮一格（≈一次 wheel 事件）的音量步长。 */
@@ -97,7 +98,8 @@ export function PlayerCard({
     ? Math.min(1, Math.max(0, ratio))
     : 0;
   const displayTitle = isError ? "播放失败" : isIdle ? "未在播放" : title;
-  const subtitle = isIdle ? "从配置窗选择歌曲" : `${artist} · ${album}`;
+  // T-0026：专辑缺失（库里为空 / 查不到 Track）时副标题只显示艺人。
+  const subtitle = isIdle ? "从配置窗选择歌曲" : playerSubtitle(artist, album);
   const time = `${formatTime(shownPosition)}/${formatTime(shownDuration)}`;
   const errorTitle = error ? `${error.code}：${error.message}` : "播放错误";
   const canSeek = !controlsDisabled && shownDuration > 0;

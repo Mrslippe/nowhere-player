@@ -19,8 +19,23 @@ import { isTauriRuntime } from "../../shared/player-bridge";
 /** 封面 key 的形状：16 位小写十六进制（与 Rust 侧校验一致）。 */
 const COVER_KEY_PATTERN = /^[0-9a-f]{16}$/;
 
+/**
+ * `library.trackByPath` 返回值里本模块与播放器展示用到的字段。
+ *
+ * 库返回的 `Track` 字段更多（时长、码率等），这里只声明需要的部分，
+ * 其余字段不参与校验也不影响缓存；字段类型保持 `unknown`，由使用方收窄。
+ */
+export type TrackRecord = {
+  coverKey?: unknown;
+  title?: unknown;
+  artist?: unknown;
+  album?: unknown;
+};
+
 /** 缓存里存的是“最终是否有 URL”，失败固定为 `null`。 */
 export type CoverSource = {
+  /** 路径 → 库里那条 Track；查不到或请求失败为 `null`（T-0026 元数据复用）。 */
+  trackForPath: (path: string | null | undefined) => Promise<TrackRecord | null>;
   /** 路径 → `coverKey`；查不到或请求失败为 `null`。 */
   coverKeyForTrack: (path: string | null | undefined) => Promise<string | null>;
   /** `coverKey` → 可加载 URL；key 非法、请求失败或文件缺失为 `null`。 */
@@ -43,38 +58,47 @@ export function isCoverKey(value: unknown): value is string {
 }
 
 /** 从 `library.trackByPath` 的返回值里取 `coverKey`；形状不对就当作无封面。 */
-function readCoverKey(track: unknown): string | null {
-  if (typeof track !== "object" || track === null) {
-    return null;
-  }
-
-  const key = (track as { coverKey?: unknown }).coverKey;
+function readCoverKey(track: TrackRecord): string | null {
+  const key = track.coverKey;
 
   return isCoverKey(key) ? key : null;
 }
 
+/** 返回值不是对象（如 `null` / 字符串）时当作“库里没有这首”。 */
+function readTrack(value: unknown): TrackRecord | null {
+  return typeof value === "object" && value !== null
+    ? (value as TrackRecord)
+    : null;
+}
+
 /** 用一个依赖集合造一份带缓存的封面来源。 */
 export function createCoverSource(deps: CoverSourceDeps): CoverSource {
-  const trackKeys = new Map<string, Promise<string | null>>();
+  const tracks = new Map<string, Promise<TrackRecord | null>>();
   const coverUrls = new Map<string, Promise<string | null>>();
 
-  const coverKeyForTrack = (path: string | null | undefined) => {
+  const trackForPath = (path: string | null | undefined) => {
     if (typeof path !== "string" || path.length === 0) {
       return Promise.resolve(null);
     }
 
-    const cached = trackKeys.get(path);
+    const cached = tracks.get(path);
     if (cached) {
       return cached;
     }
 
     const pending = deps
       .invoke("library.trackByPath", { path })
-      .then(readCoverKey)
+      .then(readTrack)
       .catch(() => null);
-    trackKeys.set(path, pending);
+    tracks.set(path, pending);
 
     return pending;
+  };
+
+  const coverKeyForTrack = async (path: string | null | undefined) => {
+    const track = await trackForPath(path);
+
+    return track ? readCoverKey(track) : null;
   };
 
   const coverUrlForCoverKey = (key: string | null | undefined) => {
@@ -107,11 +131,12 @@ export function createCoverSource(deps: CoverSourceDeps): CoverSource {
   };
 
   return {
+    trackForPath,
     coverKeyForTrack,
     coverUrlForCoverKey,
     coverUrlForTrack,
     reset: () => {
-      trackKeys.clear();
+      tracks.clear();
       coverUrls.clear();
     },
   };

@@ -54,6 +54,13 @@ describe("PlayerCard", () => {
     expect(html).toContain('aria-valuenow="19"');
   });
 
+  it("专辑为空时副标题只显示艺人，不留分隔符（T-0026）", () => {
+    const html = renderCard("playing", { album: "" });
+
+    expect(html).toContain("Tame Impala");
+    expect(html).not.toContain("Tame Impala ·");
+  });
+
   it("同一 coverSeed 两次渲染得到相同渐变，不同 seed 不同", () => {
     const first = coverBackgroundOf(renderCard("playing"));
     const second = coverBackgroundOf(renderCard("playing"));

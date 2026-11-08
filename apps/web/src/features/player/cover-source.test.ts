@@ -199,4 +199,43 @@ describe("coverSource 的 trackByPath 接线", () => {
     await source.coverUrlForCoverKey(KEY);
     expect(calls).toHaveLength(3);
   });
+
+  it("trackForPath 返回整条 Track，同一路径并发也只请求一次", async () => {
+    const track = {
+      path: "/music/a.wav",
+      title: "Song",
+      artist: "Artist",
+      album: "Album",
+      coverKey: KEY,
+    };
+    const { deps, calls } = fakeDeps(async (command) =>
+      command === "library.trackByPath" ? track : COVER_PATH,
+    );
+    const source = createCoverSource(deps);
+
+    const [first, second] = await Promise.all([
+      source.trackForPath("/music/a.wav"),
+      source.trackForPath("/music/a.wav"),
+    ]);
+
+    expect(first).toBe(track);
+    expect(second).toBe(track);
+    expect(calls).toEqual([["library.trackByPath", { path: "/music/a.wav" }]]);
+
+    // 元数据与封面共用同一份 trackByPath 缓存：只再请求一次 coverUrl。
+    expect(await source.coverUrlForTrack("/music/a.wav")).not.toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(calls[1][0]).toBe("library.coverUrl");
+  });
+
+  it("trackForPath 对非对象返回 null，并缓存", async () => {
+    for (const value of [null, "track", 7, undefined]) {
+      const { deps, calls } = fakeDeps(async () => value);
+      const source = createCoverSource(deps);
+
+      expect(await source.trackForPath("/music/a.wav")).toBeNull();
+      expect(await source.trackForPath("/music/a.wav")).toBeNull();
+      expect(calls).toHaveLength(1);
+    }
+  });
 });
