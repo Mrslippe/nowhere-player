@@ -292,8 +292,50 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
     },
 ];
 
-const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[
+const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
+        name: "add",
+        summary: "把一个目录加入媒体库扫描根",
+        usage: "library add <path>",
+        args: &[ArgSpec {
+            name: "path",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "scan",
+        summary: "扫描媒体库（默认增量，--full 全量重解析）",
+        usage: "library scan [--full]",
+        args: &[],
+        flags: &[FlagSpec {
+            name: "full",
+            takes_value: false,
+            summary: "忽略 mtime 指纹，全部重新解析",
+        }],
+    },
+    SubcommandSpec {
+        name: "list",
+        summary: "列出最近入库的曲目",
+        usage: "library list [--limit=N]",
+        args: &[],
+        flags: &[FlagSpec {
+            name: "limit",
+            takes_value: true,
+            summary: "返回条数（默认 20）",
+        }],
+    },
+    SubcommandSpec {
+        name: "stat",
+        summary: "显示曲目 / 专辑 / 艺人 / 时长统计",
+        usage: "library stat",
+        args: &[],
+        flags: &[],
+    },
+];
+
+const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[    SubcommandSpec {
         name: "repeat",
         summary: "设置循环模式",
         usage: "mode repeat <off|one|all>",
@@ -421,6 +463,30 @@ const COMMANDS: &[CommandSpec] = &[
         default_subcommand: None,
     },
     CommandSpec {
+        name: "library",
+        aliases: &["lib"],
+        summary: "媒体库：添加扫描根、扫描、列表与统计",
+        usage: "library [add|scan|list|stat]",
+        args: &[],
+        flags: &[],
+        subcommands: LIBRARY_SUBCOMMANDS,
+        default_subcommand: None,
+    },
+    CommandSpec {
+        name: "search",
+        aliases: &[],
+        summary: "在媒体库中搜索曲目，结果可按序号播放",
+        usage: "search <keyword>",
+        args: &[ArgSpec {
+            name: "keyword",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+        subcommands: &[],
+        default_subcommand: None,
+    },
+    CommandSpec {
         name: "help",
         aliases: &["?"],
         summary: "查看帮助或某条命令的用法",
@@ -500,7 +566,20 @@ mod tests {
         assert!(registry.find("plya").is_none());
         assert!(registry.find("xyz").is_none());
         // 开发方案 §8.2 里尚未在本卡登记的命令也必须查不到。
-        assert!(registry.find("search").is_none());
+        assert!(registry.find("toggle").is_none());
+    }
+
+    #[test]
+    fn library_and_search_are_registered_with_their_alias() {
+        let registry = Registry::new();
+
+        assert_eq!(registry.find("library").map(|spec| spec.name), Some("library"));
+        assert_eq!(registry.find("lib").map(|spec| spec.name), Some("library"));
+        assert_eq!(registry.find("search").map(|spec| spec.name), Some("search"));
+        assert_eq!(
+            registry.find("library").map(|spec| spec.subcommands.len()),
+            Some(4)
+        );
     }
 
     #[test]
@@ -529,7 +608,7 @@ mod tests {
         let registry = Registry::new();
 
         assert!(registry.suggest("xyz").is_none());
-        assert!(registry.suggest("search").is_none());
+        assert!(registry.suggest("toggle").is_none());
     }
 
     #[test]

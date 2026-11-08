@@ -497,4 +497,102 @@ mod tests {
         assert_eq!(error.code, CommandErrorCode::Unknown);
         assert!(error.message.contains("命令不能为空"), "{}", error.message);
     }
+
+    #[test]
+    fn library_requires_a_subcommand() {
+        let error = parse_err("library");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("缺少子命令"), "{}", error.message);
+        assert_eq!(
+            error.usage.as_deref(),
+            Some("library [add|scan|list|stat]")
+        );
+    }
+
+    #[test]
+    fn library_add_keeps_windows_path_verbatim() {
+        let parsed = parse_ok(r"library add C:\Music\Library");
+
+        assert_eq!(parsed.spec.name, "library");
+        assert_eq!(parsed.subcommand.unwrap().name, "add");
+        assert_eq!(parsed.positional, [r"C:\Music\Library"]);
+        assert_eq!(parsed.usage(), "library add <path>");
+    }
+
+    #[test]
+    fn library_add_requires_a_path() {
+        let error = parse_err("library add");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("path"), "{}", error.message);
+        assert_eq!(error.usage.as_deref(), Some("library add <path>"));
+    }
+
+    #[test]
+    fn library_scan_accepts_a_bare_full_flag() {
+        let parsed = parse_ok("library scan --full");
+
+        assert_eq!(parsed.subcommand.unwrap().name, "scan");
+        assert!(parsed.positional.is_empty());
+        assert_eq!(parsed.flags.get("full").map(String::as_str), Some(""));
+        assert_eq!(parsed.usage(), "library scan [--full]");
+    }
+
+    #[test]
+    fn library_scan_rejects_a_value_on_full() {
+        let error = parse_err("library scan --full=yes");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("不接受取值"), "{}", error.message);
+        assert_eq!(error.usage.as_deref(), Some("library scan [--full]"));
+    }
+
+    #[test]
+    fn library_list_reads_the_limit_flag() {
+        let parsed = parse_ok("library list --limit=20");
+
+        assert_eq!(parsed.subcommand.unwrap().name, "list");
+        assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("20"));
+        assert_eq!(parsed.usage(), "library list [--limit=N]");
+    }
+
+    #[test]
+    fn library_list_rejects_unknown_flags() {
+        let error = parse_err("library list --json");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("未知标志"), "{}", error.message);
+        assert_eq!(
+            error.usage.as_deref(),
+            Some("library list [--limit=N]")
+        );
+    }
+
+    #[test]
+    fn library_alias_keeps_the_subcommand() {
+        let parsed = parse_ok("lib stat");
+
+        assert_eq!(parsed.spec.name, "library");
+        assert_eq!(parsed.subcommand.unwrap().name, "stat");
+        assert_eq!(parsed.usage(), "library stat");
+    }
+
+    #[test]
+    fn search_keeps_a_quoted_keyword() {
+        let parsed = parse_ok(r#"search "kid a""#);
+
+        assert_eq!(parsed.spec.name, "search");
+        assert_eq!(parsed.positional, ["kid a"]);
+        assert_eq!(parsed.usage(), "search <keyword>");
+    }
+
+    #[test]
+    fn search_requires_a_keyword() {
+        let error = parse_err("search");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("keyword"), "{}", error.message);
+        assert_eq!(error.usage.as_deref(), Some("search <keyword>"));
+    }
 }
