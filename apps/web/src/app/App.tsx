@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 // 必须在其它 import 之前求值：先记下 URL 里的原始 ?theme=，再做主题持久化。
-import { previewSkin, previewTheme } from "../design/skin/preview";
+import { previewSkin, previewTheme } from "./dev-preview";
 import { PlayerView } from "../features/player/PlayerView";
 import { TerminalView } from "../features/terminal/TerminalView";
 import type { WindowLabel } from "./window-label";
