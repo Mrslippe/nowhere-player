@@ -5,3 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+
+[dependencies]
+lofty = "0.25"
+rayon = "1.12"
+rusqlite = { version = "0.41", features = ["bundled"] }
+thiserror = "2.0"
+walkdir = "2.5"
