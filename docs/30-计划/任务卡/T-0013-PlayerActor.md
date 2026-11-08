@@ -21,7 +21,7 @@
 1. `np-core` 定义播放领域模型：`PlaybackState`、`PlayerCommand`、`PlayerEvent`（可序列化）。
 2. `apps/desktop` 里实现 `PlayerActor`：持有 `np_audio::Player`，串行处理命令，广播事件。
 3. IPC 命令：`player.snapshot`、`player.play`、`player.pause`、`player.next`、`player.prev`、`player.seek`、`player.volume`。
-4. 事件：`evt.player`（状态变化）与 `evt.position`（4 Hz）。
+4. 事件：`player:state`（状态变化）与 `player:position`（4 Hz）。
 5. 错误统一映射为 ARCH-005 的错误码，前端可显示。
 
 ## 3. 非目标
@@ -67,7 +67,7 @@ apps/desktop/src-tauri/Cargo.toml      ← 仅允许添加 np-core / np-audio �
 - `PlayerActor` 是**单线程 actor**，因 `Player: !Send`，用 **`std::thread` + `std::sync::mpsc::recv_timeout(250ms)`**：同一个循环里处理命令与 4 Hz tick。**不要**用 tokio task / `spawn_blocking` 持有 `Player`。
 - `Player` 的创建与 drop 必须在 actor 同一线程（cpal 流的线程亲和性）。
 - 状态只在该线程内被修改；`snapshot` 走「命令 + 一次性应答通道」。命令通道**有界**（约 32），满时回 `E_BUSY`，不阻塞调用方。
-- 位置事件 4 Hz 且**仅在 Playing 时发**；状态变化立即发完整 `evt.player` 快照。
+- 位置事件 4 Hz 且**仅在 Playing 时发**；状态变化立即发完整 `player:state` 快照。
 - `TrackEnded` 用边沿去重（`ended_reported: bool`，切歌/重新 play 时复位）。
 - 错误码闭集（映射到 ARCH-005 风格）：
 
@@ -86,7 +86,7 @@ apps/desktop/src-tauri/Cargo.toml      ← 仅允许添加 np-core / np-audio �
 - [ ] `cargo test -p np-core` 通过（新增 ≥ 6 个用例：状态转换、错误映射、事件构造）
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` 零警告
 - [ ] `tauri dev` 启动后，手动调用 `player.play`（可用 devtools 或临时按钮）能出声
-- [ ] 播放中 `evt.position` 稳定在 4 Hz（日志计数 10 秒 ≈ 40 次）
+- [ ] 播放中 `player:position` 稳定在 4 Hz（日志计数 10 秒 ≈ 40 次）
 - [ ] 暂停/继续/seek 后状态快照与位置一致
 - [ ] 打开不存在的文件返回 `E_DECODE`，不 panic
 

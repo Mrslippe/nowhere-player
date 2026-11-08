@@ -18,10 +18,13 @@ use np_core::{
 };
 use tauri::{AppHandle, Emitter};
 
-/// 状态快照事件（开发方案 §4.3）。
-pub(crate) const EVT_PLAYER: &str = "evt.player";
-/// 4 Hz 位置事件（开发方案 §4.3）。
-pub(crate) const EVT_POSITION: &str = "evt.position";
+/// 状态快照事件。
+///
+/// 主线定名 `player:state`（T-0013）：Tauri 2.12 的 `EventName` 只允许
+/// 字母数字与 `- / : _`，点号非法；开发方案 §4.3 原写法 `evt.player` 需同步。
+pub(crate) const EVT_PLAYER: &str = "player:state";
+/// 4 Hz 位置事件（主线定名 `player:position`）。
+pub(crate) const EVT_POSITION: &str = "player:position";
 
 /// 命令通道容量：满了立即回 `E_BUSY`，不阻塞调用方。
 const COMMAND_CAPACITY: usize = 32;
@@ -453,6 +456,20 @@ mod tests {
     use super::*;
     use np_audio::SampleFormat;
     use np_core::PlayerErrorCode;
+
+    #[test]
+    fn event_names_are_legal_tauri_names() {
+        assert_eq!(EVT_PLAYER, "player:state");
+        assert_eq!(EVT_POSITION, "player:position");
+        for name in [EVT_PLAYER, EVT_POSITION] {
+            assert!(
+                name.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '/' | ':' | '_')),
+                "{name} is rejected by tauri::EventName"
+            );
+            assert!(!name.contains('.'), "dots are illegal in Tauri event names");
+        }
+    }
 
     #[test]
     fn audio_errors_map_to_the_expected_codes() {
