@@ -177,6 +177,15 @@
   font-size: var(--fs-13);
 }
 
+/* 输入框本身无边框：焦点用整行底部 2px 强调线表达，避免粗外框包住整行。 */
+.np-lab__input:focus-visible {
+  outline: none;
+}
+
+.np-lab__input-row:focus-within {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .np-lab__input::placeholder {
   color: var(--fg-faint);
 }
@@ -209,10 +218,165 @@
   cursor: not-allowed;
 }
 
+/* ── 评分面板 ───────────────────────────────────────── */
+.np-score {
+  flex: none;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.np-score__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 28px;
+  padding: 0 var(--sp-3);
+}
+
+.np-score__toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.np-score__chevron {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+}
+
+.np-score__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+
+.np-score__total {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.np-score__leader {
+  color: var(--accent);
+}
+
+.np-score__feedback {
+  color: var(--success);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+
+.np-score__export.np-btn {
+  height: 24px;
+  margin-left: auto;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-12);
+}
+
+.np-score__body {
+  border-top: 1px solid var(--line);
+}
+
+.np-score__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-12);
+}
+
+.np-score__table th,
+.np-score__table td {
+  padding: 2px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.np-score__table thead th {
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.np-score__table tbody th,
+.np-score__table tfoot th {
+  color: var(--fg);
+}
+
+.np-score__table tfoot th,
+.np-score__table tfoot td {
+  border-bottom: 0;
+}
+
+.np-score__table tfoot .np-score__total {
+  color: var(--accent);
+}
+
+.np-score__weight {
+  width: 72px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.np-score__buttons {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.np-score__score {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.np-score__score:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.np-score__score[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.np-score__note {
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+}
+
 /* ── 动效降级 ───────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .np-lab__chip,
-  .np-lab__run {
+  .np-lab__run,
+  .np-score__score {
     transition: none;
   }
 }

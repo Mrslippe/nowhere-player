@@ -1,9 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { App } from "../../app/App";
 import fixture from "../../shared/fixtures/terminal-demo.json";
 import type { Block } from "../../shared/terminal-model";
 import { isBlock } from "../../shared/terminal-model.guard";
 import { TerminalLab } from "./TerminalLab";
+import { TerminalView } from "./TerminalView";
+import { ScorePanel } from "./components/ScorePanel";
+import {
+  DEFAULT_SCORES,
+  type ComparisonScores,
+  type ScoreSet,
+} from "./components/scoring";
 import { parseVariant, type LabVariant } from "./components/variant";
 import { runMockCommand } from "./mock-commands";
 import { blocksToAnsi } from "./renderers/xterm/blocks-to-ansi";
@@ -25,15 +33,30 @@ function demoBlock(): Block {
   return fixture;
 }
 
-function renderLab(variant: LabVariant, blocks: Block[]): string {
+function renderLab(
+  variant: LabVariant,
+  blocks: Block[],
+  scores?: ComparisonScores,
+): string {
   return renderToStaticMarkup(
     <TerminalLab
       initialVariant={variant}
       initialTheme="graphite"
       initialBlocks={blocks}
+      initialScores={scores}
       persist={false}
     />,
   );
+}
+
+function scoreSet(value: number): ScoreSet {
+  return {
+    visual: value,
+    interaction: value,
+    ime: value,
+    performance: value,
+    extensibility: value,
+  };
 }
 
 describe("parseVariant", () => {
@@ -83,11 +106,27 @@ describe("TerminalLab 三种视图", () => {
     expect(counts).toHaveLength(2);
   });
 
-  it("两个窗口 label 共用的视图入口不抛错（TerminalView 挂载 TerminalLab）", () => {
-    const html = renderLab("both", []);
+  it("TerminalView 渲染实验室视图，不抛错", () => {
+    const html = renderToStaticMarkup(<TerminalView />);
 
+    expect(html).toContain('data-window="terminal"');
     expect(html).toContain('data-testid="terminal-lab"');
-    expect(html).toContain('data-variant="both"');
+  });
+});
+
+describe("窗口 label 分流（T-0002 的 App 入口）", () => {
+  it("terminal label 显示对比实验室", () => {
+    const html = renderToStaticMarkup(<App label="terminal" />);
+
+    expect(html).toContain('data-window="terminal"');
+    expect(html).toContain('data-testid="terminal-lab"');
+  });
+
+  it("player label 不误渲染终端实验室", () => {
+    const html = renderToStaticMarkup(<App label="player" />);
+
+    expect(html).toContain('data-window="player"');
+    expect(html).not.toContain('data-testid="terminal-lab"');
   });
 });
 
@@ -103,5 +142,47 @@ describe("perm 命令的双渲染器表现", () => {
     const ansi = blocksToAnsi([block]);
     expect(ansi).toContain("\u001b[38;5;203m✗ E_LIB_PERMISSION");
     expect(ansi).toContain("检查文件权限");
+  });
+});
+
+describe("评分面板", () => {
+  it("渲染五维权重、双方案总分与领先方", () => {
+    const html = renderLab("both", [], {
+      blocks: scoreSet(5),
+      xterm: scoreSet(1),
+    });
+
+    for (const weight of ["30%", "25%", "20%", "15%", "10%"]) {
+      expect(html, weight).toContain(weight);
+    }
+    expect(html).toContain("A 5.00");
+    expect(html).toContain("B 1.00");
+    expect(html).toContain("领先 4.00 分");
+    expect(html).toContain("导出 JSON");
+  });
+
+  it("折叠态保留总分与领先方，但不渲染评分表", () => {
+    const html = renderToStaticMarkup(
+      <ScorePanel
+        scores={DEFAULT_SCORES}
+        onChange={() => undefined}
+        onExport={() => undefined}
+        collapsed
+        onToggle={() => undefined}
+        feedback={null}
+      />,
+    );
+
+    expect(html).toContain('data-collapsed="true"');
+    expect(html).toContain("A 4.30");
+    expect(html).toContain("B 3.40");
+    expect(html).not.toContain("np-score__table");
+  });
+
+  it("首屏默认显示自评基线（A 4.30 / B 3.40）", () => {
+    const html = renderLab("blocks", []);
+
+    expect(html).toContain("A 4.30");
+    expect(html).toContain("B 3.40");
   });
 });

@@ -1,11 +1,30 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../../design";
 import fixture from "../../shared/fixtures/terminal-demo.json";
 import type { Block } from "../../shared/terminal-model";
 import { isBlock } from "../../shared/terminal-model.guard";
 import { CommandInput } from "./components/CommandInput";
+import {
+  buildExportPayload,
+  collectResourceEntries,
+  copyToClipboard,
+} from "./components/export";
+import { ScorePanel } from "./components/ScorePanel";
+import {
+  DEFAULT_SCORES,
+  loadScores,
+  saveScores,
+  type ComparisonScores,
+  type DimensionId,
+  type ScoreSide,
+} from "./components/scoring";
 import { TerminalStage } from "./components/Stage";
-import { applyTheme, parseTheme, type LabTheme } from "./components/theme";
+import {
+  applyTheme,
+  LAB_THEMES,
+  parseTheme,
+  type LabTheme,
+} from "./components/theme";
 import {
   LAB_VARIANTS,
   parseVariant,
@@ -14,12 +33,6 @@ import {
 } from "./components/variant";
 import { DEMO_TIME, runMockCommand } from "./mock-commands";
 import "./terminal.css";
-
-const THEME_LABELS: Readonly<Record<LabTheme, string>> = {
-  graphite: "graphite",
-  amber: "amber",
-  ice: "ice",
-};
 
 function readParam(name: string): string | null {
   if (typeof window === "undefined") {
@@ -59,7 +72,8 @@ export interface TerminalLabProps {
   initialVariant?: LabVariant;
   initialTheme?: LabTheme;
   initialBlocks?: Block[];
-  /** 关闭 URL 同步与后续的 localStorage 持久化（测试用）。 */
+  initialScores?: ComparisonScores;
+  /** 关闭 URL 同步与 localStorage 持久化（测试用）。 */
   persist?: boolean;
 }
 
@@ -73,6 +87,7 @@ export function TerminalLab({
   initialVariant,
   initialTheme,
   initialBlocks,
+  initialScores,
   persist = true,
 }: TerminalLabProps) {
   const [variant, setVariant] = useState<LabVariant>(
@@ -82,11 +97,38 @@ export function TerminalLab({
     () => initialTheme ?? parseTheme(readParam("theme")),
   );
   const [blocks, setBlocks] = useState<Block[]>(() => initialBlocks ?? createInitialBlocks());
+  const [scores, setScores] = useState<ComparisonScores>(
+    () =>
+      initialScores ??
+      (persist ? (loadScores() ?? DEFAULT_SCORES) : DEFAULT_SCORES),
+  );
+  const [collapsed, setCollapsed] = useState(
+    // 终端窗默认 880×560：展开评分表会把终端挤到只剩几行，矮窗先折叠。
+    () => typeof window !== "undefined" && window.innerHeight < 720,
+  );
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const feedbackTimer = useRef<number | null>(null);
 
   // 首屏从 ?theme= 进入时也要落到 <html data-theme>；切换时同步（不刷新）。
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // 每次改分都落 localStorage（key: np.m0.compare），刷新后保留。
+  useEffect(() => {
+    if (persist) {
+      saveScores(scores);
+    }
+  }, [scores, persist]);
+
+  useEffect(
+    () => () => {
+      if (feedbackTimer.current !== null) {
+        window.clearTimeout(feedbackTimer.current);
+      }
+    },
+    [],
+  );
 
   const selectVariant = (next: LabVariant): void => {
     setVariant(next);
@@ -111,6 +153,46 @@ export function TerminalLab({
     setBlocks([]);
   };
 
+  const changeScore = (side: ScoreSide, dimension: DimensionId, value: number): void => {
+    setScores((previous) => ({
+      blocks:
+        side === "blocks"
+          ? { ...previous.blocks, [dimension]: value }
+          : previous.blocks,
+      xterm:
+        side === "xterm"
+          ? { ...previous.xterm, [dimension]: value }
+          : previous.xterm,
+    }));
+  };
+
+  const showFeedback = (message: string): void => {
+    setFeedback(message);
+
+    if (feedbackTimer.current !== null) {
+      window.clearTimeout(feedbackTimer.current);
+    }
+
+    feedbackTimer.current = window.setTimeout(() => {
+      feedbackTimer.current = null;
+      setFeedback(null);
+    }, 2000);
+  };
+
+  const exportScores = (): void => {
+    const payload = buildExportPayload({
+      scores,
+      variant,
+      theme,
+      now: new Date(),
+      resources: collectResourceEntries(),
+    });
+
+    void copyToClipboard(JSON.stringify(payload, null, 2)).then((copied) => {
+      showFeedback(copied ? "评分 JSON 已复制" : "复制失败，请重试");
+    });
+  };
+
   return (
     <div className="np-lab" data-testid="terminal-lab" data-variant={variant}>
       <header className="np-lab__topbar">
@@ -132,7 +214,7 @@ export function TerminalLab({
         </div>
 
         <div className="np-lab__group" role="group" aria-label="主题">
-          {(["graphite", "amber", "ice"] as const).map((value) => (
+          {LAB_THEMES.map((value) => (
             <button
               key={value}
               type="button"
@@ -141,7 +223,7 @@ export function TerminalLab({
               aria-pressed={theme === value}
               onClick={() => selectTheme(value)}
             >
-              {THEME_LABELS[value]}
+              {value}
             </button>
           ))}
         </div>
@@ -156,6 +238,15 @@ export function TerminalLab({
       <TerminalStage variant={variant} blocks={blocks} />
 
       <CommandInput onSubmit={submit} />
+
+      <ScorePanel
+        scores={scores}
+        onChange={changeScore}
+        onExport={exportScores}
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((previous) => !previous)}
+        feedback={feedback}
+      />
     </div>
   );
 }
