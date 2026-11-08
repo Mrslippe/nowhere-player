@@ -201,6 +201,21 @@ describe("PlayerCard", () => {
     expect(html).toContain('tabindex="0"');
   });
 
+  it("进度比例写成 --np-progress，0 / 结束 / 越界都钳在 0–1", () => {
+    expect(
+      renderCard("playing", { positionMs: 0, durationMs: 216_000 }),
+    ).toContain("--np-progress:0");
+    expect(
+      renderCard("playing", { positionMs: 216_000, durationMs: 216_000 }),
+    ).toContain("--np-progress:1");
+    expect(
+      renderCard("playing", { positionMs: 999_999, durationMs: 216_000 }),
+    ).toContain("--np-progress:1");
+    expect(
+      renderCard("playing", { positionMs: -1, durationMs: 216_000 }),
+    ).toContain("--np-progress:0");
+  });
+
   it("没有时长时热区不可聚焦、不可拖动", () => {
     const html = renderCard("idle", { durationMs: 0 });
 

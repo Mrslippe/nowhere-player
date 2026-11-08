@@ -8,7 +8,11 @@ import { Icon, IconButton, ProgressBar, Spinner } from "../../design";
 import type { PlayerErrorInfo } from "../../shared/player-bridge";
 import { coverBackground, coverInitial } from "./cover";
 import { formatTime } from "./format";
-import { positionFromSeekRatio, seekRatioFromPointer } from "./playback";
+import {
+  positionFromSeekRatio,
+  progressRatio,
+  seekRatioFromPointer,
+} from "./playback";
 import type { PlayerState } from "./state";
 import { playerSubtitle } from "./track-meta";
 import "./player.css";
@@ -93,10 +97,7 @@ export function PlayerCard({
   // 空闲态没有当前曲目，即使调用方还留着上一首的进度也按 0 展示。
   const shownPosition = isIdle ? 0 : positionMs;
   const shownDuration = isIdle ? 0 : durationMs;
-  const ratio = shownDuration > 0 ? shownPosition / shownDuration : 0;
-  const progress = Number.isFinite(ratio)
-    ? Math.min(1, Math.max(0, ratio))
-    : 0;
+  const progress = progressRatio(shownPosition, shownDuration);
   const displayTitle = isError ? "播放失败" : isIdle ? "未在播放" : title;
   // T-0026：专辑缺失（库里为空 / 查不到 Track）时副标题只显示艺人。
   const subtitle = isIdle ? "从配置窗选择歌曲" : playerSubtitle(artist, album);
@@ -221,33 +222,6 @@ export function PlayerCard({
             {coverInitial(album)}
           </span>
         )}
-
-        <div className="np-player-card__controls">
-          <IconButton
-            aria-label="上一首"
-            size="sm"
-            disabled={controlsDisabled}
-            onClick={onPrev}
-          >
-            <Icon name="skip-back" size={14} />
-          </IconButton>
-          <IconButton
-            aria-label={showPlay ? "播放" : "暂停"}
-            size="sm"
-            disabled={controlsDisabled}
-            onClick={onToggle}
-          >
-            <Icon name={showPlay ? "play" : "pause"} size={14} />
-          </IconButton>
-          <IconButton
-            aria-label="下一首"
-            size="sm"
-            disabled={controlsDisabled}
-            onClick={onNext}
-          >
-            <Icon name="skip-forward" size={14} />
-          </IconButton>
-        </div>
       </div>
 
       <div className="np-player-card__body">
@@ -284,6 +258,33 @@ export function PlayerCard({
           </div>
           <span className="np-player-card__time">{time}</span>
         </div>
+      </div>
+
+      <div className="np-player-card__controls">
+        <IconButton
+          aria-label="上一首"
+          size="sm"
+          disabled={controlsDisabled}
+          onClick={onPrev}
+        >
+          <Icon name="skip-back" size={14} />
+        </IconButton>
+        <IconButton
+          aria-label={showPlay ? "播放" : "暂停"}
+          size="sm"
+          disabled={controlsDisabled}
+          onClick={onToggle}
+        >
+          <Icon name={showPlay ? "play" : "pause"} size={14} />
+        </IconButton>
+        <IconButton
+          aria-label="下一首"
+          size="sm"
+          disabled={controlsDisabled}
+          onClick={onNext}
+        >
+          <Icon name="skip-forward" size={14} />
+        </IconButton>
       </div>
 
       {volumeHint ? (

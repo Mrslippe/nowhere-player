@@ -8,6 +8,7 @@ import {
   isTickStale,
   positionFromSeekRatio,
   previewStateFromStatus,
+  progressRatio,
   seekRatioFromPointer,
   trackTitle,
 } from "./playback";
@@ -57,6 +58,29 @@ describe("extrapolatePosition（rAF 外推的核心）", () => {
 
   it("时长未知时仍能外推，且不为负", () => {
     expect(extrapolatePosition(anchor, 10_250, null, "playing")).toBe(1250);
+  });
+});
+
+describe("progressRatio（--np-progress 的唯一来源）", () => {
+  it("0 / 中点 / 结束三档", () => {
+    expect(progressRatio(0, DURATION)).toBe(0);
+    expect(progressRatio(DURATION / 2, DURATION)).toBe(0.5);
+    expect(progressRatio(DURATION, DURATION)).toBe(1);
+  });
+
+  it("位置越界钳到 0 / 1", () => {
+    expect(progressRatio(-1, DURATION)).toBe(0);
+    expect(progressRatio(DURATION + 1, DURATION)).toBe(1);
+    expect(progressRatio(Number.NEGATIVE_INFINITY, DURATION)).toBe(0);
+    // 复用 clampPosition 的既有语义：非有限位置统一回 0，不把 Infinity 当“结尾”。
+    expect(progressRatio(Number.POSITIVE_INFINITY, DURATION)).toBe(0);
+    expect(progressRatio(Number.NaN, DURATION)).toBe(0);
+  });
+
+  it("时长未知 / 为 0 / NaN 时回 0，不产生除零", () => {
+    expect(progressRatio(1000, null)).toBe(0);
+    expect(progressRatio(1000, 0)).toBe(0);
+    expect(progressRatio(1000, Number.NaN)).toBe(0);
   });
 });
 

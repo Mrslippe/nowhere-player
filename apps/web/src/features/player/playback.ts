@@ -29,6 +29,23 @@ export function clampPosition(ms: number, durationMs: number | null): number {
 }
 
 /**
+ * 播放位置 → 0–1 的进度比例（PlayerCard 的 `--np-progress` 只读这个值）。
+ *
+ * 复用 `clampPosition`：负值 / 超出时长 / NaN 全部钳到边界；时长未知或为 0 时
+ * 没有可表达的比例，直接回 0。纯函数，便于覆盖 0 / 1 / 越界三档。
+ */
+export function progressRatio(
+  positionMs: number,
+  durationMs: number | null,
+): number {
+  if (durationMs === null || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return 0;
+  }
+
+  return clampPosition(positionMs, durationMs) / durationMs;
+}
+
+/**
  * 外推当前位置。
  *
  * - `status === "playing"`：`锚点位置 + (now - 锚点时刻)`。

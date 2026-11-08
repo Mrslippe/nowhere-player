@@ -45,9 +45,15 @@
 
   /* 全出血：窗口背景由 --bg 承担，卡片不再有独立底与内边距容器。 */
   --np-bleed: 1;
+
+  /* 播放器布局（T-0031）：尺寸与进度形态随 skin 变，plain 保持 64/2/16。 */
+  --np-player-pad: 8px;
+  --np-player-cover: 56px;
+  --np-player-progress-height: 8px;
+  --np-player-controls-height: 14px;
 }
 
-/* 全出血：卡片让出背景与边界，内边距仍保留 16px（内容不贴边）。 */
+/* 全出血：卡片让出背景与边界；内边距由各组件的结构变量决定（播放器 8px）。 */
 [data-skin="phosphor"] .np-player-card {
   background: transparent;
 }
