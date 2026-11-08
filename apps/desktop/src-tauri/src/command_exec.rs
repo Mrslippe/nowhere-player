@@ -707,23 +707,14 @@ pub(crate) const EVENT_TERMINAL_BLOCK: &str = "terminal:block";
 
 /// `cmd.exec` 的立即回执：`{ blockId, ok }`（camelCase）。
 ///
-/// `desktop` crate 不直接依赖 `serde`（本卡禁止改 `Cargo.toml`），
-/// 因此不派生 `Serialize`，而是实现 Tauri 公开的
-/// [`tauri::ipc::IpcResponse`]，手写一段 JSON 体。字段只有两个，
-/// 转义逻辑见 [`json_string`]，并由单测锁住。
+/// 字段名经 `serde` 的 `rename_all = "camelCase"` 序列化，与 T-0018 契约一致；
+/// Tauri 对 `T: Serialize` 的返回值使用 [`tauri::ipc::IpcResponse`] 的默认实现，
+/// 不再手写 JSON（T-0021 §2.1）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CmdExecReply {
     block_id: String,
     ok: bool,
-}
-
-impl tauri::ipc::IpcResponse for CmdExecReply {
-    fn body(self) -> tauri::Result<tauri::ipc::InvokeResponseBody> {
-        Ok(tauri::ipc::InvokeResponseBody::Json(format!(
-            r#"{{"blockId":{},"ok":{}}}"#,
-            json_string(&self.block_id),
-            self.ok
-        )))
-    }
 }
 
 /// `PlayerHandle` 的 [`PlayerApi`] 适配（生产实现）。
@@ -851,29 +842,6 @@ pub(crate) fn cmd_complete(
     cursor: usize,
 ) -> Completion {
     complete_for(&HandleApi::new(&handle), &input, cursor)
-}
-
-/// 手写 JSON 字符串转义；只用于 [`CmdExecReply`] 的 `blockId`。
-fn json_string(value: &str) -> String {
-    use std::fmt::Write;
-
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            control if (control as u32) < 0x20 => {
-                let _ = write!(escaped, "\\u{:04x}", control as u32);
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped.push('"');
-    escaped
 }
 
 #[cfg(test)]
@@ -1691,21 +1659,6 @@ mod tests {
         match tauri::ipc::IpcResponse::body(reply).expect("reply body") {
             tauri::ipc::InvokeResponseBody::Json(json) => {
                 assert_eq!(json, r#"{"blockId":"block-1","ok":true}"#);
-            }
-            tauri::ipc::InvokeResponseBody::Raw(_) => panic!("expected a JSON body"),
-        }
-    }
-
-    #[test]
-    fn reply_body_escapes_block_ids() {
-        let reply = CmdExecReply {
-            block_id: "a\"b\\c\nd".to_owned(),
-            ok: false,
-        };
-
-        match tauri::ipc::IpcResponse::body(reply).expect("reply body") {
-            tauri::ipc::InvokeResponseBody::Json(json) => {
-                assert_eq!(json, r#"{"blockId":"a\"b\\c\nd","ok":false}"#);
             }
             tauri::ipc::InvokeResponseBody::Raw(_) => panic!("expected a JSON body"),
         }

@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 np-audio = { path = "../../../crates/np-audio" }
 np-core = { path = "../../../crates/np-core" }
+serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2.4"
