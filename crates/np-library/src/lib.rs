@@ -10,6 +10,7 @@ mod repo;
 mod scan;
 mod schema;
 
+pub use covers::{CoverCacheUsage, cover_cache_usage};
 pub use db::Database;
 pub use error::{LibraryError, Result};
 pub use repo::{Stats, Track};

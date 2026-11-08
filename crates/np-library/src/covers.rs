@@ -124,6 +124,44 @@ pub(crate) fn remove_orphans(dir: &Path, referenced: &HashSet<String>) -> usize 
     removed
 }
 
+/// 封面缓存用量（T-0026 §6.3）：只统计 `*.jpg` 的文件数与总字节。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoverCacheUsage {
+    /// `.jpg` 文件数。
+    pub files: u64,
+    /// 这些文件的总字节数。
+    pub bytes: u64,
+}
+
+/// 统计封面缓存目录 `dir` 的用量。
+///
+/// - 目录不存在（从未缓存过封面）返回全 0；
+/// - 只读目录项与文件元数据，**不读文件内容**：文件再多也只是一次 `read_dir` 遍历；
+/// - 不递归子目录，也不跟随符号链接（`DirEntry::file_type` 不解析链接，链接一律跳过）；
+/// - 只认扩展名 `jpg`：缓存文件名固定是 `<16 位小写 hex>.jpg`，其他文件（含
+///   崩溃残留的 `.tmp`）不计入。
+pub fn cover_cache_usage(dir: &Path) -> CoverCacheUsage {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return CoverCacheUsage::default();
+    };
+
+    let mut usage = CoverCacheUsage::default();
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("jpg") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        usage.files = usage.files.saturating_add(1);
+        usage.bytes = usage.bytes.saturating_add(metadata.len());
+    }
+    usage
+}
+
 /// `cover_key` 的形状：16 位小写 hex。
 fn is_cover_key(key: &str) -> bool {
     key.len() == 16
@@ -176,7 +214,7 @@ mod tests {
 
     use image::{Rgb, RgbImage};
 
-    use super::{CoverOutcome, store};
+    use super::{CoverCacheUsage, CoverOutcome, cover_cache_usage, store};
     use crate::db::Database;
     use crate::metadata::ParsedTrack;
     use crate::repo;
@@ -366,5 +404,50 @@ mod tests {
 
         assert!(!kept.exists(), "unreferenced cover survived full scan");
         assert!(!later_orphan.exists(), "orphan survived second full scan");
+    }
+
+    #[test]
+    fn cover_cache_usage_counts_only_top_level_jpg_files() {
+        let dir = TempDir::new("usage");
+        fs::write(dir.path().join("0123456789abcdef.jpg"), b"12345").expect("write jpg");
+        fs::write(dir.path().join("fedcba9876543210.jpg"), b"1234567").expect("write jpg");
+        // 非封面文件、崩溃残留与子目录里的 jpg 都不计入。
+        fs::write(dir.path().join("0123456789abcdef.tmp"), b"tmp").expect("write tmp");
+        fs::write(dir.path().join("cover.png"), b"png").expect("write png");
+        let nested = dir.path().join("nested");
+        fs::create_dir_all(&nested).expect("nested dir");
+        fs::write(nested.join("aaaaaaaaaaaaaaaa.jpg"), b"nested").expect("write nested");
+
+        assert_eq!(
+            cover_cache_usage(dir.path()),
+            CoverCacheUsage {
+                files: 2,
+                bytes: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn cover_cache_usage_of_missing_dir_is_zero() {
+        let dir = TempDir::new("usage-missing");
+        let missing = dir.path().join("never-created");
+
+        assert_eq!(cover_cache_usage(&missing), CoverCacheUsage::default());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cover_cache_usage_skips_symlinked_covers() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new("usage-link");
+        let target = dir.path().join("target.jpg");
+        fs::write(&target, b"1234").expect("write target");
+        let covers = dir.path().join("covers");
+        fs::create_dir_all(&covers).expect("covers dir");
+        symlink(&target, covers.join("0123456789abcdef.jpg")).expect("symlink");
+
+        // 只认普通文件：符号链接既不计文件数，也不跟随读取目标字节。
+        assert_eq!(cover_cache_usage(&covers), CoverCacheUsage::default());
     }
 }
