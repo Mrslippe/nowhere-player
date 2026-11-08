@@ -1,0 +1,218 @@
+/*
+ * 终端对比实验室（T-0008）样式。
+ *
+ * 颜色一律引用 design token（apps/web/src/design/），本文件不出现色值字面量。
+ * 结构：36px 顶栏 / 自适应终端区 / 40px 输入行 / 可折叠评分面板。
+ */
+
+.np-lab {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+}
+
+/* ── 顶栏 ───────────────────────────────────────────── */
+.np-lab__topbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.np-lab__brand {
+  margin-right: var(--sp-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+
+.np-lab__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.np-lab__chip {
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-12);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.np-lab__chip:hover:not([aria-pressed="true"]) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.np-lab__chip[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.np-lab__spacer {
+  flex: 1 1 auto;
+}
+
+/* ── 终端区域 ───────────────────────────────────────── */
+.np-lab__stage {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.np-lab__pane {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.np-lab__pane + .np-lab__pane {
+  border-left: 1px solid var(--line);
+}
+
+.np-lab__pane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 24px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.np-lab__pane-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  line-height: 1;
+}
+
+.np-lab__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--sp-3);
+  overflow: auto;
+  outline-offset: -2px;
+}
+
+.np-lab__xterm-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--sp-2) var(--sp-3);
+  overflow: hidden;
+}
+
+.np-lab__xterm {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── 输入行 ─────────────────────────────────────────── */
+.np-lab__input-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 40px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.np-lab__prompt {
+  flex: none;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  user-select: none;
+}
+
+.np-lab__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+}
+
+.np-lab__input::placeholder {
+  color: var(--fg-faint);
+}
+
+.np-lab__run {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.np-lab__run:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.np-lab__run:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── 动效降级 ───────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .np-lab__chip,
+  .np-lab__run {
+    transition: none;
+  }
+}
