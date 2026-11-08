@@ -29,6 +29,12 @@ pub fn run() {
             ipc::player_prev,
             ipc::player_seek,
             ipc::player_volume,
+            ipc::player_mode,
+            ipc::queue_list,
+            ipc::queue_add,
+            ipc::queue_remove,
+            ipc::queue_clear,
+            ipc::queue_jump,
         ])
         .setup(|app| {
             // actor 线程在此启动；`Player` 由线程内部惰性创建。

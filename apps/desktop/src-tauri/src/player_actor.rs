@@ -617,23 +617,11 @@ impl<S: EventSink> PlayerActor<S> {
             return Err(PlayerError::decode("队列下标越界"));
         }
 
-        if !was_current {
-            self.after_queue_change();
-            return Ok(self.queue.view());
-        }
-
-        match self.queue.position() {
-            Some(next) => {
-                // 删掉的是当前曲目：切到原位置的下一首（末尾则退到新的末尾）。
-                self.sync_queue_state();
-                self.switch_to(next, true)?;
-            }
-            None => {
-                self.player = None;
-                self.sync_queue_state();
-                let event = self.machine.reset();
-                self.emit(event);
-            }
+        if was_current {
+            // 语义（主线确认，T-0015）：停止当前播放、**不自动播下一首**；
+            // 指针已由 `Queue::remove` 停在原位置的下一首（删末尾则退到新的末尾）。
+            self.player = None;
+            self.machine.reset();
         }
         self.after_queue_change();
         Ok(self.queue.view())
@@ -927,11 +915,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn removing_the_current_track_stops_without_autoplay() {
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::new(sink.clone());
+        actor
+            .queue_add(vec!["a".into(), "b".into(), "c".into()])
+            .unwrap();
+
+        // 当前是 a；删除它 → 指针停在 b，但不打开、不播放。
+        let view = actor.queue_remove(0).unwrap();
+        assert_eq!(view.tracks, vec!["b", "c"]);
+        assert_eq!(view.index, Some(0));
+        assert!(
+            actor.player.is_none(),
+            "removing the current track must release the player"
+        );
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.status, PlaybackStatus::Idle);
+        assert!(state.track_id.is_none());
+        assert_eq!(state.queue_length, Some(2));
+        assert_eq!(state.queue_index, Some(0));
+
+        // 删到只剩最后一首再删空：index 归 null、status 保持 idle。
+        actor.queue_remove(0).unwrap();
+        assert_eq!(actor.queue.current(), Some("c"));
+        let view = actor.queue_remove(0).unwrap();
+        assert!(view.tracks.is_empty());
+        assert_eq!(view.index, None);
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.status, PlaybackStatus::Idle);
+        assert_eq!(state.queue_length, Some(0));
+        assert_eq!(state.queue_index, None);
+    }
+
     /// 端到端切歌：真实 `Player` + 临时 wav。
     ///
     /// 需要音频设备；无设备环境（如 CI 的 Ubuntu runner）会先探测并跳过。
     #[test]
-    fn natural_end_advances_to_the_next_track() {
+    fn real_player_advances_on_end_and_stops_when_current_is_removed() {
         let dir = temp_dir("auto-advance");
         let first = dir.join("first.wav");
         let second = dir.join("second.wav");
@@ -956,7 +978,7 @@ mod tests {
         actor
             .queue_add(vec![first.clone(), second.clone()])
             .unwrap();
-        actor.play(Some(first)).expect("first track opens");
+        actor.play(Some(first.clone())).expect("first track opens");
 
         // 等自然播完：tick 应该自动切到第二首。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -976,6 +998,19 @@ mod tests {
         assert_eq!(state.track_id.as_deref(), Some(second.as_str()));
         assert_eq!(state.queue_index, Some(1));
         assert_eq!(state.status, PlaybackStatus::Playing);
+
+        // 移除正在播放的当前项：停止输出、不自动播下一首，指针落到新的当前项。
+        let view = actor.queue_remove(1).unwrap();
+        assert_eq!(view.tracks, vec![first.clone()]);
+        assert_eq!(view.index, Some(0));
+        assert!(
+            actor.player.is_none(),
+            "the live player must be released on removal"
+        );
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.status, PlaybackStatus::Idle);
+        assert!(state.track_id.is_none());
+        assert_eq!(state.queue_index, Some(0));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

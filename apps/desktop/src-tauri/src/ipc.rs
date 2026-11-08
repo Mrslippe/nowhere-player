@@ -1,12 +1,13 @@
 //! IPC 命令层（开发方案 §4.3）。
 //!
 //! 这里只做参数转换与转发：不碰 `Player`、不做阻塞逻辑、不 panic。
-//! 成功返回完整 [`PlaybackState`]；失败返回 `{ code, message }`（[`PlayerError`]）。
+//! 成功返回完整 [`PlaybackState`]（或队列命令的 [`QueueView`]）；
+//! 失败返回 `{ code, message }`（[`PlayerError`]）。
 //!
 //! 通道名带点（如 `player.snapshot`）；Tauri 命令参数默认 camelCase，
 //! 因此 `position_ms` 在前端写作 `positionMs`。
 
-use np_core::{PlaybackState, PlayerError};
+use np_core::{PlaybackMode, PlaybackState, PlayerError, QueueView};
 use tauri::State;
 
 use crate::player_actor::PlayerHandle;
@@ -19,7 +20,7 @@ pub(crate) fn player_snapshot(
     handle.snapshot()
 }
 
-/// `player.play`：带 `path` 打开并播放；不带则继续当前曲目。
+/// `player.play`：带 `path` 打开并播放（同时入队）；不带则继续当前曲目。
 #[tauri::command(rename = "player.play")]
 pub(crate) fn player_play(
     handle: State<'_, PlayerHandle>,
@@ -34,13 +35,13 @@ pub(crate) fn player_pause(handle: State<'_, PlayerHandle>) -> Result<PlaybackSt
     handle.pause()
 }
 
-/// `player.next`：无队列，固定返回 `E_UNSUPPORTED`。
+/// `player.next`：下一首；队列为空时回 `E_UNSUPPORTED`。
 #[tauri::command(rename = "player.next")]
 pub(crate) fn player_next(handle: State<'_, PlayerHandle>) -> Result<PlaybackState, PlayerError> {
     handle.next()
 }
 
-/// `player.prev`：无队列，固定返回 `E_UNSUPPORTED`。
+/// `player.prev`：上一首；队列为空时回 `E_UNSUPPORTED`。
 #[tauri::command(rename = "player.prev")]
 pub(crate) fn player_prev(handle: State<'_, PlayerHandle>) -> Result<PlaybackState, PlayerError> {
     handle.prev()
@@ -64,6 +65,54 @@ pub(crate) fn player_volume(
     handle.volume(volume)
 }
 
+/// `player.mode`：设置 `repeat` / `shuffle`（`mode` 为 `{ repeat, shuffle }`）。
+#[tauri::command(rename = "player.mode")]
+pub(crate) fn player_mode(
+    handle: State<'_, PlayerHandle>,
+    mode: PlaybackMode,
+) -> Result<PlaybackState, PlayerError> {
+    handle.mode(mode)
+}
+
+/// `queue.list`：取队列快照（按播放顺序）。
+#[tauri::command(rename = "queue.list")]
+pub(crate) fn queue_list(handle: State<'_, PlayerHandle>) -> Result<QueueView, PlayerError> {
+    handle.queue_list()
+}
+
+/// `queue.add`：按给定顺序追加本地文件路径。
+#[tauri::command(rename = "queue.add")]
+pub(crate) fn queue_add(
+    handle: State<'_, PlayerHandle>,
+    paths: Vec<String>,
+) -> Result<QueueView, PlayerError> {
+    handle.queue_add(paths)
+}
+
+/// `queue.remove`：移除播放顺序里的第 `index` 首。
+#[tauri::command(rename = "queue.remove")]
+pub(crate) fn queue_remove(
+    handle: State<'_, PlayerHandle>,
+    index: usize,
+) -> Result<QueueView, PlayerError> {
+    handle.queue_remove(index)
+}
+
+/// `queue.clear`：清空队列并回到 `idle`。
+#[tauri::command(rename = "queue.clear")]
+pub(crate) fn queue_clear(handle: State<'_, PlayerHandle>) -> Result<QueueView, PlayerError> {
+    handle.queue_clear()
+}
+
+/// `queue.jump`：跳到播放顺序里的第 `index` 首并播放。
+#[tauri::command(rename = "queue.jump")]
+pub(crate) fn queue_jump(
+    handle: State<'_, PlayerHandle>,
+    index: usize,
+) -> Result<QueueView, PlayerError> {
+    handle.queue_jump(index)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -75,5 +124,11 @@ mod tests {
         assert_eq!(__tauri_command_name_player_prev!(), "player.prev");
         assert_eq!(__tauri_command_name_player_seek!(), "player.seek");
         assert_eq!(__tauri_command_name_player_volume!(), "player.volume");
+        assert_eq!(__tauri_command_name_player_mode!(), "player.mode");
+        assert_eq!(__tauri_command_name_queue_list!(), "queue.list");
+        assert_eq!(__tauri_command_name_queue_add!(), "queue.add");
+        assert_eq!(__tauri_command_name_queue_remove!(), "queue.remove");
+        assert_eq!(__tauri_command_name_queue_clear!(), "queue.clear");
+        assert_eq!(__tauri_command_name_queue_jump!(), "queue.jump");
     }
 }

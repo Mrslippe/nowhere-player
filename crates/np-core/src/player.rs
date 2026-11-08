@@ -345,7 +345,8 @@ impl PlaybackMachine {
         PlayerEvent::StateChanged(self.snapshot())
     }
 
-    /// 清空队列后回到 `Idle`；保留音量与播放模式。
+    /// 没有打开曲目时回到 `Idle`（`queue.clear` 或移除当前曲目）；
+    /// 保留音量与播放模式。
     pub fn reset(&mut self) -> PlayerEvent {
         self.ended_reported = false;
         let volume = self.state.volume;
