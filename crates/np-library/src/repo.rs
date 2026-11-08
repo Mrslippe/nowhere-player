@@ -259,9 +259,7 @@ pub(crate) fn track_by_path(conn: &Connection, path: &str) -> Result<Option<Trac
     let mut statement = conn.prepare(&format!(
         "SELECT {TRACK_COLUMNS} FROM tracks WHERE kind = 'local' AND path = ?1"
     ))?;
-    let track = statement
-        .query_row([path], row_to_track)
-        .optional()?;
+    let track = statement.query_row([path], row_to_track).optional()?;
     Ok(track)
 }
 
@@ -617,12 +615,16 @@ mod tests {
         assert_eq!(found.path, "/music/a.wav");
         assert_eq!(found.cover_key.as_deref(), Some("0123456789abcdef"));
 
-        assert!(track_by_path(db.conn(), "/music/b.wav")
-            .expect("missing")
-            .is_none());
-        assert!(track_by_path(db.conn(), "/music/A.wav")
-            .expect("case sensitive")
-            .is_none());
+        assert!(
+            track_by_path(db.conn(), "/music/b.wav")
+                .expect("missing")
+                .is_none()
+        );
+        assert!(
+            track_by_path(db.conn(), "/music/A.wav")
+                .expect("case sensitive")
+                .is_none()
+        );
         assert!(track_by_path(db.conn(), "").expect("empty").is_none());
     }
 
