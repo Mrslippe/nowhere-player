@@ -102,7 +102,7 @@ pub enum PlayerErrorCode {
     /// 无可用设备 / 设备丢失。
     #[serde(rename = "E_DEVICE_LOST")]
     DeviceLost,
-    /// 不支持的格式，或当前操作尚无实现（`next`/`prev`）。
+    /// 不支持的格式，或命令在当前状态下不可执行（如空队列的 `next`）。
     #[serde(rename = "E_UNSUPPORTED")]
     Unsupported,
     /// 命令通道已满或播放器线程不可用。
@@ -180,16 +180,16 @@ impl PlayerError {
 pub enum PlayerCommand {
     /// 取当前完整快照。
     Snapshot,
-    /// `path = Some` 打开新曲目并播放；`None` 继续当前曲目。
+    /// 打开新曲目并播放；`None` 继续当前曲目（T-0015 起同时入队）。
     Play {
         /// 本地文件路径。
         path: Option<String>,
     },
     /// 暂停。
     Pause,
-    /// 下一首；队列未实现，固定 `E_UNSUPPORTED`。
+    /// 下一首（队列为空时回 `E_UNSUPPORTED`）。
     Next,
-    /// 上一首；队列未实现，固定 `E_UNSUPPORTED`。
+    /// 上一首（队列为空时回 `E_UNSUPPORTED`）。
     Prev,
     /// 跳转到 `position_ms`。
     Seek {
@@ -201,6 +201,30 @@ pub enum PlayerCommand {
     SetVolume {
         /// 目标音量。
         volume: f32,
+    },
+    /// 设置播放模式（`repeat` / `shuffle`）。
+    SetMode {
+        /// 新模式。
+        mode: PlaybackMode,
+    },
+    /// 取队列快照（`queue.list`）。
+    QueueList,
+    /// 追加曲目（`queue.add`）。
+    QueueAdd {
+        /// 本地文件路径，按给定顺序入队。
+        paths: Vec<String>,
+    },
+    /// 移除队列下标（`queue.remove`，按播放顺序）。
+    QueueRemove {
+        /// 播放顺序里的下标。
+        index: usize,
+    },
+    /// 清空队列（`queue.clear`）。
+    QueueClear,
+    /// 跳到队列下标并播放（`queue.jump`）。
+    QueueJump {
+        /// 播放顺序里的下标。
+        index: usize,
     },
     /// 请求 actor 退出（由控制通道使用）。
     Shutdown,
@@ -679,5 +703,28 @@ mod tests {
         let volume = serde_json::to_value(PlayerCommand::SetVolume { volume: 0.75 })
             .expect("volume serializes");
         assert_eq!(volume["volume"], json!(0.75));
+
+        let mode = serde_json::to_value(PlayerCommand::SetMode {
+            mode: PlaybackMode {
+                repeat: RepeatMode::All,
+                shuffle: true,
+            },
+        })
+        .expect("mode serializes");
+        assert_eq!(mode["type"], json!("set_mode"));
+        assert_eq!(mode["mode"]["repeat"], json!("all"));
+        assert_eq!(mode["mode"]["shuffle"], json!(true));
+
+        let add = serde_json::to_value(PlayerCommand::QueueAdd {
+            paths: vec!["a".into(), "b".into()],
+        })
+        .expect("queue add serializes");
+        assert_eq!(add["type"], json!("queue_add"));
+        assert_eq!(add["paths"], json!(["a", "b"]));
+
+        let remove = serde_json::to_value(PlayerCommand::QueueRemove { index: 2 })
+            .expect("queue remove serializes");
+        assert_eq!(remove["type"], json!("queue_remove"));
+        assert_eq!(remove["index"], json!(2));
     }
 }

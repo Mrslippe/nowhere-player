@@ -4,7 +4,12 @@
 //! `Send` 约束），因此 actor 用 `std::thread` + `std::sync::mpsc::recv_timeout`
 //! 在同一个循环里处理命令与 4 Hz tick（ARCH-006 §4 / T-0013 §7）。
 //!
-//! `Player` 的创建与 drop 都发生在 actor 线程；退出时先 drop 再跳出循环。
+//! `Player` 的创建与 drop 都发生在 actor 线程；**切歌也必须在这里完成**
+//! （T-0015）：先把旧 `Player` `take()` 出来在本线程 drop，再 `Player::open`
+//! 新曲目，不能把 `Player` 跨线程移动。
+//!
+//! 事件出口抽象成 [`EventSink`]：生产环境是 Tauri 的 `AppHandle`，单测用
+//! 内存记录器，这样 actor 的队列/切歌逻辑不依赖真实窗口。
 
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
@@ -13,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use np_audio::{AudioError, Player, clamp_volume};
 use np_core::{
-    AudioFailure, POSITION_TICK_MS, PlaybackMachine, PlaybackState, PlaybackStatus, PlayerCommand,
-    PlayerError, PlayerEvent,
+    AudioFailure, POSITION_TICK_MS, PlaybackMachine, PlaybackMode, PlaybackState, PlaybackStatus,
+    PlayerCommand, PlayerError, PlayerEvent, Queue, QueueStep, QueueView,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -32,6 +37,35 @@ const COMMAND_CAPACITY: usize = 32;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 /// actor 的 tick 周期（4 Hz）。
 const TICK_INTERVAL: Duration = Duration::from_millis(POSITION_TICK_MS);
+/// 切歌时打开失败的连续跳过上限（T-0015 §6）。
+const MAX_OPEN_ATTEMPTS: usize = 3;
+
+/// actor 的事件出口。生产实现是 Tauri 的 [`AppHandle`]。
+pub(crate) trait EventSink: Send + 'static {
+    /// 广播一个事件；失败只打日志，不影响播放。
+    fn emit(&self, event: PlayerEvent);
+}
+
+impl EventSink for AppHandle {
+    fn emit(&self, event: PlayerEvent) {
+        let result = match event {
+            PlayerEvent::StateChanged(state) => Emitter::emit(self, EVT_PLAYER, state),
+            PlayerEvent::PositionTick(tick) => Emitter::emit(self, EVT_POSITION, tick),
+        };
+        if let Err(error) = result {
+            eprintln!("[player] emit failed: {error}");
+        }
+    }
+}
+
+/// actor 的应答：播放命令回快照，队列命令回队列视图。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ActorReply {
+    /// 播放状态快照。
+    State(PlaybackState),
+    /// 队列视图。
+    Queue(QueueView),
+}
 
 /// 桌面层持有的 actor 句柄（Tauri managed state）。
 pub(crate) struct PlayerHandle {
@@ -59,7 +93,7 @@ impl PlayerHandle {
         self.request(PlayerCommand::Snapshot)
     }
 
-    /// 打开 `path` 并播放；`path = None` 时继续当前曲目。
+    /// 打开 `path` 并播放（同时入队）；`path = None` 时继续当前曲目。
     pub(crate) fn play(&self, path: Option<String>) -> Result<PlaybackState, PlayerError> {
         self.request(PlayerCommand::Play { path })
     }
@@ -69,12 +103,12 @@ impl PlayerHandle {
         self.request(PlayerCommand::Pause)
     }
 
-    /// 下一首（队列未实现，固定 `E_UNSUPPORTED`）。
+    /// 下一首。
     pub(crate) fn next(&self) -> Result<PlaybackState, PlayerError> {
         self.request(PlayerCommand::Next)
     }
 
-    /// 上一首（队列未实现，固定 `E_UNSUPPORTED`）。
+    /// 上一首。
     pub(crate) fn prev(&self) -> Result<PlaybackState, PlayerError> {
         self.request(PlayerCommand::Prev)
     }
@@ -89,6 +123,36 @@ impl PlayerHandle {
         self.request(PlayerCommand::SetVolume { volume })
     }
 
+    /// 设置 `repeat` / `shuffle`。
+    pub(crate) fn mode(&self, mode: PlaybackMode) -> Result<PlaybackState, PlayerError> {
+        self.request(PlayerCommand::SetMode { mode })
+    }
+
+    /// 队列快照。
+    pub(crate) fn queue_list(&self) -> Result<QueueView, PlayerError> {
+        self.request_queue(PlayerCommand::QueueList)
+    }
+
+    /// 追加曲目。
+    pub(crate) fn queue_add(&self, paths: Vec<String>) -> Result<QueueView, PlayerError> {
+        self.request_queue(PlayerCommand::QueueAdd { paths })
+    }
+
+    /// 移除队列下标（按播放顺序）。
+    pub(crate) fn queue_remove(&self, index: usize) -> Result<QueueView, PlayerError> {
+        self.request_queue(PlayerCommand::QueueRemove { index })
+    }
+
+    /// 清空队列。
+    pub(crate) fn queue_clear(&self) -> Result<QueueView, PlayerError> {
+        self.request_queue(PlayerCommand::QueueClear)
+    }
+
+    /// 跳到队列下标并播放。
+    pub(crate) fn queue_jump(&self, index: usize) -> Result<QueueView, PlayerError> {
+        self.request_queue(PlayerCommand::QueueJump { index })
+    }
+
     /// 停止 actor 并等待 `Player` 在 actor 线程内释放设备。幂等。
     pub(crate) fn shutdown(&self) {
         let join = self.join.lock().ok().and_then(|mut slot| slot.take());
@@ -101,8 +165,24 @@ impl PlayerHandle {
         }
     }
 
-    /// 发送一条命令并等待一次性应答。
+    /// 发送播放命令并等待快照应答。
     fn request(&self, command: PlayerCommand) -> Result<PlaybackState, PlayerError> {
+        match self.request_reply(command)? {
+            ActorReply::State(state) => Ok(state),
+            ActorReply::Queue(_) => Err(PlayerError::busy("播放器应答类型不匹配")),
+        }
+    }
+
+    /// 发送队列命令并等待队列视图应答。
+    fn request_queue(&self, command: PlayerCommand) -> Result<QueueView, PlayerError> {
+        match self.request_reply(command)? {
+            ActorReply::Queue(view) => Ok(view),
+            ActorReply::State(_) => Err(PlayerError::busy("队列应答类型不匹配")),
+        }
+    }
+
+    /// 发送一条命令并等待一次性应答。
+    fn request_reply(&self, command: PlayerCommand) -> Result<ActorReply, PlayerError> {
         let (reply, response) = mpsc::sync_channel(1);
         let message = ActorMessage::Command(PendingCommand { command, reply });
 
@@ -133,7 +213,7 @@ impl Drop for PlayerHandle {
 /// 一条带一次性应答通道的命令。
 struct PendingCommand {
     command: PlayerCommand,
-    reply: SyncSender<Result<PlaybackState, PlayerError>>,
+    reply: SyncSender<Result<ActorReply, PlayerError>>,
 }
 
 /// actor 控制通道的消息。
@@ -143,17 +223,19 @@ enum ActorMessage {
 }
 
 /// 独占 `Player` 的单线程状态机。
-struct PlayerActor {
-    app: AppHandle,
+struct PlayerActor<S: EventSink> {
+    sink: S,
     machine: PlaybackMachine,
+    queue: Queue,
     player: Option<Player>,
 }
 
-impl PlayerActor {
-    fn new(app: AppHandle) -> Self {
+impl<S: EventSink> PlayerActor<S> {
+    fn new(sink: S) -> Self {
         Self {
-            app,
+            sink,
             machine: PlaybackMachine::new(),
+            queue: Queue::new(),
             player: None,
         }
     }
@@ -217,6 +299,9 @@ impl PlayerActor {
     }
 
     /// 批量执行命令；`seek` / `volume` 只执行最后一次（latest-wins）。
+    ///
+    /// 切歌命令不与 seek 合并：批内按到达顺序串行执行，`next` 之后的 seek
+    /// 自然作用在新曲目上；`next` 之前的 seek 作用在旧曲目上。
     fn handle_batch(&mut self, batch: Vec<PendingCommand>) {
         let last_seek = batch
             .iter()
@@ -257,15 +342,21 @@ impl PlayerActor {
         }
     }
 
-    fn execute(&mut self, command: PlayerCommand) -> Result<PlaybackState, PlayerError> {
+    fn execute(&mut self, command: PlayerCommand) -> Result<ActorReply, PlayerError> {
         match command {
-            PlayerCommand::Snapshot => self.snapshot(),
-            PlayerCommand::Play { path } => self.play(path),
-            PlayerCommand::Pause => self.pause(),
-            PlayerCommand::Next => Err(PlayerError::unsupported("队列未实现（T-0015）")),
-            PlayerCommand::Prev => Err(PlayerError::unsupported("队列未实现（T-0015）")),
-            PlayerCommand::Seek { position_ms } => self.seek(position_ms),
-            PlayerCommand::SetVolume { volume } => self.set_volume(volume),
+            PlayerCommand::Snapshot => self.snapshot().map(ActorReply::State),
+            PlayerCommand::Play { path } => self.play(path).map(ActorReply::State),
+            PlayerCommand::Pause => self.pause().map(ActorReply::State),
+            PlayerCommand::Next => self.next_track().map(ActorReply::State),
+            PlayerCommand::Prev => self.prev_track().map(ActorReply::State),
+            PlayerCommand::Seek { position_ms } => self.seek(position_ms).map(ActorReply::State),
+            PlayerCommand::SetVolume { volume } => self.set_volume(volume).map(ActorReply::State),
+            PlayerCommand::SetMode { mode } => self.set_mode(mode).map(ActorReply::State),
+            PlayerCommand::QueueList => Ok(ActorReply::Queue(self.queue.view())),
+            PlayerCommand::QueueAdd { paths } => self.queue_add(paths).map(ActorReply::Queue),
+            PlayerCommand::QueueRemove { index } => self.queue_remove(index).map(ActorReply::Queue),
+            PlayerCommand::QueueClear => self.queue_clear().map(ActorReply::Queue),
+            PlayerCommand::QueueJump { index } => self.queue_jump(index).map(ActorReply::Queue),
             PlayerCommand::Shutdown => {
                 Err(PlayerError::unsupported("Shutdown 由 actor 控制通道处理"))
             }
@@ -273,48 +364,44 @@ impl PlayerActor {
     }
 
     fn snapshot(&mut self) -> Result<PlaybackState, PlayerError> {
-        let position = self.position_ms();
-        self.machine.sync_position(position);
+        // `Ended` 时位置停在末尾（由状态机钉住），不要被已停下的 player 拉回 0。
+        if self.machine.snapshot().status != PlaybackStatus::Ended {
+            let position = self.position_ms();
+            self.machine.sync_position(position);
+        }
+        self.sync_queue_state();
         Ok(self.machine.snapshot())
     }
 
     fn play(&mut self, path: Option<String>) -> Result<PlaybackState, PlayerError> {
         match path {
-            Some(path) => self.open_and_play(path),
+            Some(path) => {
+                let index = match self.queue.find(&path) {
+                    Some(index) => index,
+                    None => self.queue.push(path),
+                };
+                // 刚查找/插入的下标必然有效；失败说明队列不变式被破坏。
+                let Some(index) = self.queue.jump(index) else {
+                    return Err(PlayerError::busy("队列下标失效"));
+                };
+                self.sync_queue_state();
+                self.switch_to(index, true)
+            }
             None => self.resume(),
         }
     }
 
-    /// 打开新文件；只有打开成功才替换旧 `Player`（失败时旧曲目继续）。
-    fn open_and_play(&mut self, path: String) -> Result<PlaybackState, PlayerError> {
-        let volume = self.machine.snapshot().volume;
-        let player = Player::open(&path).map_err(map_audio_error)?;
-        player.set_volume(volume);
-        let duration_ms = player.duration_ms();
-
-        self.player = Some(player);
-        let event = self.machine.open(path, duration_ms);
-        self.emit(event);
-
-        let play_result = match self.player.as_ref() {
-            Some(player) => player.play().map_err(map_audio_error),
-            None => Err(PlayerError::busy("播放器状态丢失")),
-        };
-        if let Err(error) = play_result {
-            let position = self.position_ms();
-            self.fail(error.clone(), position);
-            return Err(error);
-        }
-
-        let event = self.machine.play(0);
-        self.emit(event);
-        Ok(self.machine.snapshot())
-    }
-
     /// 继续当前曲目；播完后重新 `play` 先回到 0。
+    ///
+    /// 队列非空但还没有打开过 player（例如 `queue.add` 之后直接 `play`）时，
+    /// 打开当前曲目再播。
     fn resume(&mut self) -> Result<PlaybackState, PlayerError> {
         if self.player.is_none() {
-            return Err(PlayerError::unsupported("没有可播放的曲目，请先提供 path"));
+            let Some(index) = self.queue.position() else {
+                return Err(PlayerError::unsupported("没有可播放的曲目，请先提供 path"));
+            };
+            self.sync_queue_state();
+            return self.switch_to(index, true);
         }
         let restart = self.machine.snapshot().status == PlaybackStatus::Ended;
 
@@ -400,7 +487,199 @@ impl PlayerActor {
         Ok(self.machine.snapshot())
     }
 
+    /// 下一首。`repeat = off` 且已在最后一首时停在该曲目并置 `Ended`。
+    fn next_track(&mut self) -> Result<PlaybackState, PlayerError> {
+        if self.queue.is_empty() {
+            return Err(PlayerError::unsupported("队列为空，无法切歌"));
+        }
+        match self.queue.next() {
+            QueueStep::Open(index) => self.switch_to(index, true),
+            QueueStep::Exhausted => self.finish_queue(),
+        }
+    }
+
+    /// 上一首。`repeat = off` 时在首曲重播首曲，不越界。
+    fn prev_track(&mut self) -> Result<PlaybackState, PlayerError> {
+        if self.queue.is_empty() {
+            return Err(PlayerError::unsupported("队列为空，无法切歌"));
+        }
+        match self.queue.prev() {
+            QueueStep::Open(index) => self.switch_to(index, true),
+            QueueStep::Exhausted => Ok(self.machine.snapshot()),
+        }
+    }
+
+    /// 队列播完：暂停输出，停在该曲目并把状态置 `Ended`。
+    fn finish_queue(&mut self) -> Result<PlaybackState, PlayerError> {
+        let position = self.position_ms();
+        let result = match self.player.as_ref() {
+            Some(player) => player.pause().map_err(map_audio_error),
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            self.fail(error.clone(), position);
+            return Err(error);
+        }
+        self.sync_queue_state();
+        let event = self.machine.end(position);
+        self.emit(event);
+        Ok(self.machine.snapshot())
+    }
+
+    /// 切歌到 `index`：打开失败自动跳下一首，最多连续尝试 [`MAX_OPEN_ATTEMPTS`] 首。
+    ///
+    /// 全部失败时释放旧 `Player`、置 `status = error` 并返回最后一次错误。
+    fn switch_to(&mut self, index: usize, autoplay: bool) -> Result<PlaybackState, PlayerError> {
+        let mut candidate = index;
+        let mut attempt = 1;
+        let error = loop {
+            match self.open_candidate(candidate, autoplay) {
+                Ok(()) => return Ok(self.machine.snapshot()),
+                Err(error) => {
+                    if attempt >= MAX_OPEN_ATTEMPTS {
+                        break error;
+                    }
+                    match self.queue.next_for_skip() {
+                        Some(next) => candidate = next,
+                        None => break error,
+                    }
+                    attempt += 1;
+                }
+            }
+        };
+
+        self.player = None;
+        self.sync_queue_state();
+        self.fail(error.clone(), 0);
+        Err(error)
+    }
+
+    /// 打开第 `index` 首并（可选）开始播放。
+    ///
+    /// 时序（T-0015 §11）：先 `take()` / drop 旧 `Player`，再 `Player::open`，
+    /// 最后 `play()`——两个 cpal 输出流不能同时在世。
+    fn open_candidate(&mut self, index: usize, autoplay: bool) -> Result<(), PlayerError> {
+        let path = match self.queue.track_at(index) {
+            Some(path) => path.to_owned(),
+            None => return Err(PlayerError::decode("队列下标越界")),
+        };
+        let volume = self.machine.snapshot().volume;
+
+        self.player = None;
+        let player = Player::open(&path).map_err(map_audio_error)?;
+        player.set_volume(volume);
+        let duration_ms = player.duration_ms();
+        self.player = Some(player);
+
+        self.sync_queue_state();
+        let opened = self.machine.open(path, duration_ms);
+        self.emit(opened);
+
+        if !autoplay {
+            return Ok(());
+        }
+
+        let play_result = match self.player.as_ref() {
+            Some(player) => player.play().map_err(map_audio_error),
+            None => Err(PlayerError::busy("播放器状态丢失")),
+        };
+        if let Err(error) = play_result {
+            // 打开成功但起播失败：释放它，交给 skip 循环尝试下一首。
+            self.player = None;
+            return Err(error);
+        }
+        let started = self.machine.play(0);
+        self.emit(started);
+        Ok(())
+    }
+
+    fn set_mode(&mut self, mode: PlaybackMode) -> Result<PlaybackState, PlayerError> {
+        self.queue.set_mode(mode);
+        self.sync_queue_state();
+        self.emit_state();
+        Ok(self.machine.snapshot())
+    }
+
+    fn queue_add(&mut self, paths: Vec<String>) -> Result<QueueView, PlayerError> {
+        if paths.is_empty() {
+            return Err(PlayerError::decode("paths 不能为空"));
+        }
+        for path in paths {
+            self.queue.push(path);
+        }
+        self.after_queue_change();
+        Ok(self.queue.view())
+    }
+
+    fn queue_remove(&mut self, index: usize) -> Result<QueueView, PlayerError> {
+        let was_current = self.queue.position() == Some(index);
+        if self.queue.remove(index).is_none() {
+            return Err(PlayerError::decode("队列下标越界"));
+        }
+
+        if !was_current {
+            self.after_queue_change();
+            return Ok(self.queue.view());
+        }
+
+        match self.queue.position() {
+            Some(next) => {
+                // 删掉的是当前曲目：切到原位置的下一首（末尾则退到新的末尾）。
+                self.sync_queue_state();
+                self.switch_to(next, true)?;
+            }
+            None => {
+                self.player = None;
+                self.sync_queue_state();
+                let event = self.machine.reset();
+                self.emit(event);
+            }
+        }
+        self.after_queue_change();
+        Ok(self.queue.view())
+    }
+
+    fn queue_clear(&mut self) -> Result<QueueView, PlayerError> {
+        self.queue.clear();
+        self.player = None;
+        self.sync_queue_state();
+        let event = self.machine.reset();
+        self.emit(event);
+        Ok(self.queue.view())
+    }
+
+    fn queue_jump(&mut self, index: usize) -> Result<QueueView, PlayerError> {
+        let Some(index) = self.queue.jump(index) else {
+            return Err(PlayerError::decode("队列下标越界"));
+        };
+        self.sync_queue_state();
+        self.switch_to(index, true)?;
+        Ok(self.queue.view())
+    }
+
+    /// 队列变更后同步快照并立即推 `player:state`（T-0015 §6）。
+    fn after_queue_change(&mut self) {
+        self.sync_queue_state();
+        self.emit_state();
+    }
+
+    fn sync_queue_state(&mut self) {
+        let length = self.queue.len();
+        let index = self.queue.position();
+        let mode = self.queue.mode();
+        self.machine.sync_queue(length, index, mode);
+    }
+
+    /// 推送一次当前快照（不改状态）。
+    fn emit_state(&mut self) {
+        let state = self.machine.snapshot();
+        self.emit(PlayerEvent::StateChanged(state));
+    }
+
     /// 4 Hz tick：只在 `Playing` 时发位置；结束/错误立即发完整快照。
+    ///
+    /// 自然播完时先交给队列：`repeat = one` 重播、`repeat = all` 回绕、
+    /// 否则进下一首；没有下一首才上报 `Ended`（T-0015 §6）。
     fn tick(&mut self) {
         let Some(player) = self.player.as_ref() else {
             return;
@@ -412,6 +691,17 @@ impl PlayerActor {
         if let Some(message) = message {
             self.fail(PlayerError::decode(message), position);
             return;
+        }
+
+        if ended && self.machine.is_playing() {
+            match self.queue.next() {
+                QueueStep::Open(index) => {
+                    // 切歌自带状态推送；失败已按 error 状态上报。
+                    let _ = self.switch_to(index, true);
+                    return;
+                }
+                QueueStep::Exhausted => {}
+            }
         }
 
         if let Some(event) = self.machine.tick(position, ended) {
@@ -432,13 +722,7 @@ impl PlayerActor {
     }
 
     fn emit(&self, event: PlayerEvent) {
-        let result = match event {
-            PlayerEvent::StateChanged(state) => self.app.emit(EVT_PLAYER, state),
-            PlayerEvent::PositionTick(tick) => self.app.emit(EVT_POSITION, tick),
-        };
-        if let Err(error) = result {
-            eprintln!("[player] emit failed: {error}");
-        }
+        self.sink.emit(event);
     }
 }
 
@@ -464,8 +748,43 @@ fn map_audio_error(error: AudioError) -> PlayerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
     use np_audio::SampleFormat;
-    use np_core::PlayerErrorCode;
+    use np_core::{PlayerErrorCode, RepeatMode};
+
+    /// 收集事件的内存 sink，代替 Tauri 的 `AppHandle`。
+    #[derive(Clone, Default)]
+    struct RecordingSink {
+        events: Arc<Mutex<Vec<PlayerEvent>>>,
+    }
+
+    impl EventSink for RecordingSink {
+        fn emit(&self, event: PlayerEvent) {
+            self.events.lock().expect("event log poisoned").push(event);
+        }
+    }
+
+    impl RecordingSink {
+        fn last_state(&self) -> Option<PlaybackState> {
+            self.events
+                .lock()
+                .expect("event log poisoned")
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    PlayerEvent::StateChanged(state) => Some(state.clone()),
+                    PlayerEvent::PositionTick(_) => None,
+                })
+        }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("np-t0015-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
 
     #[test]
     fn event_names_are_legal_tauri_names() {
@@ -518,5 +837,186 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(map_audio_error(error).code, expected);
         }
+    }
+
+    #[test]
+    fn queue_commands_emit_snapshots_with_queue_fields() {
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::new(sink.clone());
+
+        assert!(actor.queue.view().tracks.is_empty());
+
+        let view = actor.queue_add(vec!["a".into(), "b".into()]).unwrap();
+        assert_eq!(view.tracks, vec!["a", "b"]);
+        assert_eq!(view.index, Some(0));
+        let state = sink.last_state().expect("queue add must emit a snapshot");
+        assert_eq!(state.queue_length, Some(2));
+        assert_eq!(state.queue_index, Some(0));
+        assert_eq!(state.status, PlaybackStatus::Idle);
+
+        let view = actor.queue_add(vec!["c".into()]).unwrap();
+        assert_eq!(view.tracks, vec!["a", "b", "c"]);
+        assert_eq!(sink.last_state().unwrap().queue_length, Some(3));
+
+        // 删除当前项之外的曲目：当前曲目不变，指针不动。
+        let view = actor.queue_remove(1).unwrap();
+        assert_eq!(view.tracks, vec!["a", "c"]);
+        assert_eq!(view.index, Some(0));
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.queue_length, Some(2));
+        assert_eq!(state.queue_index, Some(0));
+
+        actor
+            .set_mode(PlaybackMode {
+                repeat: RepeatMode::All,
+                shuffle: true,
+            })
+            .unwrap();
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.mode.repeat, RepeatMode::All);
+        assert!(state.mode.shuffle);
+
+        let view = actor.queue_clear().unwrap();
+        assert!(view.tracks.is_empty());
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.status, PlaybackStatus::Idle);
+        assert_eq!(state.queue_length, Some(0));
+        assert_eq!(state.queue_index, None);
+    }
+
+    #[test]
+    fn next_and_prev_on_an_empty_queue_return_unsupported() {
+        let mut actor = PlayerActor::new(RecordingSink::default());
+        for result in [actor.next_track(), actor.prev_track()] {
+            let error = result.expect_err("empty queue must not panic or succeed");
+            assert_eq!(error.code, PlayerErrorCode::Unsupported);
+            assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Idle);
+        }
+    }
+
+    #[test]
+    fn open_failures_skip_at_most_three_tracks_then_report_error() {
+        let dir = temp_dir("skip");
+        let missing: Vec<String> = (0..5)
+            .map(|index| {
+                dir.join(format!("missing-{index}.wav"))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::new(sink.clone());
+        actor.queue_add(missing.clone()).unwrap();
+
+        let error = actor
+            .play(Some(missing[0].clone()))
+            .expect_err("missing file must fail");
+        assert_eq!(error.code, PlayerErrorCode::Decode);
+        assert_eq!(actor.machine.snapshot().status, PlaybackStatus::Error);
+        assert_eq!(
+            actor.queue.position(),
+            Some(2),
+            "exactly three tracks are attempted before giving up"
+        );
+        let state = sink.last_state().unwrap();
+        assert_eq!(state.status, PlaybackStatus::Error);
+        assert_eq!(state.queue_length, Some(5));
+        assert!(state.error.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 端到端切歌：真实 `Player` + 临时 wav。
+    ///
+    /// 需要音频设备；无设备环境（如 CI 的 Ubuntu runner）会先探测并跳过。
+    #[test]
+    fn natural_end_advances_to_the_next_track() {
+        let dir = temp_dir("auto-advance");
+        let first = dir.join("first.wav");
+        let second = dir.join("second.wav");
+        write_wav(&first, 300);
+        write_wav(&second, 800);
+
+        // 探测设备：先试着打开一次，失败说明没有可用输出设备。
+        match Player::open(&first) {
+            Ok(probe) => drop(probe),
+            Err(error) => {
+                eprintln!("[test] no audio device ({error}); skipping auto-advance test");
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+        }
+
+        let first = first.to_string_lossy().into_owned();
+        let second = second.to_string_lossy().into_owned();
+        let sink = RecordingSink::default();
+        let mut actor = PlayerActor::new(sink.clone());
+
+        actor
+            .queue_add(vec![first.clone(), second.clone()])
+            .unwrap();
+        actor.play(Some(first)).expect("first track opens");
+
+        // 等自然播完：tick 应该自动切到第二首。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            actor.tick();
+            if actor.queue.current() == Some(second.as_str()) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "natural end did not advance the queue"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        let state = sink.last_state().expect("switching must emit a snapshot");
+        assert_eq!(state.track_id.as_deref(), Some(second.as_str()));
+        assert_eq!(state.queue_index, Some(1));
+        assert_eq!(state.status, PlaybackStatus::Playing);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写一个 16-bit PCM 单声道 wav（参照 `np-audio/examples/make_wav.rs`）。
+    fn write_wav(path: &Path, duration_ms: u32) {
+        use std::f32::consts::TAU;
+        use std::io::Write;
+
+        let rate = 44_100_u32;
+        let frames = rate * duration_ms / 1_000;
+        let fade = (rate as f32 * 0.01) as u32;
+        let mut samples = Vec::with_capacity(frames as usize);
+        for frame in 0..frames {
+            let mut value = (TAU * 440.0 * frame as f32 / rate as f32).sin() * 0.2;
+            if frame < fade {
+                value *= frame as f32 / fade as f32;
+            } else if frame + fade > frames {
+                value *= (frames - frame) as f32 / fade as f32;
+            }
+            samples.push((value.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16);
+        }
+
+        let data_len = (samples.len() * 2) as u32;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path).expect("create wav"));
+        out.write_all(b"RIFF").unwrap();
+        out.write_all(&(36 + data_len).to_le_bytes()).unwrap();
+        out.write_all(b"WAVE").unwrap();
+        out.write_all(b"fmt ").unwrap();
+        out.write_all(&16u32.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&1u16.to_le_bytes()).unwrap();
+        out.write_all(&rate.to_le_bytes()).unwrap();
+        out.write_all(&(rate * 2).to_le_bytes()).unwrap();
+        out.write_all(&2u16.to_le_bytes()).unwrap();
+        out.write_all(&16u16.to_le_bytes()).unwrap();
+        out.write_all(b"data").unwrap();
+        out.write_all(&data_len.to_le_bytes()).unwrap();
+        for sample in samples {
+            out.write_all(&sample.to_le_bytes()).unwrap();
+        }
+        out.flush().unwrap();
     }
 }
