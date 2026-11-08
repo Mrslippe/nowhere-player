@@ -247,6 +247,40 @@
   vertical-align: -0.125em;
 }
 
+/* ── 滚动条（T-0032）：两套 skin 共用一套粗细与配色 ───── */
+/*
+ * 只写 WebKit 伪元素：Tauri 的三端 WebView（WebView2 / WKWebView / WebKitGTK）
+ * 都吃这套；刻意不写标准的 scrollbar-width / scrollbar-color，避免 Chromium
+ * 回退成原生滚动条、盖掉这里的 10px 细条。
+ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--line);
+}
+
+::-webkit-scrollbar-thumb {
+  border: var(--np-border-thumb);
+  border-radius: var(--np-radius-pill);
+  background-color: var(--fg-faint);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fg-muted);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ── 动效降级：全部静态 ──────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .np-btn,
