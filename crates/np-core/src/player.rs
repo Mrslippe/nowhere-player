@@ -40,6 +40,25 @@ pub enum RepeatMode {
     All,
 }
 
+/// 切歌的触发原因（T-0016 §2.3）。
+///
+/// `repeat = one` 只对**自然播完**生效；用户显式 `next` / `prev` 时忽略单曲
+/// 循环、按正常顺序切歌。用枚举表达理由，避免调用点散落布尔参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvanceReason {
+    /// 当前曲目自然播完（tick 检测到 ended）。
+    Natural,
+    /// 用户显式 `next` / `prev`。
+    Manual,
+}
+
+impl AdvanceReason {
+    /// 这次切歌是否尊重 `repeat = one`（只有自然播完才尊重）。
+    pub fn honors_repeat_one(self) -> bool {
+        matches!(self, Self::Natural)
+    }
+}
+
 /// 播放模式（开发方案 §4.3 的“模式”字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

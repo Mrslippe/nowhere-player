@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::player::{PlaybackMode, RepeatMode};
+use crate::player::{AdvanceReason, PlaybackMode, RepeatMode};
 
 /// 队列快照（`queue.*` IPC 的返回载荷）。
 ///
@@ -200,17 +200,20 @@ impl Queue {
 
     /// 下一首的决策。
     ///
-    /// - `repeat = one`：重播当前曲目（返回当前下标）；
+    /// `reason` 决定 `repeat = one` 是否生效（T-0016 §2.3）：
+    ///
+    /// - 自然播完 + `repeat = one`：重播当前曲目（返回当前下标）；
+    /// - 显式 `next` + `repeat = one`：忽略单曲循环，按 `off` 前进；
     /// - `repeat = off`：前进一首，已在末尾则 [`QueueStep::Exhausted`]；
     /// - `repeat = all`：前进一首，末尾回绕到第一首。
     ///
     /// `Queue` 不是迭代器：这里只返回「下一次切歌的决策」，不借用队列元素。
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> QueueStep {
+    pub fn next(&mut self, reason: AdvanceReason) -> QueueStep {
         let Some(cursor) = self.cursor else {
             return QueueStep::Exhausted;
         };
-        match self.mode.repeat {
+        match self.effective_repeat(reason) {
             RepeatMode::One => QueueStep::Open(cursor),
             RepeatMode::Off => {
                 if cursor + 1 < self.entries.len() {
@@ -230,13 +233,14 @@ impl Queue {
 
     /// 上一首的决策。
     ///
-    /// - `repeat = one`：重播当前曲目；
+    /// - 自然播完 + `repeat = one`：重播当前曲目；
+    /// - 显式 `prev` + `repeat = one`：忽略单曲循环，按 `off` 后退；
     /// - `repeat = off`：在首曲时重播首曲（不越界、不回绕）；
     /// - `repeat = all`：首曲时回绕到最后一首。
-    pub fn prev(&mut self) -> QueueStep {
+    pub fn prev(&mut self, reason: AdvanceReason) -> QueueStep {
         match self.cursor {
             None => QueueStep::Exhausted,
-            Some(cursor) => match self.mode.repeat {
+            Some(cursor) => match self.effective_repeat(reason) {
                 RepeatMode::One => QueueStep::Open(cursor),
                 RepeatMode::Off => {
                     let prev = cursor.saturating_sub(1);
@@ -249,6 +253,14 @@ impl Queue {
                     QueueStep::Open(prev)
                 }
             },
+        }
+    }
+
+    /// 本次切歌实际生效的循环模式：`repeat = one` 只对自然播完生效。
+    fn effective_repeat(&self, reason: AdvanceReason) -> RepeatMode {
+        match self.mode.repeat {
+            RepeatMode::One if !reason.honors_repeat_one() => RepeatMode::Off,
+            repeat => repeat,
         }
     }
 
@@ -314,8 +326,8 @@ mod tests {
         assert!(queue.is_empty());
         assert_eq!(queue.position(), None);
         assert_eq!(queue.current(), None);
-        assert_eq!(queue.next(), QueueStep::Exhausted);
-        assert_eq!(queue.prev(), QueueStep::Exhausted);
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Exhausted);
+        assert_eq!(queue.prev(AdvanceReason::Natural), QueueStep::Exhausted);
         assert_eq!(queue.next_for_skip(), None);
         assert_eq!(queue.remove(0), None);
         assert_eq!(queue.jump(0), None);
@@ -343,9 +355,9 @@ mod tests {
     #[test]
     fn next_advances_and_stops_at_the_last_track_with_repeat_off() {
         let mut queue = queue_with(&["a", "b"]);
-        assert_eq!(queue.next(), QueueStep::Open(1));
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(1));
         assert_eq!(queue.current(), Some("b"));
-        assert_eq!(queue.next(), QueueStep::Exhausted);
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Exhausted);
         assert_eq!(queue.position(), Some(1), "exhausted keeps the last track");
     }
 
@@ -356,8 +368,8 @@ mod tests {
             repeat: RepeatMode::All,
             shuffle: false,
         });
-        assert_eq!(queue.next(), QueueStep::Open(1));
-        assert_eq!(queue.next(), QueueStep::Open(0));
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(1));
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(0));
         assert_eq!(queue.current(), Some("a"));
     }
 
@@ -368,7 +380,7 @@ mod tests {
             repeat: RepeatMode::All,
             shuffle: false,
         });
-        assert_eq!(queue.next(), QueueStep::Open(0));
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(0));
         assert_eq!(queue.position(), Some(0));
     }
 
@@ -379,19 +391,67 @@ mod tests {
             repeat: RepeatMode::One,
             shuffle: false,
         });
-        assert_eq!(queue.next(), QueueStep::Open(0));
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(0));
         assert_eq!(queue.position(), Some(0));
-        assert_eq!(queue.prev(), QueueStep::Open(0));
+        assert_eq!(queue.prev(AdvanceReason::Natural), QueueStep::Open(0));
         assert_eq!(queue.position(), Some(0), "repeat=one must not move");
+    }
+
+    #[test]
+    fn repeat_one_is_ignored_for_manual_advances() {
+        let mut queue = queue_with(&["a", "b", "c"]);
+        queue.set_mode(PlaybackMode {
+            repeat: RepeatMode::One,
+            shuffle: false,
+        });
+
+        // 自然播完：重播当前曲。
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(0));
+        assert_eq!(queue.position(), Some(0));
+
+        // 显式 `next`：忽略单曲循环，真的切到下一首。
+        assert_eq!(queue.next(AdvanceReason::Manual), QueueStep::Open(1));
+        assert_eq!(queue.current(), Some("b"));
+
+        // 显式 `next` 在末尾：按 `off` 语义停住，不重播也不回绕。
+        assert_eq!(queue.jump(2), Some(2));
+        assert_eq!(queue.next(AdvanceReason::Manual), QueueStep::Exhausted);
+        assert_eq!(queue.position(), Some(2));
+
+        // 自然播完在末尾仍重播当前曲（`repeat=one` 生效）。
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(2));
+
+        // 显式 `prev` 同样忽略单曲循环；首曲仍重播首曲。
+        assert_eq!(queue.prev(AdvanceReason::Manual), QueueStep::Open(1));
+        assert_eq!(queue.jump(0), Some(0));
+        assert_eq!(queue.prev(AdvanceReason::Manual), QueueStep::Open(0));
+        assert_eq!(queue.position(), Some(0));
+    }
+
+    #[test]
+    fn manual_advance_at_the_end_with_repeat_off_does_not_overflow() {
+        let mut queue = queue_with(&["a", "b"]);
+        assert_eq!(queue.next(AdvanceReason::Manual), QueueStep::Open(1));
+        assert_eq!(queue.next(AdvanceReason::Manual), QueueStep::Exhausted);
+        assert_eq!(queue.position(), Some(1), "cursor must stay on the last");
+        assert_eq!(queue.current(), Some("b"));
+    }
+
+    #[test]
+    fn natural_advance_at_the_end_with_repeat_off_stops() {
+        let mut queue = queue_with(&["a", "b"]);
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Open(1));
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Exhausted);
+        assert_eq!(queue.position(), Some(1));
     }
 
     #[test]
     fn prev_clamps_at_the_first_track_with_repeat_off() {
         let mut queue = queue_with(&["a", "b"]);
-        assert_eq!(queue.prev(), QueueStep::Open(0));
+        assert_eq!(queue.prev(AdvanceReason::Natural), QueueStep::Open(0));
         assert_eq!(queue.position(), Some(0));
-        queue.next();
-        assert_eq!(queue.prev(), QueueStep::Open(0));
+        queue.next(AdvanceReason::Natural);
+        assert_eq!(queue.prev(AdvanceReason::Natural), QueueStep::Open(0));
     }
 
     #[test]
@@ -401,9 +461,9 @@ mod tests {
             repeat: RepeatMode::All,
             shuffle: false,
         });
-        assert_eq!(queue.prev(), QueueStep::Open(2));
+        assert_eq!(queue.prev(AdvanceReason::Natural), QueueStep::Open(2));
         assert_eq!(queue.current(), Some("c"));
-        assert_eq!(queue.prev(), QueueStep::Open(1));
+        assert_eq!(queue.prev(AdvanceReason::Natural), QueueStep::Open(1));
     }
 
     #[test]
@@ -419,7 +479,7 @@ mod tests {
 
         let mut visited = vec![queue.current().unwrap().to_owned()];
         for _ in 0..queue.len() - 1 {
-            match queue.next() {
+            match queue.next(AdvanceReason::Natural) {
                 QueueStep::Open(index) => visited.push(queue.track_at(index).unwrap().to_owned()),
                 QueueStep::Exhausted => panic!("repeat=all must wrap, not exhaust"),
             }
@@ -438,8 +498,8 @@ mod tests {
         for id in ["a", "b", "c", "d", "e", "f"] {
             queue.push(id);
         }
-        queue.next();
-        queue.next();
+        queue.next(AdvanceReason::Natural);
+        queue.next(AdvanceReason::Natural);
         let current = queue.current().unwrap().to_owned();
 
         queue.set_mode(PlaybackMode {
@@ -464,8 +524,8 @@ mod tests {
         for id in ["a", "b", "c", "d", "e"] {
             queue.push(id);
         }
-        queue.next();
-        queue.next();
+        queue.next(AdvanceReason::Natural);
+        queue.next(AdvanceReason::Natural);
         let current = queue.current().unwrap().to_owned();
 
         queue.set_mode(PlaybackMode {
@@ -484,7 +544,7 @@ mod tests {
     #[test]
     fn removing_an_earlier_track_keeps_the_current_one() {
         let mut queue = queue_with(&["a", "b", "c"]);
-        queue.next();
+        queue.next(AdvanceReason::Natural);
         assert_eq!(queue.current(), Some("b"));
         assert_eq!(queue.remove(0), Some("a".into()));
         assert_eq!(queue.view().tracks, vec!["b", "c"]);
@@ -495,7 +555,7 @@ mod tests {
     #[test]
     fn removing_the_current_track_moves_to_the_next_one() {
         let mut queue = queue_with(&["a", "b", "c"]);
-        queue.next();
+        queue.next(AdvanceReason::Natural);
         assert_eq!(queue.remove(1), Some("b".into()));
         assert_eq!(queue.current(), Some("c"));
         assert_eq!(queue.position(), Some(1));
@@ -504,8 +564,8 @@ mod tests {
     #[test]
     fn removing_the_last_current_track_falls_back_to_the_new_last() {
         let mut queue = queue_with(&["a", "b", "c"]);
-        queue.next();
-        queue.next();
+        queue.next(AdvanceReason::Natural);
+        queue.next(AdvanceReason::Natural);
         assert_eq!(queue.remove(2), Some("c".into()));
         assert_eq!(queue.current(), Some("b"));
         assert_eq!(queue.position(), Some(1));
@@ -517,7 +577,7 @@ mod tests {
         assert_eq!(queue.remove(0), Some("a".into()));
         assert!(queue.is_empty());
         assert_eq!(queue.position(), None);
-        assert_eq!(queue.next(), QueueStep::Exhausted);
+        assert_eq!(queue.next(AdvanceReason::Natural), QueueStep::Exhausted);
     }
 
     #[test]
@@ -532,7 +592,7 @@ mod tests {
     #[test]
     fn clear_empties_the_queue_and_resets_the_cursor() {
         let mut queue = queue_with(&["a", "b", "c"]);
-        queue.next();
+        queue.next(AdvanceReason::Natural);
         queue.clear();
         assert!(queue.is_empty());
         assert_eq!(queue.position(), None);
