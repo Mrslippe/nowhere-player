@@ -1,0 +1,97 @@
+name: CI
+
+# Nowhere Player 门禁：命令与 scripts/check.ps1 逐条等价，Rust 侧覆盖 Windows + Ubuntu。
+# 约束（T-0010）：只用 actions/*、pnpm/action-setup、dtolnay/rust-toolchain；
+# 不开 continue-on-error；单 job 超时 30 分钟；不做发布/打包。
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Web（typecheck / test / build）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 版本取根 package.json 的 packageManager 字段（pnpm@11.22.0）。
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm -C apps/web typecheck
+
+      - name: 单元测试
+        run: pnpm -C apps/web test
+
+      - name: 前端构建
+        run: pnpm -C apps/web build
+
+  rust:
+    name: Rust（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 只有 Linux 需要额外系统库（Windows 的 WebView2 已预装）；清单见 T-0010 §6.3。
+      - name: 安装 Tauri 的 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # 关键：clippy / test 会编译 apps/desktop/src-tauri，其中 tauri::generate_context!
+      # 在编译期读取 apps/web/dist；dist/ 已被 .gitignore 忽略，checkout 不会带过来，
+      # 缺了会直接编译失败。所以 Rust 检查前必须先构建一次前端（顺序同 scripts/check.ps1）。
+      - name: 构建前端 dist（generate_context! 依赖）
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -C apps/web build
+
+      # rust-toolchain.toml 把通道钉在 1.98.0；rustup >= 1.28 不再自动安装缺失的
+      # 活动工具链，所以这里显式安装同一版本（升级 rust-toolchain.toml 时同步改这里）。
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+
+      - name: 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（警告即错误）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: 测试
+        run: cargo test --workspace
