@@ -4,5 +4,10 @@
   "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -C apps/desktop dev",
+    "build": "pnpm -C apps/desktop build",
+    "tauri": "pnpm -C apps/desktop tauri"
   }
 }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "播放器窗与终端窗只使用 Tauri 核心 API（本卡不开放任何业务命令）。",
+  "windows": ["player", "terminal"],
+  "permissions": ["core:default"]
+}

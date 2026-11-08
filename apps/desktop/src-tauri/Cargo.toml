@@ -1,0 +1,22 @@
+[package]
+name = "nowhere-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "nowhere_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nowhere-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-global-shortcut = "2.4"
