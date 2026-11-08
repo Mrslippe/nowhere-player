@@ -34,7 +34,11 @@ pub(crate) fn show_player(app: &AppHandle) {
         return;
     };
 
-    if let Err(error) = window.show().and_then(|()| window.set_focus()) {
+    if let Err(error) = window
+        .unminimize()
+        .and_then(|()| window.show())
+        .and_then(|()| window.set_focus())
+    {
         eprintln!("[window] player show failed: {error}");
     }
 }

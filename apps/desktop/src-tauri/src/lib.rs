@@ -9,6 +9,7 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例必须第一个注册，否则不生效（T-0009 §11）。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            println!("[single-instance] secondary launch, showing player");
             windows::show_player(app);
         }))
         .plugin(tauri_plugin_autostart::init(
