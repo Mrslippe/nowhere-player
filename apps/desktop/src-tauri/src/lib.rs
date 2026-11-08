@@ -37,6 +37,7 @@ pub fn run() {
             ipc::queue_clear,
             ipc::queue_jump,
             command_exec::cmd_exec,
+            command_exec::cmd_complete,
         ])
         .setup(|app| {
             // actor 线程在此启动；`Player` 由线程内部惰性创建。

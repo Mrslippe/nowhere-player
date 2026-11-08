@@ -15,7 +15,7 @@
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use np_core::command::{parse, registry};
+use np_core::command::{Completion, complete, parse, registry};
 use np_core::{
     Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
     PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, Span,
@@ -829,6 +829,30 @@ fn emit_block(app: &AppHandle, block: &Block) {
     }
 }
 
+/// `cmd.complete` 的纯逻辑：算候选，动态候选按需取一次播放器快照。
+///
+/// 快照失败（`E_BUSY` 等）只让动态候选降级为空列表，命令名 / 子命令 / 枚举值
+/// 照常返回——补全不能被播放器状态卡住（T-0020 §6.1、§11）。
+/// `cursor` 与返回的 `replaceStart` / `replaceEnd` 都是**字符偏移**。
+pub(crate) fn complete_for(api: &dyn PlayerApi, input: &str, cursor: usize) -> Completion {
+    complete(input, cursor, || {
+        api.snapshot().ok().and_then(|state| state.queue_length)
+    })
+}
+
+/// `cmd.complete`：一次补全请求，返回 `{ replaceStart, replaceEnd, items }`。
+///
+/// 区间单位是字符（码点），不是字节也不是 UTF-16；前端负责与
+/// `selectionStart`（UTF-16）互转。无候选时 `items` 为空，调用不报错。
+#[tauri::command(rename = "cmd.complete")]
+pub(crate) fn cmd_complete(
+    handle: State<'_, PlayerHandle>,
+    input: String,
+    cursor: usize,
+) -> Completion {
+    complete_for(&HandleApi::new(&handle), &input, cursor)
+}
+
 /// 手写 JSON 字符串转义；只用于 [`CmdExecReply`] 的 `blockId`。
 fn json_string(value: &str) -> String {
     use std::fmt::Write;
@@ -1593,6 +1617,68 @@ mod tests {
     #[test]
     fn cmd_exec_command_name_keeps_the_dot() {
         assert_eq!(__tauri_command_name_cmd_exec!(), "cmd.exec");
+    }
+
+    // ---- 补全（T-0020） ----
+
+    #[test]
+    fn cmd_complete_command_name_keeps_the_dot() {
+        assert_eq!(__tauri_command_name_cmd_complete!(), "cmd.complete");
+    }
+
+    #[test]
+    fn complete_maps_dynamic_queue_indices_and_polls_snapshot_once() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            queue_length: Some(3),
+            ..PlaybackState::default()
+        });
+
+        let completion = complete_for(&api, "play ", 5);
+
+        assert_eq!(api.calls(), vec![Call::Snapshot]);
+        assert_eq!((completion.replace_start, completion.replace_end), (5, 5));
+        let texts: Vec<&str> = completion
+            .items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect();
+        assert_eq!(texts, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn complete_degrades_to_empty_dynamic_candidates_when_snapshot_fails() {
+        let api = FakeApi::new().with_playback_error(CmdError::new("E_BUSY", "播放器线程不可用"));
+
+        let completion = complete_for(&api, "play ", 5);
+
+        // 降级：不报错、不阻塞，只返回空列表；区间仍然给出。
+        assert!(completion.items.is_empty());
+        assert_eq!((completion.replace_start, completion.replace_end), (5, 5));
+    }
+
+    #[test]
+    fn complete_with_unknown_queue_length_returns_no_dynamic_candidates() {
+        // FakeApi 默认 `queue_length: None`：快照成功但长度未知，同样降级为空。
+        let api = FakeApi::new();
+
+        let completion = complete_for(&api, "play ", 5);
+
+        assert!(completion.items.is_empty());
+    }
+
+    #[test]
+    fn complete_returns_static_candidates_without_polling_the_player() {
+        let api = FakeApi::new();
+
+        let completion = complete_for(&api, "pl", 2);
+
+        assert_eq!(api.calls(), Vec::new());
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].text, "play");
+        assert_eq!(
+            completion.items[0].kind,
+            np_core::command::CompletionKind::Command
+        );
     }
 
     #[test]
