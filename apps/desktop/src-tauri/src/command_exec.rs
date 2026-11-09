@@ -2333,6 +2333,31 @@ fn online_play_started_block(
     }
 }
 
+/// `search` 是否走“本地 + 在线”；`--local` 是唯一的例外。
+fn search_is_online(parsed: &Parsed) -> bool {
+    parsed.spec.name == "search" && !parsed.flags.contains_key("local")
+}
+
+/// 解析 `play <n>`，只命中在线结果；队列非空时永远返回 `None`（队列优先）。
+fn online_play_hit(
+    parsed: &Parsed,
+    queue_empty: bool,
+    hits: &[SearchHit],
+) -> Option<(usize, SourceTrack)> {
+    if parsed.spec.name != "play" || !queue_empty {
+        return None;
+    }
+    let value = parsed.positional.first()?;
+    if !is_unsigned_integer(value) {
+        return None;
+    }
+    let index = user_index(value).ok()?;
+    match hits.get(index)? {
+        SearchHit::Online(track) => Some((index, track.clone())),
+        SearchHit::Local(_) => None,
+    }
+}
+
 /// 在线命令的快速分派：命中时立即推 running 并起后台线程，返回回执。
 ///
 /// 非在线命令返回 `None`，交回原来的同步执行器。`search --local` 与队列优先
@@ -2349,7 +2374,7 @@ fn maybe_start_online(
         _ => return None,
     };
 
-    if parsed.spec.name == "search" && !parsed.flags.contains_key("local") {
+    if search_is_online(&parsed) {
         let keyword = parsed.positional.first()?.trim().to_owned();
         if keyword.is_empty() {
             return None;
@@ -2379,48 +2404,42 @@ fn maybe_start_online(
         });
     }
 
-    if parsed.spec.name == "play" {
-        let value = parsed.positional.first()?;
-        if !is_unsigned_integer(value) {
-            return None;
-        }
-        let index = user_index(value).ok()?;
-        // 队列优先：队列非空时保持原有语义，交给执行器。
-        if handle
+    if parsed.spec.name == "play"
+        && parsed
+            .positional
+            .first()
+            .is_some_and(|value| is_unsigned_integer(value))
+    {
+        let hits = library.search_hits();
+        let queue_empty = handle
             .queue_list()
             .ok()
-            .is_some_and(|queue| !queue.tracks.is_empty())
-        {
-            return None;
+            .is_none_or(|queue| queue.tracks.is_empty());
+        if let Some((index, track)) = online_play_hit(&parsed, queue_empty, &hits) {
+            let template = online_play_started_block(block_id, input, index, &track);
+            emit_block(app, &template);
+
+            let app = app.clone();
+            let online = library.online();
+            std::thread::spawn(move || {
+                let handle = app.state::<PlayerHandle>();
+                let emit_app = app.clone();
+                let emit = move |block: &Block| emit_block(&emit_app, block);
+                run_online_play(
+                    &track,
+                    index,
+                    &*online,
+                    &*handle,
+                    &emit,
+                    &template,
+                    &now_millis,
+                );
+            });
+            return Some(CmdExecReply {
+                block_id: block_id.to_owned(),
+                ok: true,
+            });
         }
-        let hits = library.search_hits();
-        let SearchHit::Online(track) = hits.get(index)?.clone() else {
-            return None;
-        };
-
-        let template = online_play_started_block(block_id, input, index, &track);
-        emit_block(app, &template);
-
-        let app = app.clone();
-        let online = library.online();
-        std::thread::spawn(move || {
-            let handle = app.state::<PlayerHandle>();
-            let emit_app = app.clone();
-            let emit = move |block: &Block| emit_block(&emit_app, block);
-            run_online_play(
-                &track,
-                index,
-                &*online,
-                &*handle,
-                &emit,
-                &template,
-                &now_millis,
-            );
-        });
-        return Some(CmdExecReply {
-            block_id: block_id.to_owned(),
-            ok: true,
-        });
     }
 
     None
@@ -4823,5 +4842,40 @@ mod tests {
         assert_eq!(error.status, BlockStatus::Error);
         assert_eq!(error_fields(error).0, "E_DECODE");
         assert_eq!(playback.paths().len(), 1);
+    }
+
+    #[test]
+    fn search_dispatch_only_goes_online_without_local_flag() {
+        let online = parse("search 晴天").expect("valid").expect("command");
+        let local = parse("search 晴天 --local")
+            .expect("valid")
+            .expect("command");
+
+        assert!(search_is_online(&online));
+        assert!(!search_is_online(&local));
+    }
+
+    #[test]
+    fn online_play_hit_requires_empty_queue_and_online_track() {
+        let hits = vec![
+            SearchHit::Local(track(1, "Local", "Artist", "/music/a.flac", 1_000)),
+            SearchHit::Online(online_track(SourceId::Bilibili, "BV1xx", "Bili")),
+        ];
+        let play_two = parse("play 2").expect("valid").expect("command");
+        let play_one = parse("play 1").expect("valid").expect("command");
+        let play_three = parse("play 3").expect("valid").expect("command");
+
+        let hit = online_play_hit(&play_two, true, &hits).expect("在线结果");
+        assert_eq!(hit.0, 1);
+        assert_eq!(hit.1.source_id, "BV1xx");
+        assert!(
+            online_play_hit(&play_one, true, &hits).is_none(),
+            "本地结果不截走"
+        );
+        assert!(
+            online_play_hit(&play_two, false, &hits).is_none(),
+            "队列优先"
+        );
+        assert!(online_play_hit(&play_three, true, &hits).is_none(), "越界");
     }
 }
