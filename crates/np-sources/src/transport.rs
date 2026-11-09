@@ -14,8 +14,11 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
                           (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 /// 连接超时（ADR-0004 §4）。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// 整体超时（ADR-0004 §4）。
+/// 整体超时（ADR-0004 §4），用于 API 请求。
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// 下载是整段文件（缓存上限 500MB），沿用 15s 会误杀大文件；
+/// 单独放宽到 10 分钟。API 请求仍走 `TOTAL_TIMEOUT`。
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 同一源两次请求的最小间隔（ADR-0004 §4）。
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
 /// 重试前的等待。
@@ -47,7 +50,7 @@ pub trait Transport: Send + Sync {
 /// 基于 `reqwest::blocking` 的生产传输层。
 ///
 /// - 无 cookie jar（不启用 reqwest 的 cookies feature）；
-/// - 连接 5s / 整体 15s 超时；
+/// - 连接 5s / API 整体 15s 超时；下载是整段文件，单独放宽到 10 分钟；
 /// - 请求节流 300ms，5xx 与连接错误重试 1 次；
 /// - 只在生产路径使用；测试注入夹具，不会构造它，也就不会拉起运行时。
 pub struct ReqwestTransport {
@@ -111,14 +114,23 @@ impl Transport for ReqwestTransport {
 
     fn get_to(&self, url: &str, headers: &[(&str, &str)], sink: &mut dyn Write) -> Result<u64> {
         self.throttle();
-        let mut request = self.client.get(url);
+        let mut request = self.client.get(url).timeout(DOWNLOAD_TIMEOUT);
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
         let mut response = request.send().map_err(map_reqwest_error)?;
         classify_status(response.status().as_u16())?;
-        std::io::copy(&mut response, sink)
-            .map_err(|error| SourceError::Download(format!("写入下载文件失败: {error}")))
+        let expected = response.content_length();
+        let copied = std::io::copy(&mut response, sink)
+            .map_err(|error| SourceError::Download(format!("写入下载文件失败: {error}")))?;
+        if let Some(expected) = expected
+            && copied != expected
+        {
+            return Err(SourceError::Download(format!(
+                "下载不完整: 收到 {copied} / {expected} 字节"
+            )));
+        }
+        Ok(copied)
     }
 }
 

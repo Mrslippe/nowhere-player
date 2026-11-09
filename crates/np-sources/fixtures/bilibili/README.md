@@ -12,10 +12,15 @@
   `title`（含 `<em class="keyword">` 高亮）/ `pic`（`//` 开头）/ `duration`。
 - `playurl`（`fnval=16`）：`dash.audio[]` 的 `baseUrl` / `backupUrl` /
   `bandwidth` / `mimeType`（实测均为 `audio/mp4`）/ `codecs`；URL 带
-  `deadline` 秒级时间戳。`fnval=0` 时没有 `dash`，`durl[0].url` 是 `.mp4`。
+  `deadline` 秒级时间戳。真实响应会同时给 camelCase 与 snake_case 两份
+  （`baseUrl` + `base_url`、`mimeType` + `mime_type`），解析时两者都收；
+  用 serde `alias` 会被判成 duplicate field。
+- `fnval=0` 时没有 `dash`，`durl[0].url` 是 `.mp4`；FLV 会被拒绝。
 - **CDN 防盗链（实测）**：不带任何头或只带 UA 均返回 **403**；带
   `Referer: https://www.bilibili.com` 返回 200；再加 `Origin` 与 `Range`
   返回 206。`HttpDownloader` 固定发送 `Referer` + `Origin`，**不要删**。
+- 下载请求单独放宽到 10 分钟（API 仍 15s）；缓存上限 500MB 意味着整段
+  文件可能很大，15s 会误杀正常下载。
 
 **合成部分**（未真实触发，按文档/形状构造，不要当作已验证）：
 
