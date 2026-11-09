@@ -16,6 +16,9 @@ use crate::download::{Downloader, is_present, partial_path};
 use crate::error::{Result, SourceError};
 use crate::model::{ResolvedStream, SourceId};
 
+/// 缓存文件可能出现的扩展名（与 [`extension_for_mime`] 对齐）。
+const CACHE_EXTENSIONS: [&str; 4] = ["m4a", "mp4", "mp3", "flac"];
+
 /// 缓存目录总大小上限（ADR-0004 §2）。
 pub const STREAM_CACHE_MAX_BYTES: u64 = 500 * 1024 * 1024;
 
@@ -68,17 +71,26 @@ impl StreamCache {
     ///
     /// `source_id` 只允许 ASCII 字母数字与 `-` / `_`，避免拼出目录穿越。
     pub fn path_for(&self, source: SourceId, source_id: &str, mime: &str) -> Result<PathBuf> {
-        if source_id.is_empty()
-            || !source_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        {
+        if !valid_source_id(source_id) {
             return Err(SourceError::Download(format!(
                 "非法的 source_id: {source_id:?}"
             )));
         }
         let extension = extension_for_mime(mime)?;
         Ok(self.dir.join(format!("{source}-{source_id}.{extension}")))
+    }
+
+    /// 按 `(source, source_id)` 查已缓存文件（不看 MIME，命中任意已知扩展名）。
+    ///
+    /// 只认大小 > 0 的普通文件；无效 `source_id` 返回 `None`，不报错。
+    pub fn lookup(&self, source: SourceId, source_id: &str) -> Option<PathBuf> {
+        if !valid_source_id(source_id) {
+            return None;
+        }
+        CACHE_EXTENSIONS.iter().find_map(|extension| {
+            let path = self.dir.join(format!("{source}-{source_id}.{extension}"));
+            is_present(&path).then_some(path)
+        })
     }
 
     /// 确保 `stream` 已下载到缓存，返回本地路径。
@@ -159,7 +171,14 @@ impl StreamCache {
     }
 }
 
-/// MIME → 缓存扩展名。只接受当前播放器确定能解的 MP4 家族。
+fn valid_source_id(source_id: &str) -> bool {
+    !source_id.is_empty()
+        && source_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// MIME → 缓存扩展名。只接受当前播放器确定能解的格式。
 pub(crate) fn extension_for_mime(mime: &str) -> Result<&'static str> {
     let base = mime
         .split(';')
@@ -436,6 +455,28 @@ mod tests {
             .path_for(SourceId::Bilibili, "BV1xx411c7mD", "audio/mp4")
             .expect("路径");
         assert!(dest.is_file(), "刚下载的文件不能被清理掉");
+    }
+
+    #[test]
+    fn lookup_finds_existing_cache_file_and_ignores_empty() {
+        let (_temp, cache, _transport) = build("cache-lookup", None);
+        fs::create_dir_all(cache.dir()).expect("create dir");
+        let path = cache.dir().join("netease-10001.mp3");
+        write_file(&path, b"audio", 1);
+
+        assert_eq!(cache.lookup(SourceId::Netease, "10001"), Some(path));
+        assert_eq!(cache.lookup(SourceId::Netease, "10002"), None);
+
+        let empty = cache.dir().join("netease-10003.mp3");
+        fs::write(&empty, b"").expect("write empty");
+        assert_eq!(cache.lookup(SourceId::Netease, "10003"), None);
+    }
+
+    #[test]
+    fn lookup_rejects_invalid_source_id() {
+        let (_temp, cache, _transport) = build("cache-lookup-invalid", None);
+        assert_eq!(cache.lookup(SourceId::Netease, "../x"), None);
+        assert_eq!(cache.lookup(SourceId::Netease, ""), None);
     }
 
     #[test]

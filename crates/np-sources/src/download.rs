@@ -32,6 +32,19 @@ pub enum DownloadOutcome {
 pub trait Downloader: Send + Sync {
     /// 把 `stream` 下载到 `dest`；父目录不存在时创建。
     fn download(&self, stream: &ResolvedStream, dest: &Path) -> Result<DownloadOutcome>;
+
+    /// 下载并报告**已写入的字节数**；默认实现忽略进度。
+    ///
+    /// 进度回调可能很频繁（每个 write chunk 一次），调用方负责按时间节流。
+    fn download_with_progress(
+        &self,
+        stream: &ResolvedStream,
+        dest: &Path,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<DownloadOutcome> {
+        let _ = progress;
+        self.download(stream, dest)
+    }
 }
 
 /// 通过注入的 [`Transport`] 下载。
@@ -51,6 +64,26 @@ impl HttpDownloader {
 
 impl Downloader for HttpDownloader {
     fn download(&self, stream: &ResolvedStream, dest: &Path) -> Result<DownloadOutcome> {
+        self.download_inner(stream, dest, &mut |_| {})
+    }
+
+    fn download_with_progress(
+        &self,
+        stream: &ResolvedStream,
+        dest: &Path,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<DownloadOutcome> {
+        self.download_inner(stream, dest, progress)
+    }
+}
+
+impl HttpDownloader {
+    fn download_inner(
+        &self,
+        stream: &ResolvedStream,
+        dest: &Path,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<DownloadOutcome> {
         if is_present(dest) {
             return Ok(DownloadOutcome::AlreadyPresent);
         }
@@ -62,7 +95,7 @@ impl Downloader for HttpDownloader {
         let part = partial_path(dest);
         let _ = fs::remove_file(&part);
 
-        let result = write_atomically(self.transport.as_ref(), stream, &part, dest);
+        let result = write_atomically(self.transport.as_ref(), stream, &part, dest, progress);
         if result.is_err() {
             // 失败时不能留下半截文件，否则下次会被当成缓存。
             let _ = fs::remove_file(&part);
@@ -76,6 +109,7 @@ fn write_atomically(
     stream: &ResolvedStream,
     part: &Path,
     dest: &Path,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<DownloadOutcome> {
     // 源自己声明下载所需的 header；下载器不认识任何具体的源。
     let headers: Vec<(&str, &str)> = stream
@@ -84,13 +118,43 @@ fn write_atomically(
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
     let mut file = fs::File::create(part).map_err(download_io)?;
-    let written = transport.get_to(&stream.url, &headers, &mut file)?;
-    file.flush().map_err(download_io)?;
+    let written = {
+        let mut writer = ProgressWriter {
+            inner: &mut file,
+            written: 0,
+            progress,
+        };
+        let written = transport.get_to(&stream.url, &headers, &mut writer)?;
+        writer.flush().map_err(download_io)?;
+        written
+    };
     let bytes = file.metadata().map(|meta| meta.len()).unwrap_or(written);
     drop(file);
 
     fs::rename(part, dest).map_err(download_io)?;
     Ok(DownloadOutcome::Downloaded { bytes })
+}
+
+/// 把写入字节数转给进度回调；不改变实际写入内容。
+struct ProgressWriter<'a> {
+    inner: &'a mut fs::File,
+    written: u64,
+    progress: &'a mut dyn FnMut(u64),
+}
+
+impl Write for ProgressWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        (self.progress)(self.written);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 pub(crate) fn is_present(path: &Path) -> bool {
@@ -216,6 +280,29 @@ mod tests {
                 "https://example.invalid/ref".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn progress_reports_written_bytes() {
+        let temp = TempDir::new("download-progress");
+        let (downloader, _transport) = downloader(b"aac audio bytes", None);
+        let dest = temp.path().join("streams/bilibili-BV1xx411c7mD.m4a");
+        let mut seen = Vec::new();
+
+        let outcome = downloader
+            .download_with_progress(&stream(Vec::new()), &dest, &mut |written| {
+                seen.push(written)
+            })
+            .expect("下载成功");
+
+        assert_eq!(
+            outcome,
+            DownloadOutcome::Downloaded {
+                bytes: b"aac audio bytes".len() as u64
+            }
+        );
+        assert_eq!(seen.last(), Some(&(b"aac audio bytes".len() as u64)));
+        assert!(!partial_path(&dest).exists());
     }
 
     #[test]
