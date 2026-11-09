@@ -1,0 +1,15 @@
+{
+  "data": [
+    {
+      "id": 10001,
+      "url": "http://example.invalid/netease/320.mp3",
+      "br": 320000,
+      "code": 200,
+      "expi": 1200,
+      "fee": 0,
+      "type": "mp3",
+      "size": 16679750
+    }
+  ],
+  "code": 200
+}

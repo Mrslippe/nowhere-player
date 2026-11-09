@@ -1,0 +1,88 @@
+{
+  "result": {
+    "songs": [
+      {
+        "id": 10001,
+        "name": "测试歌曲一",
+        "duration": 238698,
+        "artists": [
+          {
+            "id": 1,
+            "name": "测试歌手A"
+          },
+          {
+            "id": 2,
+            "name": "测试歌手B"
+          }
+        ],
+        "album": {
+          "id": 501,
+          "name": "测试专辑",
+          "picUrl": "http://p1.music.126.net/example-cover.jpg"
+        },
+        "fee": 0
+      },
+      {
+        "id": 10002,
+        "name": "测试歌曲二",
+        "dt": 200000,
+        "ar": [
+          {
+            "id": 3,
+            "name": "测试歌手C"
+          }
+        ],
+        "al": {
+          "id": 502,
+          "name": "新专辑",
+          "picUrl": "https://p1.music.126.net/example-cover-2.jpg"
+        },
+        "fee": 8
+      },
+      {
+        "id": 10003,
+        "name": "超长测试曲（应被过滤）",
+        "duration": 1800001,
+        "artists": [
+          {
+            "id": 4,
+            "name": "测试歌手D"
+          }
+        ],
+        "album": {
+          "id": 503,
+          "name": "长专辑",
+          "picUrl": ""
+        },
+        "fee": 0
+      },
+      {
+        "id": 10004,
+        "name": "恰好 30 分钟",
+        "duration": 1800000,
+        "artists": [
+          {
+            "id": 5,
+            "name": "测试歌手E"
+          }
+        ],
+        "album": {
+          "id": 504,
+          "name": "边界专辑"
+        },
+        "fee": 0
+      },
+      {
+        "id": 0,
+        "name": "非法 id（应被过滤）",
+        "duration": 1000,
+        "artists": [],
+        "album": {}
+      }
+    ],
+    "songCount": 5,
+    "hasMore": false
+  },
+  "code": 200,
+  "trp": {}
+}

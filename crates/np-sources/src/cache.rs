@@ -169,6 +169,8 @@ pub(crate) fn extension_for_mime(mime: &str) -> Result<&'static str> {
         .to_ascii_lowercase();
     match base.as_str() {
         "audio/mp4" => Ok("m4a"),
+        "audio/mpeg" => Ok("mp3"),
+        "audio/flac" => Ok("flac"),
         "video/mp4" => Ok("mp4"),
         _ => Err(SourceError::Unavailable(format!(
             "不支持的音频 MIME: {mime}"
@@ -335,7 +337,7 @@ mod tests {
         let (_temp, cache, transport) = build("cache-mime", None);
 
         let error = cache
-            .fetch(SourceId::Bilibili, "BV1xx411c7mD", &stream("audio/flac"))
+            .fetch(SourceId::Bilibili, "BV1xx411c7mD", &stream("audio/ogg"))
             .expect_err("不支持的 MIME 应报错");
 
         assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
@@ -352,6 +354,22 @@ mod tests {
 
         assert!(matches!(error, SourceError::Download(_)), "{error:?}");
         assert_eq!(transport.calls(), 0);
+    }
+
+    #[test]
+    fn mpeg_and_flac_get_their_extensions() {
+        let (_temp, cache, _transport) = build("cache-mp3", None);
+        let mpeg = cache
+            .path_for(SourceId::Netease, "10001", "audio/mpeg")
+            .expect("mp3 路径");
+        assert_eq!(
+            mpeg.file_name().and_then(|name| name.to_str()),
+            Some("netease-10001.mp3")
+        );
+        let flac = cache
+            .path_for(SourceId::Netease, "10001", "audio/flac")
+            .expect("flac 路径");
+        assert_eq!(flac.extension().and_then(|ext| ext.to_str()), Some("flac"));
     }
 
     #[test]
