@@ -2481,6 +2481,7 @@ dependencies = [
  "np-audio",
  "np-core",
  "np-library",
+ "np-sources",
  "serde",
  "tauri",
  "tauri-build",
