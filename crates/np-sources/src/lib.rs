@@ -6,6 +6,7 @@
 pub mod wbi;
 
 mod bilibili;
+mod cache;
 mod download;
 mod error;
 mod model;
@@ -15,6 +16,7 @@ mod transport;
 mod testing;
 
 pub use bilibili::BilibiliSource;
+pub use cache::{STREAM_CACHE_MAX_BYTES, STREAM_CACHE_TARGET_BYTES, StreamCache};
 pub use download::{DownloadOutcome, Downloader, HttpDownloader};
 pub use error::{Result, SourceError};
 pub use model::{ResolvedStream, SourceId, SourceTrack};

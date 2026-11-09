@@ -98,7 +98,7 @@ fn write_atomically(
     Ok(DownloadOutcome::Downloaded { bytes })
 }
 
-fn is_present(path: &Path) -> bool {
+pub(crate) fn is_present(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
 
