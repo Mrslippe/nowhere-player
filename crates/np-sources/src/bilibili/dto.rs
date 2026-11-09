@@ -216,3 +216,64 @@ pub(crate) fn normalize_cover(raw: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_minutes_seconds_and_hours() {
+        assert_eq!(parse_duration_ms("3:45"), Some(225_000));
+        assert_eq!(parse_duration_ms("962:9"), Some(57_729_000));
+        assert_eq!(parse_duration_ms("1:02:03"), Some(3_723_000));
+        assert_eq!(parse_duration_ms(" 0:07 "), Some(7_000));
+    }
+
+    #[test]
+    fn rejects_invalid_durations() {
+        for raw in ["", "LIVE", "1:xx", "1:2:3:4", "-1:00", "1:-2"] {
+            assert_eq!(parse_duration_ms(raw), None, "raw={raw}");
+        }
+    }
+
+    #[test]
+    fn clean_title_strips_highlight_and_decodes_entities() {
+        assert_eq!(
+            clean_title("测试<em class=\"keyword\">搜索</em> &amp; 标题"),
+            "测试搜索 & 标题"
+        );
+        assert_eq!(clean_title("A &#39;q&#39; &lt;b&gt;"), "A 'q' <b>");
+    }
+
+    #[test]
+    fn decode_entities_leaves_unknown_entities_alone() {
+        assert_eq!(decode_entities("a &unknown; b"), "a &unknown; b");
+        assert_eq!(decode_entities("a &amp;lt; b"), "a &lt; b");
+        assert_eq!(
+            decode_entities("100% & no semicolon"),
+            "100% & no semicolon"
+        );
+    }
+
+    #[test]
+    fn normalize_cover_handles_protocol_relative_urls() {
+        assert_eq!(
+            normalize_cover("//i0.hdslb.com/cover.jpg"),
+            Some("https://i0.hdslb.com/cover.jpg".to_string())
+        );
+        assert_eq!(
+            normalize_cover("https://i0.hdslb.com/cover.jpg"),
+            Some("https://i0.hdslb.com/cover.jpg".to_string())
+        );
+        assert_eq!(normalize_cover(""), None);
+        assert_eq!(normalize_cover("ftp://example.com/a.jpg"), None);
+    }
+
+    #[test]
+    fn bvid_validation_requires_prefix_and_length() {
+        assert!(is_bvid("BV1xx411c7mD"));
+        assert!(!is_bvid("BV1"));
+        assert!(!is_bvid("av1001"));
+        assert!(!is_bvid("BV1xx411c7m!"));
+    }
+}
