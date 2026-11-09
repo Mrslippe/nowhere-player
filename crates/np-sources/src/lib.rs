@@ -5,13 +5,15 @@
 
 pub mod wbi;
 
+mod bilibili;
 mod error;
 mod model;
 mod transport;
 
+pub use bilibili::BilibiliSource;
 pub use error::{Result, SourceError};
 pub use model::{ResolvedStream, SourceId, SourceTrack};
-pub use transport::Transport;
+pub use transport::{ReqwestTransport, Transport};
 
 /// 在线音源适配器（ADR-0004 §3）。
 pub trait AudioSource: Send + Sync {
