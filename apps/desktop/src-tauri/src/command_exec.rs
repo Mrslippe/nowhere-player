@@ -13,9 +13,11 @@
 //! - `mode` 一次下发完整 `{ repeat, shuffle }`，避免两次调用互相覆盖。
 //! - `clear` 是视图操作，由前端处理；执行器只留一条防御性错误。
 
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +30,11 @@ use np_library::{
     CoverCacheUsage, Database, LibraryError, ScanObserver, ScanReport, Scanner, Stats, Track,
     cover_cache_usage,
 };
-use tauri::{AppHandle, Emitter, State};
+use np_sources::{
+    AudioSource, BilibiliSource, Downloader, HttpDownloader, NeteaseSource, ReqwestTransport,
+    SourceError, SourceId, SourceRegistry, SourceTrack, StreamCache, Transport,
+};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::player_actor::PlayerHandle;
 
@@ -90,6 +96,15 @@ pub(crate) trait LibraryApi {
     fn remember_search(&self, tracks: Vec<Track>);
     /// 当前会话上下文里的搜索结果。
     fn search_results(&self) -> Vec<Track>;
+    /// 把最近一次统一搜索（本地 + 在线）存进会话上下文。
+    fn remember_hits(&self, _hits: Vec<SearchHit>) {}
+    /// 当前会话上下文里的统一搜索结果；默认把本地结果包成 `Local`。
+    fn search_hits(&self) -> Vec<SearchHit> {
+        self.search_results()
+            .into_iter()
+            .map(SearchHit::Local)
+            .collect()
+    }
 }
 
 /// 前台观察者：后台扫描通过它把进度与结果送回 UI 线程。
@@ -115,6 +130,95 @@ impl LibraryObserver for NoopLibraryObserver {
 
 /// 搜索结果上限（T-0023 §6.4）。
 pub(crate) const MAX_SEARCH_RESULTS: usize = 100;
+
+/// 每个在线源在 `search` 里最多取多少条；合并后再按总上限截断。
+pub(crate) const ONLINE_SEARCH_PER_SOURCE: usize = 20;
+
+/// 会话上下文里的一条搜索结果：本地曲目或在线曲目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SearchHit {
+    /// 本地库曲目。
+    Local(Track),
+    /// 在线源曲目。
+    Online(SourceTrack),
+}
+
+impl SearchHit {
+    fn title(&self) -> &str {
+        match self {
+            Self::Local(track) => &track.title,
+            Self::Online(track) => &track.title,
+        }
+    }
+
+    fn artist(&self) -> &str {
+        match self {
+            Self::Local(track) => &track.artist,
+            Self::Online(track) => &track.artist,
+        }
+    }
+
+    fn duration_ms(&self) -> u64 {
+        match self {
+            Self::Local(track) => u64::try_from(track.duration_ms).unwrap_or(0),
+            Self::Online(track) => track.duration_ms,
+        }
+    }
+
+    fn source_label(&self) -> &'static str {
+        match self {
+            Self::Local(_) => "本地",
+            Self::Online(track) => source_label(track.source),
+        }
+    }
+}
+
+/// 音源在终端里的中文短名。
+fn source_label(source: SourceId) -> &'static str {
+    match source {
+        SourceId::Bilibili => "B站",
+        SourceId::Netease => "网易云",
+        SourceId::Ytdlp => "yt-dlp",
+    }
+}
+
+/// 跨源搜索的合并结果。
+#[derive(Debug)]
+pub(crate) struct OnlineSearch {
+    /// 在线源返回的曲目（按注册顺序）。
+    pub(crate) tracks: Vec<SourceTrack>,
+    /// 是否所有在线源都失败（用于 hint）。
+    pub(crate) all_failed: bool,
+}
+
+/// 已落盘的在线曲目。
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedTrack {
+    /// 本地缓存路径。
+    pub(crate) path: PathBuf,
+    /// 文件字节数。
+    pub(crate) bytes: u64,
+    /// 是否命中已有缓存（没有 resolve / 下载）。
+    pub(crate) cached: bool,
+}
+
+/// 命令层依赖的在线音源能力；生产实现是 [`OnlineService`]，单测用假实现。
+pub(crate) trait OnlineApi: Send + Sync {
+    /// 串行搜索所有在线源；单源失败在实现内隔离。
+    fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError>;
+    /// resolve → 下载/缓存；进度按已写字节数回调。
+    fn prepare(
+        &self,
+        track: &SourceTrack,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<PreparedTrack, CmdError>;
+}
+
+/// 后台播放线程需要用到的播放器能力；`PlayerHandle` 实现它。
+pub(crate) trait PlaybackTarget: Send + Sync {
+    /// 播放本地路径。
+    fn play_path(&self, path: &str) -> Result<PlaybackState, CmdError>;
+}
 
 /// 扫描进度节流的默认间隔：2 Hz。
 pub(crate) const PROGRESS_INTERVAL_MS: u64 = 500;
@@ -441,17 +545,24 @@ impl Executor<'_> {
                 return Ok(queue_jump_outcome(index, &view));
             }
 
-            let results = self.library.search_results();
-            if results.is_empty() {
+            let hits = self.library.search_hits();
+            if hits.is_empty() {
                 return Err(CmdError::new("E_CMD_ARG", "播放队列为空，也没有搜索结果")
                     .with_hint("先用 search <关键词> 搜索，或 queue add <路径> 加入队列"));
             }
-            let track = results.get(index).ok_or_else(|| {
+            let hit = hits.get(index).ok_or_else(|| {
                 CmdError::new(
                     "E_CMD_ARG",
-                    format!("搜索结果只有 {} 条，没有第 {} 条", results.len(), index + 1),
+                    format!("搜索结果只有 {} 条，没有第 {} 条", hits.len(), index + 1),
                 )
             })?;
+            let SearchHit::Local(track) = hit else {
+                // 正常路径由 cmd_exec 的在线分派处理；这里只防御直接调用执行器的场景。
+                return Err(CmdError::new(
+                    "E_SRC_UNAVAILABLE",
+                    "该结果是云曲目，请重新执行 play <序号> 以走在线下载",
+                ));
+            };
 
             let state = self.api.play(Some(track.path.clone()))?;
             let mut spans = vec![
@@ -466,7 +577,7 @@ impl Executor<'_> {
                 outputs: vec![text_of(spans)],
                 footer: Some(format!(
                     "来源：搜索结果（共 {} 条） · {}",
-                    results.len(),
+                    hits.len(),
                     state_footer(&state)
                 )),
             });
@@ -1386,24 +1497,38 @@ struct LibraryInner {
     db_path: PathBuf,
     db: Mutex<Option<Database>>,
     scan: Mutex<Option<ScanJob>>,
-    search: Mutex<Vec<Track>>,
+    hits: Mutex<Vec<SearchHit>>,
 }
 
 /// 生产版 [`LibraryApi`]：持有库路径、主线程连接、扫描任务与会话搜索结果。
+///
+/// `online` 是进程内唯一的在线音源服务；`LibraryHandle` 是 setup 里已经
+/// managed 的状态，把它挂在这里可以避免新增 Tauri state 注册点。
 pub(crate) struct LibraryHandle {
     inner: Arc<LibraryInner>,
+    online: Arc<OnlineService>,
 }
 
 impl LibraryHandle {
     pub(crate) fn new(db_path: PathBuf) -> Self {
+        let cache_root = db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
         Self {
             inner: Arc::new(LibraryInner {
                 db_path,
                 db: Mutex::new(None),
                 scan: Mutex::new(None),
-                search: Mutex::new(Vec::new()),
+                hits: Mutex::new(Vec::new()),
             }),
+            online: Arc::new(OnlineService::new(cache_root)),
         }
+    }
+
+    /// 命令层持有的在线音源服务（与媒体库同生命周期）。
+    pub(crate) fn online(&self) -> Arc<dyn OnlineApi> {
+        Arc::clone(&self.online) as Arc<dyn OnlineApi>
     }
 
     /// 退出时打断后台扫描并等它提交已入库部分（复用 T-0013 的 shutdown 路径）。
@@ -1544,18 +1669,41 @@ impl LibraryApi for LibraryHandle {
     }
 
     fn remember_search(&self, tracks: Vec<Track>) {
-        let mut tracks = tracks;
-        tracks.truncate(MAX_SEARCH_RESULTS);
-        if let Ok(mut slot) = self.inner.search.lock() {
-            *slot = tracks;
+        let mut hits: Vec<SearchHit> = tracks.into_iter().map(SearchHit::Local).collect();
+        hits.truncate(MAX_SEARCH_RESULTS);
+        if let Ok(mut slot) = self.inner.hits.lock() {
+            *slot = hits;
         }
     }
 
     fn search_results(&self) -> Vec<Track> {
         self.inner
-            .search
+            .hits
             .lock()
-            .map(|tracks| tracks.clone())
+            .map(|hits| {
+                hits.iter()
+                    .filter_map(|hit| match hit {
+                        SearchHit::Local(track) => Some(track.clone()),
+                        SearchHit::Online(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn remember_hits(&self, hits: Vec<SearchHit>) {
+        let mut hits = hits;
+        hits.truncate(MAX_SEARCH_RESULTS);
+        if let Ok(mut slot) = self.inner.hits.lock() {
+            *slot = hits;
+        }
+    }
+
+    fn search_hits(&self) -> Vec<SearchHit> {
+        self.inner
+            .hits
+            .lock()
+            .map(|hits| hits.clone())
             .unwrap_or_default()
     }
 }
@@ -1620,6 +1768,429 @@ impl From<CmdError> for CmdErrorPayload {
             hint: error.hint,
         }
     }
+}
+
+type DedupKey = (SourceId, String);
+type DedupLock = Arc<Mutex<()>>;
+
+struct OnlineRuntime {
+    registry: SourceRegistry,
+    cache: StreamCache,
+}
+
+/// 生产版 [`OnlineApi`]：持有注册表、下载缓存与进程内去重锁。
+///
+/// 传输层在首次使用时惰性创建：`LibraryHandle::new` 是 infallible 的，
+/// 客户端构造失败会变成一次可读的 `E_SRC_UNAVAILABLE`，不影响本地命令。
+pub(crate) struct OnlineService {
+    cache_root: PathBuf,
+    runtime: OnceLock<Result<OnlineRuntime, String>>,
+    /// 单测注入的现成 runtime；生产恒为 `None`。
+    fixed: Option<OnlineRuntime>,
+    locks: Mutex<HashMap<DedupKey, DedupLock>>,
+}
+
+impl OnlineService {
+    pub(crate) fn new(cache_root: PathBuf) -> Self {
+        Self {
+            cache_root,
+            runtime: OnceLock::new(),
+            fixed: None,
+            locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts(registry: SourceRegistry, cache: StreamCache) -> Self {
+        Self {
+            cache_root: PathBuf::new(),
+            runtime: OnceLock::new(),
+            fixed: Some(OnlineRuntime { registry, cache }),
+            locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn runtime(&self) -> Result<&OnlineRuntime, CmdError> {
+        if let Some(fixed) = self.fixed.as_ref() {
+            return Ok(fixed);
+        }
+        self.runtime
+            .get_or_init(|| self.build())
+            .as_ref()
+            .map_err(|message| CmdError::new("E_SRC_UNAVAILABLE", message.clone()))
+    }
+
+    fn build(&self) -> Result<OnlineRuntime, String> {
+        let transport: Arc<dyn Transport> = Arc::new(
+            ReqwestTransport::new().map_err(|error| format!("无法创建网络客户端：{error}"))?,
+        );
+        let registry = SourceRegistry::new(vec![
+            Arc::new(BilibiliSource::new(Arc::clone(&transport))) as Arc<dyn AudioSource>,
+            Arc::new(NeteaseSource::new(Arc::clone(&transport))) as Arc<dyn AudioSource>,
+        ]);
+        let downloader: Arc<dyn Downloader> = Arc::new(HttpDownloader::new(transport));
+        let cache = StreamCache::new(self.cache_root.clone(), downloader);
+        Ok(OnlineRuntime { registry, cache })
+    }
+
+    fn lock_for(&self, key: &DedupKey) -> DedupLock {
+        self.locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+}
+
+impl OnlineApi for OnlineService {
+    fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError> {
+        let runtime = self.runtime()?;
+        let attempted = runtime.registry.sources().len();
+        let merged = runtime.registry.search_all(query, limit);
+        let all_failed = attempted > 0 && merged.failures.len() == attempted;
+        Ok(OnlineSearch {
+            tracks: merged.tracks,
+            all_failed,
+        })
+    }
+
+    fn prepare(
+        &self,
+        track: &SourceTrack,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<PreparedTrack, CmdError> {
+        let runtime = self.runtime()?;
+        let key = (track.source, track.source_id.clone());
+        let lock = self.lock_for(&key);
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // 命中缓存时连 resolve 都不做（网易云 URL 只有 20 分钟有效期）。
+        if let Some(path) = runtime.cache.lookup(track.source, &track.source_id) {
+            let bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            return Ok(PreparedTrack {
+                path,
+                bytes,
+                cached: true,
+            });
+        }
+
+        let source = runtime.registry.source(track.source).ok_or_else(|| {
+            CmdError::new("E_SRC_UNAVAILABLE", format!("音源未注册：{}", track.source))
+        })?;
+
+        for attempt in 0..2 {
+            let outcome = match source.resolve(track) {
+                Ok(stream) => runtime.cache.fetch_with_progress(
+                    track.source,
+                    &track.source_id,
+                    &stream,
+                    progress,
+                ),
+                Err(error) => Err(error),
+            };
+
+            match outcome {
+                Ok(path) => {
+                    let bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                    return Ok(PreparedTrack {
+                        path,
+                        bytes,
+                        cached: false,
+                    });
+                }
+                Err(error) if is_expired_url_error(&error) && attempt == 0 => continue,
+                Err(error) if is_expired_url_error(&error) => return Err(expired_url_error()),
+                Err(error) => return Err(source_error_to_cmd(error)),
+            }
+        }
+
+        Err(expired_url_error())
+    }
+}
+
+impl PlaybackTarget for PlayerHandle {
+    fn play_path(&self, path: &str) -> Result<PlaybackState, CmdError> {
+        self.play(Some(path.to_owned()))
+            .map_err(CmdError::from_player)
+    }
+}
+
+/// 离线 URL 过期（B 站 403 / 410）；部分错误被 transport 折成 `Unavailable`。
+fn is_expired_url_error(error: &SourceError) -> bool {
+    match error {
+        SourceError::Http(status) => matches!(status, 403 | 410),
+        SourceError::Unavailable(message) => {
+            message.contains("403")
+                || message.contains("410")
+                || message.contains("过期")
+                || message.contains("expired")
+        }
+        _ => false,
+    }
+}
+
+fn expired_url_error() -> CmdError {
+    CmdError::new("E_SRC_UNAVAILABLE", "链接已过期，请重新搜索")
+}
+
+/// 源错误 → 用户可读的命令错误。
+fn source_error_to_cmd(error: SourceError) -> CmdError {
+    match error {
+        SourceError::Download(_) => CmdError::new("E_SRC_DOWNLOAD", "下载失败（已清理临时文件）"),
+        SourceError::Network(_) => CmdError::new("E_NET_TIMEOUT", "网络超时，请检查网络或稍后重试"),
+        SourceError::Unavailable(message) => CmdError::new("E_SRC_UNAVAILABLE", message),
+        SourceError::Http(status) => {
+            CmdError::new("E_SRC_UNAVAILABLE", format!("音源返回 HTTP {status}"))
+        }
+        SourceError::Parse(message) => {
+            CmdError::new("E_SRC_UNAVAILABLE", format!("音源响应异常：{message}"))
+        }
+        SourceError::NotImplemented(message) => CmdError::new("E_SRC_UNAVAILABLE", message),
+    }
+}
+
+/// 合并搜索结果的终端输出：序号 1 基、跨源连续，来源列写明本地 / B站 / 网易云。
+fn build_search_outcome(keyword: &str, hits: &[SearchHit], all_online_failed: bool) -> Outcome {
+    if hits.is_empty() {
+        let mut outputs = vec![
+            text_of(vec![bold("没有找到"), dim(format!(" · {keyword}"))]),
+            Output::Table {
+                columns: search_columns(),
+                rows: Vec::new(),
+                selectable: true,
+            },
+        ];
+        outputs.push(hint_output(if all_online_failed {
+            "在线源暂时不可用"
+        } else {
+            "换个关键词试试"
+        }));
+        return Outcome {
+            outputs,
+            footer: None,
+        };
+    }
+
+    let rows = hits
+        .iter()
+        .enumerate()
+        .map(|(index, hit)| {
+            vec![
+                (index + 1).to_string(),
+                hit.source_label().to_owned(),
+                hit.title().to_owned(),
+                hit.artist().to_owned(),
+                format_hit_duration(hit.duration_ms()),
+            ]
+        })
+        .collect();
+
+    let mut outputs = vec![
+        text_of(vec![bold("搜索结果"), dim(format!(" · {keyword}"))]),
+        Output::Table {
+            columns: search_columns(),
+            rows,
+            selectable: true,
+        },
+    ];
+    if all_online_failed {
+        outputs.push(hint_output("在线源暂时不可用"));
+    }
+
+    Outcome {
+        outputs,
+        footer: Some(format!(
+            "{} 条结果 · 输入 play <序号> 播放（来源见「来源」列）",
+            hits.len()
+        )),
+    }
+}
+
+fn search_columns() -> Vec<String> {
+    ["序号", "来源", "标题", "艺人", "时长"]
+        .iter()
+        .map(|column| (*column).to_owned())
+        .collect()
+}
+
+fn hint_output(text: &str) -> Output {
+    Output::Hint {
+        text: text.to_owned(),
+        suggestion: None,
+    }
+}
+
+fn format_hit_duration(duration_ms: u64) -> String {
+    if duration_ms == 0 {
+        "--:--".to_owned()
+    } else {
+        format_position(duration_ms)
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn finish_block(
+    template: &Block,
+    status: BlockStatus,
+    outputs: Vec<Output>,
+    footer: Option<String>,
+    clock: &dyn Fn() -> u64,
+) -> Block {
+    Block {
+        id: template.id.clone(),
+        input: template.input.clone(),
+        started_at: template.started_at,
+        duration_ms: Some(clock().saturating_sub(template.started_at)),
+        status,
+        outputs,
+        footer,
+        schema_version: SCHEMA_VERSION,
+    }
+}
+
+/// 后台执行 `search`：本地库 + 在线源，合并后写入会话上下文并推最终块。
+pub(crate) fn run_online_search(
+    keyword: &str,
+    limit: usize,
+    online: &dyn OnlineApi,
+    library: &dyn LibraryApi,
+    emit: &dyn Fn(&Block),
+    template: &Block,
+    clock: &dyn Fn() -> u64,
+) {
+    let local = match library.search(keyword, limit) {
+        Ok(tracks) => tracks,
+        Err(error) => {
+            emit(&finish_block(
+                template,
+                BlockStatus::Error,
+                vec![error.to_output()],
+                None,
+                clock,
+            ));
+            return;
+        }
+    };
+
+    let (online_tracks, all_failed) = match online.search_all(keyword, ONLINE_SEARCH_PER_SOURCE) {
+        Ok(result) => (result.tracks, result.all_failed),
+        // 在线客户端初始化失败也不能吞掉本地结果。
+        Err(_) => (Vec::new(), true),
+    };
+
+    let mut hits: Vec<SearchHit> = local.into_iter().map(SearchHit::Local).collect();
+    hits.extend(online_tracks.into_iter().map(SearchHit::Online));
+    hits.truncate(limit);
+    library.remember_hits(hits.clone());
+
+    let outcome = build_search_outcome(keyword, &hits, all_failed);
+    emit(&finish_block(
+        template,
+        BlockStatus::Done,
+        outcome.outputs,
+        outcome.footer,
+        clock,
+    ));
+}
+
+/// 后台执行 `play <在线序号>`：resolve → 下载（进度按时间节流）→ 播放本地路径。
+pub(crate) fn run_online_play(
+    track: &SourceTrack,
+    index: usize,
+    online: &dyn OnlineApi,
+    playback: &dyn PlaybackTarget,
+    emit: &dyn Fn(&Block),
+    template: &Block,
+    clock: &dyn Fn() -> u64,
+) {
+    let mut throttle = TimeThrottle::new(PROGRESS_INTERVAL_MS);
+    let mut progress = |written: u64| {
+        if !throttle.allow(clock()) {
+            return;
+        }
+        let mut block = template.clone();
+        block.status = BlockStatus::Running;
+        block.duration_ms = None;
+        block.outputs = vec![
+            text_of(vec![
+                bold("下载中"),
+                dim(format!(" · 搜索结果第 {} 首", index + 1)),
+                dim(format!(" · {}", track.title)),
+            ]),
+            Output::Progress {
+                label: format!("下载 {}", track.title),
+                current: written,
+                total: 0,
+                unit: "bytes".to_owned(),
+            },
+        ];
+        block.footer = Some(format!(
+            "来源：{} · 已下载 {}",
+            source_label(track.source),
+            format_bytes(written)
+        ));
+        emit(&block);
+    };
+
+    let prepared = match online.prepare(track, &mut progress) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            emit(&finish_block(
+                template,
+                BlockStatus::Error,
+                vec![error.to_output()],
+                None,
+                clock,
+            ));
+            return;
+        }
+    };
+
+    if let Err(error) = playback.play_path(&prepared.path.to_string_lossy()) {
+        emit(&finish_block(
+            template,
+            BlockStatus::Error,
+            vec![error.to_output()],
+            None,
+            clock,
+        ));
+        return;
+    }
+
+    let cache_state = if prepared.cached {
+        "命中缓存".to_owned()
+    } else {
+        format!("已缓存 {}", format_bytes(prepared.bytes))
+    };
+    let mut spans = vec![
+        bold("播放"),
+        plain(format!(" · 搜索结果第 {} 首", index + 1)),
+        dim(format!(" · {}", track.title)),
+    ];
+    if !track.artist.is_empty() {
+        spans.push(dim(format!(" · {}", track.artist)));
+    }
+
+    emit(&finish_block(
+        template,
+        BlockStatus::Done,
+        vec![text_of(spans)],
+        Some(format!(
+            "来源：{} · {cache_state}",
+            source_label(track.source)
+        )),
+        clock,
+    ));
 }
 
 /// 先于后台线程推给前端的 `running` 块（避免进度事件抢跑）。
@@ -1721,6 +2292,140 @@ impl PlayerApi for HandleApi<'_> {
     }
 }
 
+/// `search` 的 running 块：先让用户看到“搜索中”，在线请求结束后再覆盖。
+fn search_started_block(block_id: &str, input: &str, keyword: &str) -> Block {
+    Block {
+        id: block_id.to_owned(),
+        input: input.to_owned(),
+        started_at: now_millis(),
+        duration_ms: None,
+        status: BlockStatus::Running,
+        outputs: vec![text_of(vec![bold("搜索中"), dim(format!(" · {keyword}"))])],
+        footer: Some("本地结果与在线源串行搜索，请稍候".to_owned()),
+        schema_version: SCHEMA_VERSION,
+    }
+}
+
+/// `play <在线序号>` 的 running 块：resolve/下载都在后台，命令立即返回。
+fn online_play_started_block(
+    block_id: &str,
+    input: &str,
+    index: usize,
+    track: &SourceTrack,
+) -> Block {
+    Block {
+        id: block_id.to_owned(),
+        input: input.to_owned(),
+        started_at: now_millis(),
+        duration_ms: None,
+        status: BlockStatus::Running,
+        outputs: vec![text_of(vec![
+            bold("准备播放"),
+            plain(format!(" · 搜索结果第 {} 首", index + 1)),
+            dim(format!(
+                " · {} · {}",
+                source_label(track.source),
+                track.title
+            )),
+        ])],
+        footer: Some("正在解析地址并下载到本地缓存…".to_owned()),
+        schema_version: SCHEMA_VERSION,
+    }
+}
+
+/// 在线命令的快速分派：命中时立即推 running 并起后台线程，返回回执。
+///
+/// 非在线命令返回 `None`，交回原来的同步执行器。`search --local` 与队列优先
+/// 的 `play <n>` 都不会被这里截走。
+fn maybe_start_online(
+    app: &AppHandle,
+    handle: &PlayerHandle,
+    library: &LibraryHandle,
+    input: &str,
+    block_id: &str,
+) -> Option<CmdExecReply> {
+    let parsed = match parse(input) {
+        Ok(Some(parsed)) => parsed,
+        _ => return None,
+    };
+
+    if parsed.spec.name == "search" && !parsed.flags.contains_key("local") {
+        let keyword = parsed.positional.first()?.trim().to_owned();
+        if keyword.is_empty() {
+            return None;
+        }
+        let template = search_started_block(block_id, input, &keyword);
+        emit_block(app, &template);
+
+        let app = app.clone();
+        let online = library.online();
+        std::thread::spawn(move || {
+            let library = app.state::<LibraryHandle>();
+            let emit_app = app.clone();
+            let emit = move |block: &Block| emit_block(&emit_app, block);
+            run_online_search(
+                &keyword,
+                MAX_SEARCH_RESULTS,
+                &*online,
+                &*library,
+                &emit,
+                &template,
+                &now_millis,
+            );
+        });
+        return Some(CmdExecReply {
+            block_id: block_id.to_owned(),
+            ok: true,
+        });
+    }
+
+    if parsed.spec.name == "play" {
+        let value = parsed.positional.first()?;
+        if !is_unsigned_integer(value) {
+            return None;
+        }
+        let index = user_index(value).ok()?;
+        // 队列优先：队列非空时保持原有语义，交给执行器。
+        if handle
+            .queue_list()
+            .ok()
+            .is_some_and(|queue| !queue.tracks.is_empty())
+        {
+            return None;
+        }
+        let hits = library.search_hits();
+        let SearchHit::Online(track) = hits.get(index)?.clone() else {
+            return None;
+        };
+
+        let template = online_play_started_block(block_id, input, index, &track);
+        emit_block(app, &template);
+
+        let app = app.clone();
+        let online = library.online();
+        std::thread::spawn(move || {
+            let handle = app.state::<PlayerHandle>();
+            let emit_app = app.clone();
+            let emit = move |block: &Block| emit_block(&emit_app, block);
+            run_online_play(
+                &track,
+                index,
+                &*online,
+                &*handle,
+                &emit,
+                &template,
+                &now_millis,
+            );
+        });
+        return Some(CmdExecReply {
+            block_id: block_id.to_owned(),
+            ok: true,
+        });
+    }
+
+    None
+}
+
 /// `cmd.exec`：执行一条终端输入。
 ///
 /// 立即返回 `{ blockId, ok }`，输出经 `terminal:block` 事件推送：
@@ -1734,6 +2439,10 @@ pub(crate) fn cmd_exec(
     input: String,
     block_id: String,
 ) -> CmdExecReply {
+    if let Some(reply) = maybe_start_online(&app, &handle, &library, &input, &block_id) {
+        return reply;
+    }
+
     let api = HandleApi::new(&handle);
 
     // 后台扫描可能瞬间结束：先推 running，再启动线程，避免 done 抢在 running 前。
@@ -1801,9 +2510,12 @@ pub(crate) fn cmd_complete(
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
 
     use np_core::command::parse;
     use np_core::{PlaybackMode, PlaybackStatus, RepeatMode};
+    use np_sources::{DownloadOutcome, ResolvedStream};
 
     use super::*;
 
@@ -2080,7 +2792,7 @@ mod tests {
         stats: Stats,
         covers: CoverCacheUsage,
         busy: bool,
-        session: Vec<Track>,
+        session: Vec<SearchHit>,
         calls: Vec<LibraryCall>,
     }
 
@@ -2141,6 +2853,19 @@ mod tests {
         }
 
         fn session(&self) -> Vec<Track> {
+            self.state
+                .lock()
+                .expect("state mutex")
+                .session
+                .iter()
+                .filter_map(|hit| match hit {
+                    SearchHit::Local(track) => Some(track.clone()),
+                    SearchHit::Online(_) => None,
+                })
+                .collect()
+        }
+
+        fn hits(&self) -> Vec<SearchHit> {
             self.state.lock().expect("state mutex").session.clone()
         }
 
@@ -2200,10 +2925,28 @@ mod tests {
         }
 
         fn remember_search(&self, tracks: Vec<Track>) {
-            self.state.lock().expect("state mutex").session = tracks;
+            self.state.lock().expect("state mutex").session =
+                tracks.into_iter().map(SearchHit::Local).collect();
         }
 
         fn search_results(&self) -> Vec<Track> {
+            self.state
+                .lock()
+                .expect("state mutex")
+                .session
+                .iter()
+                .filter_map(|hit| match hit {
+                    SearchHit::Local(track) => Some(track.clone()),
+                    SearchHit::Online(_) => None,
+                })
+                .collect()
+        }
+
+        fn remember_hits(&self, hits: Vec<SearchHit>) {
+            self.state.lock().expect("state mutex").session = hits;
+        }
+
+        fn search_hits(&self) -> Vec<SearchHit> {
             self.state.lock().expect("state mutex").session.clone()
         }
     }
@@ -3317,5 +4060,768 @@ mod tests {
             }
             tauri::ipc::InvokeResponseBody::Raw(_) => panic!("expected a JSON body"),
         }
+    }
+
+    // ---- 在线音源：注册表 / 缓存 / 去重 / 错误映射（T-0038） ----
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = format!(
+                "np-command-{label}-{}-{}",
+                std::process::id(),
+                TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let path = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&path).expect("create test dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ResolvePlan {
+        Expired403,
+        Expired410,
+        Network,
+        Copyright,
+    }
+
+    impl ResolvePlan {
+        fn into_error(self) -> SourceError {
+            match self {
+                Self::Expired403 => SourceError::Http(403),
+                Self::Expired410 => SourceError::Http(410),
+                Self::Network => SourceError::Network("连接失败".to_string()),
+                Self::Copyright => SourceError::Unavailable(
+                    "该曲目在网易云不可播放（可能版权受限或需要会员）".to_string(),
+                ),
+            }
+        }
+    }
+
+    struct FakeOnlineSource {
+        id: SourceId,
+        resolves: AtomicUsize,
+        plans: Mutex<Vec<ResolvePlan>>,
+        stream: ResolvedStream,
+        delay: Duration,
+    }
+
+    impl FakeOnlineSource {
+        fn new(id: SourceId, plans: Vec<ResolvePlan>) -> Arc<Self> {
+            Arc::new(Self {
+                id,
+                resolves: AtomicUsize::new(0),
+                plans: Mutex::new(plans),
+                stream: ResolvedStream {
+                    url: "https://example.invalid/audio".to_string(),
+                    mime: "audio/mpeg".to_string(),
+                    expires_at: None,
+                    headers: Vec::new(),
+                },
+                delay: Duration::ZERO,
+            })
+        }
+
+        fn with_delay(self: &Arc<Self>, delay: Duration) -> Arc<Self> {
+            let mut cloned = FakeOnlineSource {
+                id: self.id,
+                resolves: AtomicUsize::new(0),
+                plans: Mutex::new(Vec::new()),
+                stream: self.stream.clone(),
+                delay,
+            };
+            cloned.plans = Mutex::new(
+                self.plans
+                    .lock()
+                    .expect("plans mutex")
+                    .iter()
+                    .copied()
+                    .collect(),
+            );
+            Arc::new(cloned)
+        }
+
+        fn resolves(&self) -> usize {
+            self.resolves.load(Ordering::SeqCst)
+        }
+    }
+
+    impl AudioSource for FakeOnlineSource {
+        fn id(&self) -> SourceId {
+            self.id
+        }
+
+        fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SourceTrack>, SourceError> {
+            Ok(Vec::new())
+        }
+
+        fn resolve(&self, _track: &SourceTrack) -> Result<ResolvedStream, SourceError> {
+            self.resolves.fetch_add(1, Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                std::thread::sleep(self.delay);
+            }
+            let mut plans = self.plans.lock().expect("plans mutex");
+            if plans.is_empty() {
+                return Ok(self.stream.clone());
+            }
+            Err(plans.remove(0).into_error())
+        }
+    }
+
+    struct FakeDownloader {
+        calls: AtomicUsize,
+        bytes: Vec<u8>,
+        fail: bool,
+        progress: Vec<u64>,
+    }
+
+    impl FakeDownloader {
+        fn new(bytes: &[u8], fail: bool, progress: Vec<u64>) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                bytes: bytes.to_vec(),
+                fail,
+                progress,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Downloader for FakeDownloader {
+        fn download(
+            &self,
+            stream: &ResolvedStream,
+            dest: &Path,
+        ) -> Result<DownloadOutcome, SourceError> {
+            self.download_with_progress(stream, dest, &mut |_| {})
+        }
+
+        fn download_with_progress(
+            &self,
+            _stream: &ResolvedStream,
+            dest: &Path,
+            progress: &mut dyn FnMut(u64),
+        ) -> Result<DownloadOutcome, SourceError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(SourceError::Download("模拟中断".to_string()));
+            }
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| SourceError::Download(error.to_string()))?;
+            }
+            fs::write(dest, &self.bytes)
+                .map_err(|error| SourceError::Download(error.to_string()))?;
+            for written in &self.progress {
+                progress(*written);
+            }
+            Ok(DownloadOutcome::Downloaded {
+                bytes: self.bytes.len() as u64,
+            })
+        }
+    }
+
+    fn online_track(source: SourceId, id: &str, title: &str) -> SourceTrack {
+        SourceTrack {
+            source,
+            source_id: id.to_string(),
+            title: title.to_string(),
+            artist: "在线艺人".to_string(),
+            duration_ms: 200_000,
+            album: None,
+            cover_url: None,
+        }
+    }
+
+    fn online_service(
+        source: Arc<FakeOnlineSource>,
+        downloader: Arc<FakeDownloader>,
+    ) -> (TestDir, OnlineService) {
+        let dir = TestDir::new("online");
+        let cache = StreamCache::with_limits(
+            dir.path(),
+            Arc::clone(&downloader) as Arc<dyn Downloader>,
+            10 * 1024 * 1024,
+            5 * 1024 * 1024,
+        );
+        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
+        (dir, OnlineService::from_parts(registry, cache))
+    }
+
+    #[test]
+    fn online_prepare_downloads_and_reports_progress() {
+        let source = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, vec![1, 2, 3]));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let track = online_track(SourceId::Netease, "10001", "Song");
+
+        let mut seen = Vec::new();
+        let prepared = service
+            .prepare(&track, &mut |written| seen.push(written))
+            .expect("下载成功");
+
+        assert!(!prepared.cached);
+        assert_eq!(prepared.bytes, 3);
+        assert_eq!(fs::read(&prepared.path).expect("读取缓存"), b"abc");
+        assert_eq!(seen, vec![1, 2, 3]);
+        assert_eq!(source.resolves(), 1);
+        assert_eq!(downloader.calls(), 1);
+    }
+
+    #[test]
+    fn online_prepare_hits_cache_without_resolve() {
+        let source = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let track = online_track(SourceId::Netease, "10001", "Song");
+        service.prepare(&track, &mut |_| {}).expect("首次下载");
+
+        let prepared = service.prepare(&track, &mut |_| {}).expect("命中缓存");
+
+        assert!(prepared.cached);
+        assert_eq!(prepared.bytes, 3);
+        assert_eq!(source.resolves(), 1, "命中缓存不应 resolve");
+        assert_eq!(downloader.calls(), 1, "命中缓存不应下载");
+    }
+
+    #[test]
+    fn online_prepare_retries_expired_url_once() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, vec![ResolvePlan::Expired403]);
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+
+        let prepared = service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video"),
+                &mut |_| {},
+            )
+            .expect("第二次 resolve 应成功");
+
+        assert!(!prepared.cached);
+        assert_eq!(source.resolves(), 2);
+    }
+
+    #[test]
+    fn online_prepare_gives_up_after_two_expired_urls() {
+        let source = FakeOnlineSource::new(
+            SourceId::Bilibili,
+            vec![ResolvePlan::Expired403, ResolvePlan::Expired410],
+        );
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+
+        let error = service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video"),
+                &mut |_| {},
+            )
+            .expect_err("两次过期应失败");
+
+        assert_eq!(error.code, "E_SRC_UNAVAILABLE");
+        assert_eq!(error.message, "链接已过期，请重新搜索");
+        assert_eq!(source.resolves(), 2);
+    }
+
+    #[test]
+    fn online_prepare_maps_copyright_to_human_message() {
+        let source = FakeOnlineSource::new(SourceId::Netease, vec![ResolvePlan::Copyright]);
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+
+        let error = service
+            .prepare(
+                &online_track(SourceId::Netease, "10002", "VIP"),
+                &mut |_| {},
+            )
+            .expect_err("版权受限");
+
+        assert_eq!(error.code, "E_SRC_UNAVAILABLE");
+        assert!(error.message.contains("网易云不可播放"));
+        assert!(error.message.contains("版权受限") || error.message.contains("会员"));
+    }
+
+    #[test]
+    fn online_prepare_maps_download_failure() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", true, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+
+        let error = service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video"),
+                &mut |_| {},
+            )
+            .expect_err("下载失败");
+
+        assert_eq!(error.code, "E_SRC_DOWNLOAD");
+        assert_eq!(error.message, "下载失败（已清理临时文件）");
+    }
+
+    #[test]
+    fn online_prepare_maps_network_error() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, vec![ResolvePlan::Network]);
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+
+        let error = service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video"),
+                &mut |_| {},
+            )
+            .expect_err("网络错误");
+
+        assert_eq!(error.code, "E_NET_TIMEOUT");
+        assert!(error.message.contains("网络超时"));
+    }
+
+    #[test]
+    fn online_prepare_dedups_concurrent_same_track() {
+        let source = FakeOnlineSource::new(SourceId::Netease, Vec::new())
+            .with_delay(Duration::from_millis(50));
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let service = Arc::new(service);
+        let track = online_track(SourceId::Netease, "10001", "Song");
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let service = Arc::clone(&service);
+                let track = track.clone();
+                std::thread::spawn(move || service.prepare(&track, &mut |_| {}))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread").expect("prepare");
+        }
+
+        assert_eq!(source.resolves(), 1, "同曲目并发只 resolve 一次");
+        assert_eq!(downloader.calls(), 1, "同曲目并发只下载一次");
+    }
+
+    #[test]
+    fn search_outcome_numbers_hits_across_sources() {
+        let local = track(1, "Local", "Artist", "/music/local.flac", 1_000);
+        let hits = vec![
+            SearchHit::Local(local),
+            SearchHit::Online(online_track(SourceId::Bilibili, "BV1xx", "Bili")),
+            SearchHit::Online(online_track(SourceId::Netease, "10001", "Net")),
+        ];
+
+        let outcome = build_search_outcome("测试", &hits, false);
+        let table = outcome
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Table { rows, .. } => Some(rows.clone()),
+                _ => None,
+            })
+            .expect("table");
+
+        assert_eq!(table.len(), 3);
+        assert_eq!(table[0][0], "1");
+        assert_eq!(table[0][1], "本地");
+        assert_eq!(table[1][0], "2");
+        assert_eq!(table[1][1], "B站");
+        assert_eq!(table[2][0], "3");
+        assert_eq!(table[2][1], "网易云");
+        assert!(
+            outcome
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("3 条结果"))
+        );
+    }
+
+    #[test]
+    fn search_outcome_all_online_failed_adds_hint() {
+        let hits = vec![SearchHit::Local(track(
+            1,
+            "Local",
+            "Artist",
+            "/music/local.flac",
+            1_000,
+        ))];
+
+        let outcome = build_search_outcome("测试", &hits, true);
+
+        assert!(outcome.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text == "在线源暂时不可用"
+        )));
+    }
+
+    #[test]
+    fn search_outcome_empty_is_an_empty_table_with_hint() {
+        let outcome = build_search_outcome("没有结果", &[], false);
+
+        let table = outcome
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Table { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .expect("empty table");
+        assert!(table.is_empty());
+        assert!(outcome.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text == "换个关键词试试"
+        )));
+    }
+
+    struct FakeOnline {
+        tracks: Vec<SourceTrack>,
+        all_failed: bool,
+    }
+
+    impl OnlineApi for FakeOnline {
+        fn search_all(&self, _query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
+            Ok(OnlineSearch {
+                tracks: self.tracks.clone(),
+                all_failed: self.all_failed,
+            })
+        }
+
+        fn prepare(
+            &self,
+            _track: &SourceTrack,
+            _progress: &mut dyn FnMut(u64),
+        ) -> Result<PreparedTrack, CmdError> {
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "测试未实现"))
+        }
+    }
+
+    fn running_template() -> Block {
+        Block {
+            id: "online-block".to_owned(),
+            input: "play 1".to_owned(),
+            started_at: 1_000,
+            duration_ms: None,
+            status: BlockStatus::Running,
+            outputs: Vec::new(),
+            footer: None,
+            schema_version: SCHEMA_VERSION,
+        }
+    }
+
+    #[test]
+    fn run_online_search_merges_local_and_online_hits() {
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Local",
+            "Artist",
+            "/music/local.flac",
+            1_000,
+        )]);
+        let online = FakeOnline {
+            tracks: vec![online_track(SourceId::Bilibili, "BV1xx", "Bili")],
+            all_failed: false,
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        let template = running_template();
+
+        run_online_search(
+            "测试",
+            MAX_SEARCH_RESULTS,
+            &online,
+            &library,
+            &emit,
+            &template,
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done block");
+        assert_eq!(done.status, BlockStatus::Done);
+        let rows = done
+            .outputs
+            .iter()
+            .find_map(|output| match output {
+                Output::Table { rows, .. } => Some(rows.clone()),
+                _ => None,
+            })
+            .expect("table");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][1], "本地");
+        assert_eq!(rows[1][1], "B站");
+        assert_eq!(library.hits().len(), 2);
+    }
+
+    struct FakePlayback {
+        paths: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl FakePlayback {
+        fn new() -> Self {
+            Self {
+                paths: Mutex::new(Vec::new()),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                paths: Mutex::new(Vec::new()),
+                fail: true,
+            }
+        }
+
+        fn paths(&self) -> Vec<String> {
+            self.paths.lock().expect("paths mutex").clone()
+        }
+    }
+
+    impl PlaybackTarget for FakePlayback {
+        fn play_path(&self, path: &str) -> Result<PlaybackState, CmdError> {
+            self.paths
+                .lock()
+                .expect("paths mutex")
+                .push(path.to_owned());
+            if self.fail {
+                return Err(CmdError::new("E_DECODE", "无法解码"));
+            }
+            Ok(PlaybackState::default())
+        }
+    }
+
+    #[test]
+    fn run_online_play_downloads_then_plays_with_footer() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let playback = FakePlayback::new();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        let template = running_template();
+
+        run_online_play(
+            &online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video"),
+            0,
+            &service,
+            &playback,
+            &emit,
+            &template,
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        assert_eq!(done.status, BlockStatus::Done);
+        assert!(
+            done.footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：B站") && footer.contains("已缓存"))
+        );
+        assert_eq!(playback.paths().len(), 1);
+    }
+
+    #[test]
+    fn run_online_play_cached_footer_says_hit() {
+        let source = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let track = online_track(SourceId::Netease, "10001", "Song");
+        service.prepare(&track, &mut |_| {}).expect("预热缓存");
+        let playback = FakePlayback::new();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_play(
+            &track,
+            0,
+            &service,
+            &playback,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        assert_eq!(done.status, BlockStatus::Done);
+        assert!(
+            done.footer.as_deref().is_some_and(
+                |footer| footer.contains("来源：网易云") && footer.contains("命中缓存")
+            )
+        );
+    }
+
+    #[test]
+    fn run_online_play_error_block_uses_mapped_code() {
+        let online = FakeOnline {
+            tracks: Vec::new(),
+            all_failed: false,
+        };
+        struct FailingOnline;
+        impl OnlineApi for FailingOnline {
+            fn search_all(&self, _query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
+                Ok(OnlineSearch {
+                    tracks: Vec::new(),
+                    all_failed: false,
+                })
+            }
+
+            fn prepare(
+                &self,
+                _track: &SourceTrack,
+                _progress: &mut dyn FnMut(u64),
+            ) -> Result<PreparedTrack, CmdError> {
+                Err(CmdError::new("E_SRC_UNAVAILABLE", "版权受限"))
+            }
+        }
+        let playback = FakePlayback::new();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_play(
+            &online_track(SourceId::Netease, "10002", "VIP"),
+            0,
+            &FailingOnline,
+            &playback,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let error = blocks.last().expect("error block");
+        assert_eq!(error.status, BlockStatus::Error);
+        assert_eq!(error_fields(error).0, "E_SRC_UNAVAILABLE");
+        assert!(playback.paths().is_empty());
+        let _ = online;
+    }
+
+    #[test]
+    fn run_online_play_progress_is_time_throttled() {
+        struct ProgressOnline {
+            clock: Arc<AtomicU64>,
+            values: Vec<(u64, u64)>,
+            path: PathBuf,
+        }
+        impl OnlineApi for ProgressOnline {
+            fn search_all(&self, _query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
+                Ok(OnlineSearch {
+                    tracks: Vec::new(),
+                    all_failed: false,
+                })
+            }
+
+            fn prepare(
+                &self,
+                _track: &SourceTrack,
+                progress: &mut dyn FnMut(u64),
+            ) -> Result<PreparedTrack, CmdError> {
+                for (at, written) in &self.values {
+                    self.clock.store(*at, Ordering::SeqCst);
+                    progress(*written);
+                }
+                Ok(PreparedTrack {
+                    path: self.path.clone(),
+                    bytes: 4,
+                    cached: false,
+                })
+            }
+        }
+
+        let clock = Arc::new(AtomicU64::new(1_000));
+        let dir = TestDir::new("progress");
+        let path = dir.path().join("audio.mp3");
+        fs::write(&path, b"abc").expect("write");
+        let online = ProgressOnline {
+            clock: Arc::clone(&clock),
+            values: vec![(1_000, 1), (1_200, 2), (1_600, 3), (2_200, 4)],
+            path,
+        };
+        let playback = FakePlayback::new();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        let clock_for_run = Arc::clone(&clock);
+
+        run_online_play(
+            &online_track(SourceId::Bilibili, "BV1xx", "Video"),
+            0,
+            &online,
+            &playback,
+            &emit,
+            &running_template(),
+            &move || clock_for_run.load(Ordering::SeqCst),
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let progress_blocks = blocks
+            .iter()
+            .filter(|block| {
+                block
+                    .outputs
+                    .iter()
+                    .any(|output| matches!(output, Output::Progress { .. }))
+            })
+            .count();
+        assert_eq!(progress_blocks, 3, "500ms 节流：1000/1600/2200 各一次");
+    }
+
+    #[test]
+    fn run_online_play_playback_failure_emits_error() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let playback = FakePlayback::failing();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_play(
+            &online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video"),
+            0,
+            &service,
+            &playback,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let error = blocks.last().expect("error block");
+        assert_eq!(error.status, BlockStatus::Error);
+        assert_eq!(error_fields(error).0, "E_DECODE");
+        assert_eq!(playback.paths().len(), 1);
     }
 }

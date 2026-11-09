@@ -104,6 +104,17 @@ impl StreamCache {
         source_id: &str,
         stream: &ResolvedStream,
     ) -> Result<PathBuf> {
+        self.fetch_with_progress(source, source_id, stream, &mut |_| {})
+    }
+
+    /// 同 [`StreamCache::fetch`]，但把下载字节数转给进度回调。
+    pub fn fetch_with_progress(
+        &self,
+        source: SourceId,
+        source_id: &str,
+        stream: &ResolvedStream,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<PathBuf> {
         let dest = self.path_for(source, source_id, &stream.mime)?;
 
         if is_present(&dest) {
@@ -113,7 +124,8 @@ impl StreamCache {
 
         fs::create_dir_all(&self.dir).map_err(cache_io)?;
         let _ = fs::remove_file(partial_path(&dest));
-        self.downloader.download(stream, &dest)?;
+        self.downloader
+            .download_with_progress(stream, &dest, progress)?;
         let _ = self.cleanup_except(Some(&dest));
         Ok(dest)
     }
@@ -477,6 +489,23 @@ mod tests {
         let (_temp, cache, _transport) = build("cache-lookup-invalid", None);
         assert_eq!(cache.lookup(SourceId::Netease, "../x"), None);
         assert_eq!(cache.lookup(SourceId::Netease, ""), None);
+    }
+
+    #[test]
+    fn fetch_forwards_download_progress() {
+        let (_temp, cache, _transport) = build("cache-progress", None);
+        let mut seen = Vec::new();
+
+        cache
+            .fetch_with_progress(
+                SourceId::Netease,
+                "10001",
+                &stream("audio/mpeg"),
+                &mut |written| seen.push(written),
+            )
+            .expect("下载成功");
+
+        assert_eq!(seen.last(), Some(&(b"audio".len() as u64)));
     }
 
     #[test]
