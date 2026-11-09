@@ -91,6 +91,18 @@ pub(crate) fn store(dir: &Path, key: &str, source: &[u8]) -> CoverOutcome {
     }
 }
 
+/// 编码并原子落盘一张远端封面，返回 16 位 `cover_key`；失败返回 `None`。
+///
+/// 只是给已有的 [`store`] 开一条 public 入口：key 仍由源字节内容哈希生成，
+/// 编码/缩放/原子写逻辑不复制。
+pub fn store_cover(dir: &Path, source: &[u8]) -> Option<String> {
+    let key = crate::metadata::cover_key(source);
+    match store(dir, &key, source) {
+        CoverOutcome::Written | CoverOutcome::Skipped => Some(key),
+        CoverOutcome::Failed => None,
+    }
+}
+
 /// 删除 `dir` 里不再被数据库引用的封面文件，返回删除数量。
 ///
 /// 只处理本模块会写出的两类名字：`<key>.jpg` 与 `<key>.tmp`（上次崩溃
@@ -214,7 +226,7 @@ mod tests {
 
     use image::{Rgb, RgbImage};
 
-    use super::{CoverCacheUsage, CoverOutcome, cover_cache_usage, store};
+    use super::{CoverCacheUsage, CoverOutcome, cover_cache_usage, store, store_cover};
     use crate::db::Database;
     use crate::metadata::ParsedTrack;
     use crate::repo;
@@ -449,5 +461,20 @@ mod tests {
 
         // 只认普通文件：符号链接既不计文件数，也不跟随读取目标字节。
         assert_eq!(cover_cache_usage(&covers), CoverCacheUsage::default());
+    }
+
+    #[test]
+    fn store_cover_returns_content_key_and_is_idempotent() {
+        let dir = TempDir::new("store-cover");
+        let source = jpeg_bytes(1024, 768);
+
+        let key = store_cover(dir.path(), &source).expect("store cover");
+        assert_eq!(key.len(), 16);
+        let target = dir.path().join(format!("{key}.jpg"));
+        assert!(target.is_file());
+        assert_eq!(read_dimensions(&target), (512, 384));
+
+        assert_eq!(store_cover(dir.path(), &source), Some(key));
+        assert_eq!(store_cover(dir.path(), b"not an image"), None);
     }
 }
