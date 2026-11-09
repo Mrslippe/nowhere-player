@@ -149,15 +149,20 @@ export function previewStateFromStatus(status: PlaybackStatus): PlayerState {
   }
 }
 
-/** 音量（0–1）→ 百分比文案；0 显示「静音」（T-0032 §6.3）。 */
+/**
+ * 音量（0–1）→ 10px 设备读数文案（T-0032 §6.3 / T-0033）。
+ *
+ * 用拉丁 `VOL` 而不是中文「音量」：10px 等宽下 `量` 的横画会糊成实心块。
+ * 0 显示 `VOL MUTE`；非法值沿用 0% 的防御性回退（加前缀）。
+ */
 export function formatVolume(volume: number): string {
   if (!Number.isFinite(volume)) {
-    return "0%";
+    return "VOL 0%";
   }
 
   const percent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
 
-  return percent === 0 ? "静音" : `${percent}%`;
+  return percent === 0 ? "VOL MUTE" : `VOL ${percent}%`;
 }
 
 /** 播放中是否允许拖动 / 键盘跳转。 */

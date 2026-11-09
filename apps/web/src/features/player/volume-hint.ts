@@ -15,7 +15,7 @@ export const VOLUME_HINT_MS = 1200;
 export const VOLUME_HINT_FADE_MS = 180;
 
 export type VolumeHintVisual = {
-  /** 展示文本：`42%` / `静音`。 */
+  /** 展示文本：`VOL 42%` / `VOL MUTE`。 */
   text: string;
   /** true = 正在淡出（由 CSS 过渡到透明）。 */
   fading: boolean;

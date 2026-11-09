@@ -227,22 +227,22 @@ describe("PlayerCard", () => {
 
   it("滚轮调音量后的提示只在传入时渲染", () => {
     expect(renderCard("playing")).not.toContain("np-player-card__volume");
-    expect(renderCard("playing", { volumeHint: "85%" })).toContain(
-      "音量 85%",
+    expect(renderCard("playing", { volumeHint: "VOL 85%" })).toContain(
+      "VOL 85%",
     );
   });
 
-  it("音量浮层：静音不带“音量”前缀，淡出由 data-fading 驱动", () => {
-    const quiet = renderCard("playing", { volumeHint: "静音" });
+  it("音量浮层：VOL 文案原样显示，淡出由 data-fading 驱动", () => {
+    const quiet = renderCard("playing", { volumeHint: "VOL MUTE" });
     expect(quiet).toContain("np-player-card__volume");
-    expect(quiet).toContain('title="静音"');
-    expect(quiet).not.toContain("音量 静音");
+    expect(quiet).toContain('title="VOL MUTE"');
+    expect(quiet).not.toContain("音量");
 
     const fading = renderCard("playing", {
-      volumeHint: "42%",
+      volumeHint: "VOL 42%",
       volumeHintFading: true,
     });
     expect(fading).toContain('data-fading="true"');
-    expect(fading).toContain("音量 42%");
+    expect(fading).toContain("VOL 42%");
   });
 });

@@ -151,13 +151,13 @@ describe("previewStateFromStatus", () => {
 });
 
 describe("formatVolume / isSeekable", () => {
-  it("音量百分比，0 显示静音", () => {
-    expect(formatVolume(0.8)).toBe("80%");
-    expect(formatVolume(1)).toBe("100%");
-    expect(formatVolume(2)).toBe("100%");
-    expect(formatVolume(0)).toBe("静音");
-    expect(formatVolume(-1)).toBe("静音");
-    expect(formatVolume(Number.NaN)).toBe("0%");
+  it("音量读数用 VOL 前缀，0 显示 VOL MUTE", () => {
+    expect(formatVolume(0.8)).toBe("VOL 80%");
+    expect(formatVolume(1)).toBe("VOL 100%");
+    expect(formatVolume(2)).toBe("VOL 100%");
+    expect(formatVolume(0)).toBe("VOL MUTE");
+    expect(formatVolume(-1)).toBe("VOL MUTE");
+    expect(formatVolume(Number.NaN)).toBe("VOL 0%");
   });
 
   it("有正时长才可拖动", () => {

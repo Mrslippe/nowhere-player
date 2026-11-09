@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createScanBridge } from "../../shared/scan-bridge";
 import { createCoverSource, isCoverKey } from "./cover-source";
 import type { CoverSourceDeps } from "./cover-source";
 
@@ -198,6 +199,43 @@ describe("coverSource 的 trackByPath 接线", () => {
     source.reset();
     await source.coverUrlForCoverKey(KEY);
     expect(calls).toHaveLength(3);
+  });
+
+  it("扫描完成：clearTrackCache 重查 path→Track，但保留 key→URL（不闪白）", async () => {
+    const { deps, calls } = fakeDeps(async (command) =>
+      command === "library.trackByPath" ? { coverKey: KEY } : COVER_PATH,
+    );
+    const source = createCoverSource(deps);
+    const receiver: { emit: (payload: unknown) => void } = { emit: () => {} };
+    const bridge = createScanBridge({
+      listen: async (next) => {
+        receiver.emit = next;
+
+        return () => {};
+      },
+    });
+    const revisions: number[] = [];
+
+    const off = bridge.subscribe((scanEpoch) => {
+      revisions.push(scanEpoch);
+      source.clearTrackCache();
+    });
+
+    await source.coverUrlForTrack("/music/a.wav");
+    expect(calls.map(([command]) => command)).toEqual([
+      "library.trackByPath",
+      "library.coverUrl",
+    ]);
+
+    receiver.emit({ scanEpoch: 1 });
+    expect(revisions).toEqual([1]);
+
+    await source.coverUrlForTrack("/music/a.wav");
+    expect(calls.filter(([command]) => command === "library.trackByPath")).toHaveLength(2);
+    // 同一 coverKey 的 URL 仍在缓存里，不再请求封面文件；这正是“不闪白”的保证。
+    expect(calls.filter(([command]) => command === "library.coverUrl")).toHaveLength(1);
+
+    off();
   });
 
   it("trackForPath 返回整条 Track，同一路径并发也只请求一次", async () => {

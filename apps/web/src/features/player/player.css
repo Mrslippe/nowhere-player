@@ -189,8 +189,6 @@
 
 /* ── 进度条 + 时间 ───────────────────────────────────── */
 .np-player-card__progress-row {
-  /* 音量浮层相对进度行定位（T-0032）：浮在进度条上方居中。 */
-  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -270,14 +268,14 @@
 }
 
 /*
- * 滚轮调音量后的短暂浮层（T-0032 §6.3）。
- * 相对进度行居中、浮在进度条上方：不遮封面与标题，也不拦截指针；
- * 半透明底用 color-mix 从 --bg-elev 派生（旧 WebView 回退到不透明底）。
+ * 滚轮调音量后的短暂设备读数（T-0032 §6.3 / T-0033）。
+ * 右上角、时间上方：不再压住副标题下沿；仍是 10px 等宽拉丁，1.2s 后淡出。
+ * 绝对定位相对卡片（T-0032 的 progress-row position:relative 已移除）。
  */
 .np-player-card__volume {
   position: absolute;
-  bottom: calc(100% + var(--sp-2));
-  left: 50%;
+  top: 6px;
+  right: 20px;
   z-index: 2;
   padding: 2px var(--sp-3);
   border: var(--np-border-control);
@@ -291,7 +289,6 @@
   font-variant-numeric: tabular-nums;
   line-height: var(--np-density-line-dense);
   white-space: nowrap;
-  transform: translateX(-50%);
   pointer-events: none;
   opacity: 1;
   transition: opacity var(--dur-fast) var(--ease-out);

@@ -8,7 +8,7 @@
  * `library.trackByPath` 与封面 URL 共用 `coverSource` 里按路径缓存的
  * Promise，因此切一首歌只发一次 `trackByPath`；失败也缓存为 `null`。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { coverSource } from "./cover-source";
 import { trackDisplay } from "./track-meta";
@@ -28,31 +28,41 @@ function fallbackMeta(trackId: string | null | undefined): TrackMeta {
 /** 路径为 `null`（idle / 未知）时返回空标题 + 占位艺人。 */
 export function useTrackMeta(
   trackId: string | null | undefined,
+  /** 缓存代次：扫描完成后递增，同曲目重查 Track（不闪回占位封面）。 */
+  revision = 0,
 ): TrackMeta {
   const [meta, setMeta] = useState<TrackMeta>(() => fallbackMeta(trackId));
+  const lastTrackRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
-    if (typeof trackId !== "string" || trackId.length === 0) {
+    const track = typeof trackId === "string" && trackId.length > 0 ? trackId : null;
+
+    if (!track) {
+      lastTrackRef.current = null;
       setMeta(fallbackMeta(null));
       return;
     }
 
     let disposed = false;
-    // 切歌先回到回退值，元数据到了再替换。
-    setMeta(fallbackMeta(trackId));
+    // 只有切歌才回到回退值；扫描触发的同曲目刷新保留旧封面，等新结果替换。
+    if (lastTrackRef.current !== track) {
+      setMeta(fallbackMeta(track));
+    }
+    lastTrackRef.current = track;
+
     void Promise.all([
-      coverSource.trackForPath(trackId),
-      coverSource.coverUrlForTrack(trackId),
-    ]).then(([track, coverSrc]) => {
+      coverSource.trackForPath(track),
+      coverSource.coverUrlForTrack(track),
+    ]).then(([record, coverSrc]) => {
       if (!disposed) {
-        setMeta({ ...trackDisplay(track, trackId), coverSrc });
+        setMeta({ ...trackDisplay(record, track), coverSrc });
       }
     });
 
     return () => {
       disposed = true;
     };
-  }, [trackId]);
+  }, [trackId, revision]);
 
   return meta;
 }

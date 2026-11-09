@@ -10,6 +10,7 @@ import {
 } from "./state";
 import type { PlayerState } from "./state";
 import { usePlayer } from "./use-player";
+import { useCoverRefresh } from "./use-cover-refresh";
 import { useTrackMeta } from "./use-track-meta";
 import "./player.css";
 
@@ -50,7 +51,12 @@ export function PlayerView() {
   // ended 时进度条归位（位置 0、按钮回到 ▶）。
   const livePositionMs = status === "ended" ? 0 : player.positionMs;
   // 播放状态只带文件路径；标题/艺人/专辑与封面都走 trackByPath（T-0026）。
-  const meta = useTrackMeta(live ? player.state.trackId : null);
+  // 扫描完成会清 path→Track 并递增 revision，当前曲目随之重查封面（T-0033）。
+  const coverRevision = useCoverRefresh();
+  const meta = useTrackMeta(
+    live ? player.state.trackId : null,
+    coverRevision,
+  );
 
   // 静态原型（?state=）不接命令，只有实时模式才注入控件回调。
   const handlers = live

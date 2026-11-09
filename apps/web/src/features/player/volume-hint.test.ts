@@ -68,11 +68,11 @@ describe("音量浮层计时（T-0032）", () => {
     expect(states.filter((state) => state === null)).toHaveLength(1);
   });
 
-  it("静音文案原样透传", () => {
+  it("VOL MUTE 文案原样透传", () => {
     const { states, controller } = setup();
 
-    controller.show("静音");
-    expect(states.at(-1)).toEqual({ text: "静音", fading: false });
+    controller.show("VOL MUTE");
+    expect(states.at(-1)).toEqual({ text: "VOL MUTE", fading: false });
   });
 
   it("dispose 取消全部计时，不再回调", () => {

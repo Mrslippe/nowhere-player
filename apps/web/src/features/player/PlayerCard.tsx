@@ -47,7 +47,7 @@ export type PlayerCardProps = {
   error?: PlayerErrorInfo | null;
   /** 一次性提示（如 `next` 返回 E_UNSUPPORTED），不阻塞操作。 */
   notice?: string | null;
-  /** 滚轮调音量后的短暂提示。 */
+  /** 滚轮调音量后的短暂提示（已由 formatVolume 格式化成 `VOL …`）。 */
   volumeHint?: string | null;
   /** 音量提示是否进入淡出阶段（T-0032）。 */
   volumeHintFading?: boolean;
@@ -268,9 +268,9 @@ export function PlayerCard({
               className="np-player-card__volume"
               role="status"
               data-fading={volumeHintFading ? "true" : undefined}
-              title={volumeHint === "静音" ? "静音" : `音量 ${volumeHint}`}
+              title={volumeHint}
             >
-              {volumeHint === "静音" ? "静音" : `音量 ${volumeHint}`}
+              {volumeHint}
             </span>
           ) : null}
         </div>

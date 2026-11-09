@@ -45,7 +45,12 @@ export type CoverSource = {
   coverUrlForCoverKey: (key: string | null | undefined) => Promise<string | null>;
   /** 路径 → URL，是上面两步的组合。 */
   coverUrlForTrack: (path: string | null | undefined) => Promise<string | null>;
-  /** 清空缓存（测试用）。 */
+  /**
+   * 只清 path → Track（扫描完成后用）。`coverKey → URL` 保留：
+   * 同一 key 仍在显示时不会因清缓存闪白。
+   */
+  clearTrackCache: () => void;
+  /** 清空全部缓存（测试用）。 */
   reset: () => void;
 };
 
@@ -138,6 +143,9 @@ export function createCoverSource(deps: CoverSourceDeps): CoverSource {
     coverKeyForTrack,
     coverUrlForCoverKey,
     coverUrlForTrack,
+    clearTrackCache: () => {
+      tracks.clear();
+    },
     reset: () => {
       tracks.clear();
       coverUrls.clear();
