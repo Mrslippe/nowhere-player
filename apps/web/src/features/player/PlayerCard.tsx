@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -22,6 +22,13 @@ const VOLUME_STEP = 0.05;
 /** 键盘方向键的跳转步长。 */
 const KEY_SEEK_STEP_MS = 5000;
 
+/*
+ * 切歌过渡用 layout effect：内容与动画属性必须在同一帧落地，
+ * 否则会先闪一帧新封面再从头淡入。SSR/单测没有 window，退回 useEffect。
+ */
+const useIsomorphicLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 /**
  * 真实封面是否可见：没有 URL、或**同一个** URL 曾加载失败时回退渐变。
  * 换成新 URL（换歌 / 重新扫描）时重新给图片一次机会。
@@ -38,6 +45,8 @@ export type PlayerCardProps = {
   artist: string;
   album: string;
   coverSeed: string;
+  /** 展示内容键：变化时封面/标题/艺人一起淡入（T-0041）。 */
+  trackKey?: string;
   /** 真实封面 URL；`null` / 未解析完成时显示确定性渐变（T-0025）。 */
   coverSrc?: string | null;
   durationMs: number;
@@ -70,6 +79,7 @@ export function PlayerCard({
   artist,
   album,
   coverSeed,
+  trackKey = "",
   coverSrc = null,
   durationMs,
   positionMs,
@@ -88,7 +98,27 @@ export function PlayerCard({
 }: PlayerCardProps) {
   const [seeking, setSeeking] = useState(false);
   const [failedCoverSrc, setFailedCoverSrc] = useState<string | null>(null);
+  const [trackAnim, setTrackAnim] = useState(0);
   const seekRectRef = useRef<{ left: number; width: number } | null>(null);
+  const previousTrackKey = useRef(trackKey);
+
+  /*
+   * 1/2 两个完全相同的 keyframes 交替，强制浏览器重新开始动画：
+   * 不需要计时器，也不会因为进度重渲染而重播。首次挂载不播。
+   */
+  useIsomorphicLayoutEffect(() => {
+    if (previousTrackKey.current === trackKey) {
+      return;
+    }
+
+    previousTrackKey.current = trackKey;
+
+    if (!trackKey) {
+      return;
+    }
+
+    setTrackAnim((value) => (value === 1 ? 2 : 1));
+  }, [trackKey]);
 
   const isIdle = state === "idle";
   const isLoading = state === "loading";
@@ -196,6 +226,7 @@ export function PlayerCard({
       data-state={state}
       data-controls={controlsVisible ? "visible" : "hidden"}
       data-seeking={isScrubbing ? "true" : "false"}
+      data-track-anim={trackAnim === 0 ? undefined : String(trackAnim)}
       /* deep：整卡（含封面/标题/空白）都可拖动；button 与滑块会自行拦截。 */
       data-tauri-drag-region="deep"
       aria-busy={isLoading || undefined}
@@ -288,6 +319,7 @@ export function PlayerCard({
         <IconButton
           aria-label={showPlay ? "播放" : "暂停"}
           size="sm"
+          className={`np-player-card__play ${showPlay ? "is-play" : "is-pause"}`}
           disabled={controlsDisabled}
           onClick={onToggle}
         >

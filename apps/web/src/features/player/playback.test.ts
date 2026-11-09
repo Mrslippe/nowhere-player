@@ -56,6 +56,16 @@ describe("extrapolatePosition（rAF 外推的核心）", () => {
     expect(extrapolatePosition(anchor, 60_000, DURATION, "error")).toBe(1000);
   });
 
+  it("60fps 连续外推每帧前进，不是 1Hz 跳格", () => {
+    const frames = Array.from({ length: 60 }, (_, index) =>
+      extrapolatePosition(anchor, 10_000 + index * 16.67, DURATION, "playing"),
+    );
+
+    expect(new Set(frames).size).toBeGreaterThan(50);
+    expect(frames[1] - frames[0]).toBeCloseTo(16.67, 1);
+    expect(frames[59] - frames[0]).toBeCloseTo(983.53, 1);
+  });
+
   it("时长未知时仍能外推，且不为负", () => {
     expect(extrapolatePosition(anchor, 10_250, null, "playing")).toBe(1250);
   });

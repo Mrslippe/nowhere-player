@@ -58,6 +58,20 @@ export function PlayerView() {
     coverRevision,
   );
 
+  /*
+   * T-0041：切歌过渡的触发键 = 实际展示的内容（标题/艺人/专辑/封面 URL），
+   * 不是 trackId。等新元数据/封面就绪后一次性换内容并淡入；同曲目扫描
+   * 刷新 coverSrc 时也走同一条过渡。
+   */
+  const displayKey = live
+    ? [meta.title, meta.artist, meta.album, meta.coverSrc ?? ""].join("\u0001")
+    : [
+        mock?.coverSeed ?? "",
+        mock?.title ?? "",
+        mock?.artist ?? "",
+        mock?.album ?? "",
+      ].join("\u0001");
+
   // 静态原型（?state=）不接命令，只有实时模式才注入控件回调。
   const handlers = live
     ? {
@@ -85,6 +99,7 @@ export function PlayerView() {
           title={live ? meta.title : mock?.title ?? ""}
           artist={live ? meta.artist : mock?.artist ?? ""}
           album={live ? meta.album : mock?.album ?? ""}
+          trackKey={displayKey}
           coverSeed={
             live ? coverSeedForTrack(player.state.trackId) : mock?.coverSeed ?? ""
           }

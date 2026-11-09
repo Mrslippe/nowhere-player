@@ -218,6 +218,12 @@ describe("PlayerCard", () => {
     ).toContain("--np-progress:0");
   });
 
+  it("播放/暂停键带图标过渡状态类", () => {
+    expect(renderCard("playing")).toContain("np-player-card__play is-pause");
+    expect(renderCard("paused")).toContain("np-player-card__play is-play");
+    expect(renderCard("idle")).toContain("np-player-card__play is-play");
+  });
+
   it("没有时长时热区不可聚焦、不可拖动", () => {
     const html = renderCard("idle", { durationMs: 0 });
 

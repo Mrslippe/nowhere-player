@@ -140,8 +140,8 @@
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity var(--dur-fast) var(--ease-out),
-    visibility 0s linear var(--dur-fast);
+    opacity var(--np-dur-fast) var(--np-ease-out),
+    visibility 0s linear var(--np-dur-fast);
 }
 
 .np-player-card:hover .np-player-card__controls,
@@ -150,7 +150,7 @@
   visibility: visible;
   pointer-events: auto;
   transition:
-    opacity var(--dur-fast) var(--ease-out),
+    opacity var(--np-dur-fast) var(--np-ease-out),
     visibility 0s linear 0s;
 }
 
@@ -291,7 +291,8 @@
   white-space: nowrap;
   pointer-events: none;
   opacity: 1;
-  transition: opacity var(--dur-fast) var(--ease-out);
+  transition: opacity var(--np-dur-fast) var(--np-ease-out);
+  animation: np-volume-in var(--np-dur-fast) var(--np-ease-out);
 }
 
 .np-player-card__volume[data-fading="true"] {
@@ -426,6 +427,7 @@
   clip-path: inset(0 calc(100% - var(--np-progress) * 100%) 0 0);
   content: "";
   pointer-events: none;
+  transition: clip-path var(--np-dur-progress) var(--np-ease-out);
 }
 
 [data-skin="phosphor"] .np-player-card .np-player-card__progress::after {
@@ -437,6 +439,7 @@
   background: var(--danger);
   content: "";
   pointer-events: none;
+  transition: left var(--np-dur-progress) var(--np-ease-out);
 }
 
 [data-skin="phosphor"] .np-player-card__time {
@@ -510,9 +513,105 @@
   display: none;
 }
 
+/* ── T-0041 动效：切歌 / 播放暂停 / 音量 ─────────────── */
+/*
+ * 切歌：封面、标题、艺人共用同一条 220ms 淡入（13.1/13.2），不做缩放。
+ * data-track-anim 在 1/2 间交替，让同名内容变化也能重启动画。
+ */
+.np-player-card[data-track-anim="1"] .np-player-card__cover,
+.np-player-card[data-track-anim="1"] .np-player-card__title,
+.np-player-card[data-track-anim="1"] .np-player-card__subtitle {
+  animation: np-track-fade-a var(--np-dur-mid) var(--np-ease-out) both;
+}
+
+.np-player-card[data-track-anim="2"] .np-player-card__cover,
+.np-player-card[data-track-anim="2"] .np-player-card__title,
+.np-player-card[data-track-anim="2"] .np-player-card__subtitle {
+  animation: np-track-fade-b var(--np-dur-mid) var(--np-ease-out) both;
+}
+
+/* 播放/暂停：图标交换，120ms 内 opacity + blur + scale（8.2）。 */
+.np-player-card__play.is-play .np-icon {
+  animation: np-play-icon-a var(--np-dur-fast) var(--np-ease-out);
+}
+
+.np-player-card__play.is-pause .np-icon {
+  animation: np-play-icon-b var(--np-dur-fast) var(--np-ease-out);
+}
+
+@keyframes np-track-fade-a {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes np-track-fade-b {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes np-play-icon-a {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+    transform: scale(0.9);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+}
+
+@keyframes np-play-icon-b {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+    transform: scale(0.9);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+}
+
+@keyframes np-volume-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
 /* 动效降级 ────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .np-player-card__controls {
+    transition: none;
+  }
+
+  .np-player-card[data-track-anim] .np-player-card__cover,
+  .np-player-card[data-track-anim] .np-player-card__title,
+  .np-player-card[data-track-anim] .np-player-card__subtitle,
+  .np-player-card__play .np-icon,
+  .np-player-card__volume {
+    animation: none;
+  }
+
+  .np-player-card__volume {
     transition: none;
   }
 }

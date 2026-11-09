@@ -2,8 +2,10 @@
  * 当前曲目的元数据（T-0026）：把 `PlaybackState.trackId`（本地绝对路径）
  * 解析成标题 / 艺人 / 专辑 + 封面 URL（T-0025 的封面链路）。
  *
- * 解析是异步的：拿到结果前先按“查不到 Track”同步渲染回退值
- * （文件名 / `本地文件` / 空专辑），切歌不会先闪成空白。
+ * 首帧先按“查不到 Track”的回退值渲染（文件名 / `本地文件` / 空专辑）。
+ * 切歌时**不立刻清回退值**：保留旧曲目的展示，等新 Track / 封面就绪后
+ * 一次性替换，配合 T-0041 的交叉淡入；无旧内容（如从 idle 起播）才用
+ * 回退值占位，避免整窗空白。
  *
  * `library.trackByPath` 与封面 URL 共用 `coverSource` 里按路径缓存的
  * Promise，因此切一首歌只发一次 `trackByPath`；失败也缓存为 `null`。
@@ -44,9 +46,12 @@ export function useTrackMeta(
     }
 
     let disposed = false;
-    // 只有切歌才回到回退值；扫描触发的同曲目刷新保留旧封面，等新结果替换。
+    // 没有可保留的旧内容（首次起播 / 从 idle 恢复）才先放文件名占位；
+    // 正常切歌保留旧曲目，等 T-0041 的淡化随新内容一起发生。
     if (lastTrackRef.current !== track) {
-      setMeta(fallbackMeta(track));
+      setMeta((current) =>
+        current.title.trim().length === 0 ? fallbackMeta(track) : current,
+      );
     }
     lastTrackRef.current = track;
 
