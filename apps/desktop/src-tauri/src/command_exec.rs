@@ -1527,11 +1527,17 @@ pub(crate) struct LibraryHandle {
 }
 
 impl LibraryHandle {
+    #[cfg(test)]
     pub(crate) fn new(db_path: PathBuf) -> Self {
         let cache_root = db_path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        Self::with_cache_root(db_path, cache_root)
+    }
+
+    /// 显式注入缓存根（生产用 `app_cache_dir()`，测试用临时目录）。
+    pub(crate) fn with_cache_root(db_path: PathBuf, cache_root: PathBuf) -> Self {
         let covers_dir = db_path
             .parent()
             .map(|parent| parent.join("covers"))
@@ -1554,6 +1560,7 @@ impl LibraryHandle {
 
     /// 退出时取消进行中的下载，并打断后台扫描、等它提交已入库部分。
     pub(crate) fn shutdown(&self) {
+        self.online.cancel_all();
         if let Ok(mut slot) = self.inner.scan.lock()
             && let Some(job) = slot.take()
         {
@@ -1830,6 +1837,8 @@ pub(crate) struct OnlineService {
     remote_meta: Mutex<HashMap<PathBuf, RemoteMeta>>,
     /// 仅用于测试断言“本地命中时没有查映射”。
     track_lookups: AtomicUsize,
+    /// 退出时置位；下载器每个 chunk 检查。
+    cancel: Arc<AtomicBool>,
 }
 
 impl OnlineService {
@@ -1843,6 +1852,7 @@ impl OnlineService {
             locks: Mutex::new(HashMap::new()),
             remote_meta: Mutex::new(HashMap::new()),
             track_lookups: AtomicUsize::new(0),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1867,6 +1877,7 @@ impl OnlineService {
             locks: Mutex::new(HashMap::new()),
             remote_meta: Mutex::new(HashMap::new()),
             track_lookups: AtomicUsize::new(0),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1924,6 +1935,9 @@ impl OnlineService {
 
     /// 取封面字节并交给 `np-library` 编码落盘；任何一步失败都只丢图。
     fn fetch_cover(&self, runtime: &OnlineRuntime, track: &SourceTrack) -> Option<String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return None;
+        }
         let url = track.cover_url.as_deref()?;
         let headers: &[(&str, &str)] = if track.source == SourceId::Bilibili {
             &[("Referer", "https://www.bilibili.com")]
@@ -2008,6 +2022,21 @@ impl OnlineService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .len()
+    }
+
+    /// 退出时置位；正在写的下载会在下一个 chunk 失败并清理 `.part`。
+    pub(crate) fn cancel_all(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn cache_root(&self) -> &Path {
+        &self.cache_root
     }
 
     #[cfg(test)]
@@ -5461,5 +5490,27 @@ mod tests {
         service.prepare(&track, &mut |_| {}).expect("下载");
 
         assert!(transport.calls()[0].1.is_empty());
+    }
+
+    #[test]
+    fn cache_root_is_injected_from_setup() {
+        let dir = TestDir::new("cache-root");
+        let cache_root = dir.path().join("system-cache");
+        let handle =
+            LibraryHandle::with_cache_root(dir.path().join("library.db"), cache_root.clone());
+
+        assert_eq!(handle.online.cache_root(), cache_root);
+    }
+
+    #[test]
+    fn shutdown_sets_cancel_flag_and_is_idempotent() {
+        let dir = TestDir::new("shutdown-cancel");
+        let handle = LibraryHandle::new(dir.path().join("library.db"));
+        assert!(!handle.online.is_cancelled());
+
+        handle.shutdown();
+        handle.shutdown();
+
+        assert!(handle.online.is_cancelled());
     }
 }

@@ -10,6 +10,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Result, SourceError};
 use crate::model::ResolvedStream;
@@ -53,12 +54,24 @@ pub trait Downloader: Send + Sync {
 /// 的假实现，因此下载逻辑可以完全离线测试。
 pub struct HttpDownloader {
     transport: Arc<dyn Transport>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl HttpDownloader {
     /// 用给定传输层构造。
     pub fn new(transport: Arc<dyn Transport>) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            cancel: None,
+        }
+    }
+
+    /// 带取消标志构造：下载循环每个 chunk 检查，退出时置位。
+    pub fn with_cancel(transport: Arc<dyn Transport>, cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            transport,
+            cancel: Some(cancel),
+        }
     }
 }
 
@@ -92,10 +105,25 @@ impl HttpDownloader {
             fs::create_dir_all(parent).map_err(download_io)?;
         }
 
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+        {
+            return Err(SourceError::Download("下载已取消".to_string()));
+        }
+
         let part = partial_path(dest);
         let _ = fs::remove_file(&part);
 
-        let result = write_atomically(self.transport.as_ref(), stream, &part, dest, progress);
+        let result = write_atomically(
+            self.transport.as_ref(),
+            stream,
+            &part,
+            dest,
+            progress,
+            self.cancel.as_deref(),
+        );
         if result.is_err() {
             // 失败时不能留下半截文件，否则下次会被当成缓存。
             let _ = fs::remove_file(&part);
@@ -110,6 +138,7 @@ fn write_atomically(
     part: &Path,
     dest: &Path,
     progress: &mut dyn FnMut(u64),
+    cancel: Option<&AtomicBool>,
 ) -> Result<DownloadOutcome> {
     // 源自己声明下载所需的 header；下载器不认识任何具体的源。
     let headers: Vec<(&str, &str)> = stream
@@ -123,6 +152,7 @@ fn write_atomically(
             inner: &mut file,
             written: 0,
             progress,
+            cancel,
         };
         let written = transport.get_to(&stream.url, &headers, &mut writer)?;
         writer.flush().map_err(download_io)?;
@@ -140,10 +170,20 @@ struct ProgressWriter<'a> {
     inner: &'a mut fs::File,
     written: u64,
     progress: &'a mut dyn FnMut(u64),
+    cancel: Option<&'a AtomicBool>,
 }
 
 impl Write for ProgressWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self
+            .cancel
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "下载已取消",
+            ));
+        }
         let written = self.inner.write(buf)?;
         self.written = self
             .written
@@ -280,6 +320,23 @@ mod tests {
                 "https://example.invalid/ref".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn cancelled_download_stops_before_writing() {
+        let temp = TempDir::new("download-cancel");
+        let transport = Arc::new(RecordingTransport::new(b"abc", None));
+        let cancel = Arc::new(AtomicBool::new(true));
+        let downloader = HttpDownloader::with_cancel(transport, cancel);
+        let dest = temp.path().join("streams/bilibili-BV1xx411c7mD.m4a");
+
+        let error = downloader
+            .download(&stream(Vec::new()), &dest)
+            .expect_err("已取消");
+
+        assert!(matches!(error, SourceError::Download(_)), "{error:?}");
+        assert!(!dest.exists());
+        assert!(!partial_path(&dest).exists());
     }
 
     #[test]

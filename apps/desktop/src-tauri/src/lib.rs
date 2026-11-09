@@ -54,7 +54,11 @@ pub fn run() {
             app.manage(player_actor::PlayerHandle::spawn(app.handle().clone())?);
             // 媒体库连接与扫描任务延迟到首次使用时打开；这里只记路径。
             let db_path = app.path().app_data_dir()?.join("library.db");
-            app.manage(command_exec::LibraryHandle::new(db_path));
+            // 在线音频缓存放系统缓存目录（不随备份同步）；旧 app_data/streams 会失效。
+            let cache_root = app.path().app_cache_dir()?;
+            app.manage(command_exec::LibraryHandle::with_cache_root(
+                db_path, cache_root,
+            ));
             let handle = app.handle();
             windows::create_player(handle)?;
             shortcut::register(handle);
