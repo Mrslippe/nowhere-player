@@ -2,6 +2,7 @@
 //!
 //! 测试注入假实现返回夹具；生产实现见 [`ReqwestTransport`]。
 
+use std::io::Write;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,6 +29,19 @@ const RETRY_BACKOFF: Duration = Duration::from_millis(500);
 pub trait Transport: Send + Sync {
     /// 请求 `url` 并返回响应体。
     fn get(&self, url: &str) -> Result<Vec<u8>>;
+
+    /// 带额外请求头把响应体写入 `sink`，返回写入的字节数。
+    ///
+    /// 默认实现调用 [`Transport::get`] 后整块写入（忽略 `headers`），
+    /// 让测试假实现保持简单；生产实现应流式写入，并把 `headers`
+    /// 真正发出去（B 站 CDN 缺 `Referer` 会 403）。
+    fn get_to(&self, url: &str, headers: &[(&str, &str)], sink: &mut dyn Write) -> Result<u64> {
+        let _ = headers;
+        let body = self.get(url)?;
+        sink.write_all(&body)
+            .map_err(|error| SourceError::Download(format!("写入下载文件失败: {error}")))?;
+        Ok(body.len() as u64)
+    }
 }
 
 /// 基于 `reqwest::blocking` 的生产传输层。
@@ -93,6 +107,18 @@ impl Transport for ReqwestTransport {
             }
             result => result,
         }
+    }
+
+    fn get_to(&self, url: &str, headers: &[(&str, &str)], sink: &mut dyn Write) -> Result<u64> {
+        self.throttle();
+        let mut request = self.client.get(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let mut response = request.send().map_err(map_reqwest_error)?;
+        classify_status(response.status().as_u16())?;
+        std::io::copy(&mut response, sink)
+            .map_err(|error| SourceError::Download(format!("写入下载文件失败: {error}")))
     }
 }
 
