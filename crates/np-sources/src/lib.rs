@@ -6,11 +6,16 @@
 pub mod wbi;
 
 mod bilibili;
+mod download;
 mod error;
 mod model;
 mod transport;
 
+#[cfg(test)]
+mod testing;
+
 pub use bilibili::BilibiliSource;
+pub use download::{DownloadOutcome, Downloader, HttpDownloader};
 pub use error::{Result, SourceError};
 pub use model::{ResolvedStream, SourceId, SourceTrack};
 pub use transport::{ReqwestTransport, Transport};
