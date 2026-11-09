@@ -170,7 +170,7 @@
   background: var(--accent);
   transform-origin: left center;
   transform: scaleX(var(--np-progress, 0));
-  transition: transform var(--dur-base) var(--ease-out);
+  transition: transform var(--np-dur-progress) var(--np-ease-out);
 }
 
 .np-progress[data-indeterminate="true"] .np-progress__indicator {

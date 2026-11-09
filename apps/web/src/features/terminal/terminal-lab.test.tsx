@@ -126,6 +126,34 @@ describe("TerminalLab 三种视图", () => {
     expect(html).toContain('data-window="terminal"');
     expect(html).toContain('data-testid="terminal-lab"');
   });
+
+  it("默认产品视图不渲染实验台：无视图/主题切换、评分面板与 pane 头", () => {
+    const html = renderToStaticMarkup(
+      <TerminalLab initialLab={false} initialBlocks={[]} persist={false} />,
+    );
+
+    expect(html).toContain('data-lab="false"');
+    expect(html).toContain("np-lab__status");
+    expect(html).toContain("本地库");
+    expect(html).not.toContain('aria-label="渲染视图"');
+    expect(html).not.toContain('aria-label="主题"');
+    expect(html).not.toContain("评分面板");
+    expect(html).not.toContain("导出 JSON");
+    expect(html).not.toContain("np-lab__pane-head");
+  });
+
+  it("?lab=1 / initialLab 打开实验台：切换、评分与 pane 头都在", () => {
+    const html = renderToStaticMarkup(
+      <TerminalLab initialLab initialVariant="both" initialBlocks={[]} persist={false} />,
+    );
+
+    expect(html).toContain('data-lab="true"');
+    expect(html).toContain('aria-label="渲染视图"');
+    expect(html).toContain('aria-label="主题"');
+    expect(html).toContain("评分面板");
+    expect(html).toContain("导出 JSON");
+    expect(html).toContain("np-lab__pane-head");
+  });
 });
 
 describe("首屏真实链路（T-0019）", () => {

@@ -6,6 +6,8 @@ import "./reset.css";
 import "./tokens.css";
 import "./themes.css";
 import "./typography.css";
+// 动效时长/缓动与 skin 无关；单独集中，组件只引用 --np-dur-* / --np-ease-*。
+import "./motion.css";
 // 结构层：先铺默认值（= plain），再由具体 skin 覆写；颜色始终留在 tokens/themes。
 import "./skin/base.css";
 import "./skin/plain.css";

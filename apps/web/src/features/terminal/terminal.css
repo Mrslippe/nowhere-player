@@ -49,6 +49,32 @@
   letter-spacing: 0.08em;
 }
 
+/* 顶栏状态：本地库曲目数（T-0041）；用 4px 点和真实计数，不做装饰。 */
+.np-lab__status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-right: var(--sp-1);
+  color: var(--fg-muted);
+  font-family: var(--np-font-mono);
+  font-size: var(--fs-10);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.np-lab__status-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: var(--np-radius-circle);
+  background: var(--fg-faint);
+}
+
+.np-lab__status[data-tone="ready"] .np-lab__status-dot {
+  background: var(--success);
+}
+
 .np-lab__group {
   display: inline-flex;
   align-items: center;

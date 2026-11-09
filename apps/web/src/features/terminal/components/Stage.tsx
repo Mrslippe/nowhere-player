@@ -21,6 +21,8 @@ function scrollRatio(element: HTMLElement): number {
 export interface TerminalStageProps {
   variant: LabVariant;
   blocks: Block[];
+  /** 实验台才显示 pane 头（A 结构化 / B xterm）；产品视图只有块流。 */
+  lab?: boolean;
 }
 
 /**
@@ -30,7 +32,7 @@ export interface TerminalStageProps {
  * both 模式下按滚动百分比同步（§6.4）：xterm 的滚动容器是内部 `.xterm-viewport`，
  * 从宿主 div 里查；查不到就静默降级为不同步。
  */
-export function TerminalStage({ variant, blocks }: TerminalStageProps) {
+export function TerminalStage({ variant, blocks, lab = true }: TerminalStageProps) {
   const stageRef = useRef<HTMLElement | null>(null);
   const blockScrollRef = useRef<HTMLDivElement | null>(null);
   const xtermWrapRef = useRef<HTMLDivElement | null>(null);
@@ -214,14 +216,16 @@ export function TerminalStage({ variant, blocks }: TerminalStageProps) {
       ref={stageRef}
       className="np-lab__stage"
       data-variant={variant}
-      aria-label="终端对比区域"
+      aria-label={lab ? "终端对比区域" : "终端输出"}
     >
       {variant !== "xterm" ? (
         <div className="np-lab__pane" data-pane="blocks" data-block-count={blocks.length}>
-          <div className="np-lab__pane-head">
-            <span className="np-lab__pane-key">A</span>
-            结构化
-          </div>
+          {lab ? (
+            <div className="np-lab__pane-head">
+              <span className="np-lab__pane-key">A</span>
+              结构化
+            </div>
+          ) : null}
           <div
             className="np-lab__scroll"
             ref={blockScrollRef}
@@ -235,10 +239,12 @@ export function TerminalStage({ variant, blocks }: TerminalStageProps) {
 
       {variant !== "blocks" ? (
         <div className="np-lab__pane" data-pane="xterm" data-block-count={blocks.length}>
-          <div className="np-lab__pane-head">
-            <span className="np-lab__pane-key">B</span>
-            xterm.js
-          </div>
+          {lab ? (
+            <div className="np-lab__pane-head">
+              <span className="np-lab__pane-key">B</span>
+              xterm.js
+            </div>
+          ) : null}
           <div className="np-lab__xterm-wrap" ref={xtermWrapRef}>
             <XtermSurface blocks={blocks} className="np-lab__xterm" />
           </div>

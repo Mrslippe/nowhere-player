@@ -38,7 +38,21 @@ describe("BlockItem", () => {
     }
   });
 
-  it("运行中显示 Spinner，不显示耗时与尾注", () => {
+  it("空 input（欢迎块）不渲染空命令行与状态点", () => {
+    const block: Block = {
+      ...demoBlock(),
+      input: "",
+      outputs: [],
+      footer: null,
+    };
+
+    const html = renderToStaticMarkup(<BlockItem block={block} />);
+
+    expect(html).not.toContain("np-blocks-item__input");
+    expect(html).not.toContain("np-blocks-item__status");
+  });
+
+  it("运行中显示 4px 状态点与运行中文案，不显示耗时与尾注", () => {
     const block: Block = {
       ...demoBlock(),
       status: "running",
@@ -50,8 +64,10 @@ describe("BlockItem", () => {
     const html = renderToStaticMarkup(<BlockItem block={block} />);
 
     expect(html).toContain('data-status="running"');
-    expect(html).toContain("np-spinner");
-    expect(html).toContain('aria-label="运行中"');
+    expect(html).toContain("np-blocks-item__status");
+    expect(html).toContain("np-blocks-item__status-dot");
+    expect(html).toContain("运行中");
+    expect(html).not.toContain("np-spinner");
     expect(html).not.toContain("1.8s");
     expect(html).not.toContain("np-blocks-item__footer");
   });

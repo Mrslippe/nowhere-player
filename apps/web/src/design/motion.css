@@ -1,0 +1,32 @@
+/*
+ * 动效 token（T-0041）。
+ *
+ * 只放时长与缓动，不放颜色 / 结构。两套 skin（plain / phosphor）共用；
+ * 组件只引用这些变量，不写 `transition: .2s` 之类的字面量。
+ *
+ * 取值依据 motion-ref：
+ * - 13-enter-exit / 13.2 Slide Up：300–500ms ease-out（网页语境）；桌面小窗取 220ms。
+ * - 08-icon / 8.2 Icon Swap、04-overlay / 4.5：桌面微交互 ≤160ms；取 120ms。
+ * - 01-loading / 1.4 Progress Bar：300ms ease（网页）；桌面取 200ms。
+ * - 10-state / 10.3、02-button-feedback：颜色/边框过渡；取 120ms。
+ *
+ * `prefers-reduced-motion: reduce` 时全部归 0ms（reset.css 另有全局兜底）。
+ */
+:root {
+  /* 微交互：图标交换、状态点、音量浮层、hover 反馈。 */
+  --np-dur-fast: 120ms;
+  /* 内容入场：新块、切歌封面/标题。 */
+  --np-dur-mid: 220ms;
+  /* 进度条数值变化（比内容入场稍慢，避免格子跳）。 */
+  --np-dur-progress: 200ms;
+  /* 统一缓动；与 tokens.css 的 --ease-out 同一曲线。 */
+  --np-ease-out: var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --np-dur-fast: 0ms;
+    --np-dur-mid: 0ms;
+    --np-dur-progress: 0ms;
+  }
+}

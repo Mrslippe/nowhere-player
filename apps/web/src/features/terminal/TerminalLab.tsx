@@ -21,6 +21,8 @@ import {
   type ScoreSide,
 } from "./components/scoring";
 import { TerminalStage } from "./components/Stage";
+import { parseLab } from "./components/lab";
+import { useLibraryStats } from "./components/use-library-stats";
 import {
   applyTheme,
   LAB_THEMES,
@@ -28,6 +30,7 @@ import {
   type LabTheme,
 } from "./components/theme";
 import {
+  DEFAULT_VARIANT,
   LAB_VARIANTS,
   parseVariant,
   VARIANT_LABELS,
@@ -50,6 +53,11 @@ function readParam(name: string): string | null {
   }
 
   return new URLSearchParams(window.location.search).get(name);
+}
+
+/** 完整 query，交给只读的 parseLab。 */
+function readSearch(): string | null {
+  return typeof window === "undefined" ? null : window.location.search;
 }
 
 /** 同步 URL（不刷新、不新增历史条目），便于截图与直链。 */
@@ -90,6 +98,8 @@ export interface TerminalLabProps {
   /** 测试/预览用：覆盖 URL 读取。 */
   initialVariant?: LabVariant;
   initialTheme?: LabTheme;
+  /** 测试/预览用：覆盖 ?lab=1；不传则按 URL（含兼容的 ?variant=）判断。 */
+  initialLab?: boolean;
   initialBlocks?: Block[];
   initialScores?: ComparisonScores;
   /** 关闭 URL 同步与 localStorage 持久化（测试用）。 */
@@ -108,10 +118,19 @@ export interface TerminalLabProps {
 export function TerminalLab({
   initialVariant,
   initialTheme,
+  initialLab,
   initialBlocks,
   initialScores,
   persist = true,
 }: TerminalLabProps) {
+  /*
+   * 产品视图默认只留块流；M0 对比实验台（视图/主题/评分/pane 头）
+   * 收进 ?lab=1。显式传 initialVariant 的测试/预览也算实验台；
+   * 旧 ?variant= 直链继续可用（parseLab 兼容）。
+   */
+  const lab = initialLab ?? (initialVariant !== undefined || parseLab(readSearch()));
+  const library = useLibraryStats();
+
   // mock 兜底只在浏览器生效；真实运行时 bridge 忽略 fallback。
   // `runMockCommand` 在 features/，由这里注入，`shared/` 不反向依赖（项目结构规范 §5）。
   const bridge = useMemo(
@@ -123,7 +142,9 @@ export function TerminalLab({
   );
 
   const [variant, setVariant] = useState<LabVariant>(
-    () => initialVariant ?? parseVariant(readParam("variant")),
+    () =>
+      initialVariant ??
+      (lab ? parseVariant(readParam("variant")) : DEFAULT_VARIANT),
   );
   const [theme, setTheme] = useState<LabTheme>(
     () => initialTheme ?? parseTheme(readParam("theme")),
@@ -190,10 +211,12 @@ export function TerminalLab({
     };
   }, []);
 
-  // 首屏从 ?theme= 进入时也要落到 <html data-theme>；切换时同步（不刷新）。
+  // 只有实验台才覆盖主题；产品视图沿用用户持久化 / 全局主题（T-0041）。
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+    if (lab) {
+      applyTheme(theme);
+    }
+  }, [theme, lab]);
 
   // 每次改分都落 localStorage（key: np.m0.compare），刷新后保留。
   useEffect(() => {
@@ -277,42 +300,64 @@ export function TerminalLab({
   };
 
   return (
-    <div className="np-lab" data-testid="terminal-lab" data-variant={variant}>
+    <div
+      className="np-lab"
+      data-testid="terminal-lab"
+      data-variant={variant}
+      data-lab={lab ? "true" : "false"}
+    >
       <header className="np-lab__topbar" data-tauri-drag-region="deep">
         <span className="np-lab__brand">
           Nowhere Player
           <span className="np-lab__brand-suffix">终端</span>
         </span>
 
-        <div className="np-lab__group" role="group" aria-label="渲染视图">
-          {LAB_VARIANTS.map((value) => (
-            <button
-              key={value}
-              type="button"
-              className="np-lab__chip"
-              data-variant={value}
-              aria-pressed={variant === value}
-              onClick={() => selectVariant(value)}
-            >
-              {VARIANT_LABELS[value]}
-            </button>
-          ))}
-        </div>
+        <span
+          className="np-lab__status"
+          data-tone={library.state === "ready" ? "ready" : "muted"}
+          title="本地库曲目数"
+        >
+          <i className="np-lab__status-dot" aria-hidden="true" />
+          {library.state === "loading"
+            ? "本地库…"
+            : library.state === "ready"
+              ? `本地 ${library.tracks ?? 0} 首`
+              : "本地库未连接"}
+        </span>
 
-        <div className="np-lab__group" role="group" aria-label="主题">
-          {LAB_THEMES.map((value) => (
-            <button
-              key={value}
-              type="button"
-              className="np-lab__chip"
-              data-theme={value}
-              aria-pressed={theme === value}
-              onClick={() => selectTheme(value)}
-            >
-              {value}
-            </button>
-          ))}
-        </div>
+        {lab ? (
+          <div className="np-lab__group" role="group" aria-label="渲染视图">
+            {LAB_VARIANTS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className="np-lab__chip"
+                data-variant={value}
+                aria-pressed={variant === value}
+                onClick={() => selectVariant(value)}
+              >
+                {VARIANT_LABELS[value]}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {lab ? (
+          <div className="np-lab__group" role="group" aria-label="主题">
+            {LAB_THEMES.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className="np-lab__chip"
+                data-theme={value}
+                aria-pressed={theme === value}
+                onClick={() => selectTheme(value)}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <span className="np-lab__spacer" />
 
@@ -323,7 +368,7 @@ export function TerminalLab({
         <WindowControls />
       </header>
 
-      <TerminalStage variant={variant} blocks={blocks} />
+      <TerminalStage variant={variant} blocks={blocks} lab={lab} />
 
       <CommandInput
         onSubmit={submit}
@@ -331,14 +376,16 @@ export function TerminalLab({
         persistHistory={persist}
       />
 
-      <ScorePanel
-        scores={scores}
-        onChange={changeScore}
-        onExport={exportScores}
-        collapsed={collapsed}
-        onToggle={() => setCollapsed((previous) => !previous)}
-        feedback={feedback}
-      />
+      {lab ? (
+        <ScorePanel
+          scores={scores}
+          onChange={changeScore}
+          onExport={exportScores}
+          collapsed={collapsed}
+          onToggle={() => setCollapsed((previous) => !previous)}
+          feedback={feedback}
+        />
+      ) : null}
     </div>
   );
 }

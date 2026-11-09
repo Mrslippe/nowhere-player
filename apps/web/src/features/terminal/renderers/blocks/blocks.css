@@ -22,6 +22,7 @@
   flex-direction: column;
   gap: var(--sp-2);
   min-width: 0;
+  animation: np-block-in var(--np-dur-mid) var(--np-ease-out) both;
 }
 
 .np-blocks-item__input {
@@ -29,17 +30,20 @@
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
+  padding-bottom: var(--sp-1);
+  border-bottom: var(--np-border-hairline);
 }
 
 .np-blocks-item__prompt {
   flex: none;
-  color: var(--fg-muted);
+  color: var(--accent);
   user-select: none;
 }
 
 .np-blocks-item__command {
   flex: 1 1 auto;
   min-width: 0;
+  color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -49,15 +53,38 @@
   flex: none;
   align-items: center;
   gap: var(--sp-1);
+  margin-left: auto;
   color: var(--fg-muted);
-  font-size: var(--fs-12);
+  font-size: var(--fs-10);
   font-variant-numeric: tabular-nums;
+  line-height: var(--np-density-line-dense);
 }
 
-.np-blocks-item[data-status="done"] .np-blocks-item__input,
-.np-blocks-item[data-status="error"] .np-blocks-item__input,
-.np-blocks-item[data-status="cancelled"] .np-blocks-item__input {
-  opacity: 0.55;
+.np-blocks-item__status-dot {
+  display: inline-block;
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: var(--np-radius-circle);
+  background: var(--fg-faint);
+  transition: background-color var(--np-dur-fast) var(--np-ease-out);
+}
+
+.np-blocks-item[data-status="running"] .np-blocks-item__status-dot,
+.np-blocks-item[data-status="pending"] .np-blocks-item__status-dot {
+  background: var(--accent);
+}
+
+.np-blocks-item[data-status="done"] .np-blocks-item__status-dot {
+  background: var(--success);
+}
+
+.np-blocks-item[data-status="error"] .np-blocks-item__status-dot {
+  background: var(--danger);
+}
+
+.np-blocks-item[data-status="cancelled"] .np-blocks-item__status-dot {
+  background: var(--fg-muted);
 }
 
 .np-blocks-item__outputs {
@@ -201,6 +228,7 @@
   gap: var(--sp-1);
   padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
   border-left: var(--np-border-error);
+  animation: np-error-border var(--np-dur-fast) var(--np-ease-out);
 }
 
 .np-blocks-error__head {
@@ -297,8 +325,45 @@
   }
 }
 
+/* ── 动效 ───────────────────────────────────────────── */
+/*
+ * 新块统一入场：6px 上移 + 淡入，220ms。motion-ref 13.2 的 20-30px
+ * 是网页卡片语境；22px 行高的终端块取 6px，避免“飞入”。不做逐条延迟。
+ */
+@keyframes np-block-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 错误块只从透明过渡到 danger 边框，不抖动（motion-ref 10-state）。 */
+@keyframes np-error-border {
+  from {
+    border-left-color: transparent;
+  }
+
+  to {
+    border-left-color: var(--danger);
+  }
+}
+
 /* ── 动效降级 ───────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
+  .np-blocks-item,
+  .np-blocks-error {
+    animation: none;
+  }
+
+  .np-blocks-item__status-dot {
+    transition: none;
+  }
+
   .np-blocks-table[data-selectable="true"] tbody tr {
     transition: none;
   }

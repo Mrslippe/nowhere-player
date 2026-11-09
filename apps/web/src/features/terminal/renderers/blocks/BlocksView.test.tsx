@@ -55,6 +55,6 @@ describe("BlocksView", () => {
     const html = renderToStaticMarkup(<BlocksView blocks={[block]} />);
 
     expect(html).toContain('data-status="pending"');
-    expect(html).toContain('aria-label="等待执行"');
+    expect(html).toContain("等待");
   });
 });

@@ -1,4 +1,3 @@
-import { Spinner } from "../../../../design";
 import type { Block, BlockStatus, Output } from "../../../../shared/terminal-model";
 import { normalizeOutput } from "../../../../shared/terminal-model.guard";
 import { ErrorOutput } from "./outputs/ErrorOutput";
@@ -71,6 +70,12 @@ export function BlockItem({ block }: BlockItemProps) {
   const status = normalizeStatus(block.status);
   const duration = formatDuration(block.durationMs);
   const running = status === "pending" || status === "running";
+  const statusText = running
+    ? status === "pending"
+      ? "等待"
+      : "运行中"
+    : duration ??
+      (status === "error" ? "失败" : status === "cancelled" ? "已取消" : "完成");
 
   return (
     <article
@@ -78,24 +83,21 @@ export function BlockItem({ block }: BlockItemProps) {
       data-status={status}
       data-block-id={block.id}
     >
-      <div className="np-blocks-item__input">
-        <span className="np-blocks-item__prompt" aria-hidden="true">
-          ›
-        </span>
-        <span className="np-blocks-item__command">{block.input}</span>
-        {running ? (
-          <span className="np-blocks-item__status">
-            <Spinner
-              size={12}
-              label={status === "running" ? "运行中" : "等待执行"}
-            />
+      {block.input.trim() ? (
+        <div className="np-blocks-item__input">
+          <span className="np-blocks-item__prompt" aria-hidden="true">
+            ›
           </span>
-        ) : duration ? (
-          <span className="np-blocks-item__status" title="耗时">
-            {duration}
+          <span className="np-blocks-item__command">{block.input}</span>
+          <span
+            className="np-blocks-item__status"
+            title={running ? "状态" : duration ? "耗时" : "状态"}
+          >
+            <i className="np-blocks-item__status-dot" aria-hidden="true" />
+            {statusText}
           </span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       <div className="np-blocks-item__outputs">
         {block.outputs.map((output, index) =>
