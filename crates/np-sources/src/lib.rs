@@ -3,6 +3,8 @@
 //! 边界见 ADR-0004：本 crate 只负责搜索与取流地址，不碰播放、不碰命令层。
 //! 所有网络访问都经过可注入的 [`Transport`]，因此测试可以完全离线。
 
+pub mod wbi;
+
 mod error;
 mod model;
 mod transport;
