@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 
 use crate::error::{Result, SourceError};
-use crate::model::{ResolvedStream, SourceId, SourceTrack};
+use crate::model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack};
 use crate::wbi;
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +112,7 @@ fn map_item(item: SearchItem) -> Option<SourceTrack> {
         return None;
     };
     let duration_ms = parse_duration_ms(item.duration.as_deref().unwrap_or_default())?;
-    if duration_ms == 0 {
+    if duration_ms == 0 || duration_ms > MAX_TRACK_DURATION_MS {
         return None;
     }
     let title = clean_title(item.title.as_deref().unwrap_or_default());
@@ -301,6 +301,18 @@ struct Durl {
     url: Option<String>,
 }
 
+/// B 站 CDN 防盗链：缺 `Referer` 直接 403（2026-11-09 实测：
+/// 无头/仅 UA 均 403，带 Referer 200）。
+const BILIBILI_REFERER: &str = "https://www.bilibili.com";
+const BILIBILI_ORIGIN: &str = "https://www.bilibili.com";
+
+fn bilibili_headers() -> Vec<(String, String)> {
+    vec![
+        ("Referer".to_string(), BILIBILI_REFERER.to_string()),
+        ("Origin".to_string(), BILIBILI_ORIGIN.to_string()),
+    ]
+}
+
 /// `view` 接口里 resolve 需要的字段。
 pub(crate) struct VideoInfo {
     pub(crate) bvid: String,
@@ -384,6 +396,7 @@ pub(crate) fn parse_playurl(body: &[u8]) -> Result<ResolvedStream> {
             expires_at: parse_deadline(&url),
             url,
             mime: "audio/mp4".to_string(),
+            headers: bilibili_headers(),
         });
     }
 
@@ -399,6 +412,7 @@ pub(crate) fn parse_playurl(body: &[u8]) -> Result<ResolvedStream> {
             expires_at: parse_deadline(&url),
             url,
             mime,
+            headers: bilibili_headers(),
         });
     }
 

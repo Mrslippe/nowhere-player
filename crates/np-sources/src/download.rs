@@ -15,17 +15,6 @@ use crate::error::{Result, SourceError};
 use crate::model::ResolvedStream;
 use crate::transport::Transport;
 
-/// B 站 CDN 的硬要求：缺 `Referer` 直接 403（2026-11-09 实测：
-/// 无头/仅 UA 均 403，带 `Referer` 200）。这是防盗链，不是"伪造 UA"；
-/// UA 仍由 [`crate::ReqwestTransport`] 固定为桌面 UA。
-pub(crate) const CDN_REFERER: &str = "https://www.bilibili.com";
-
-/// CDN 同时要求 `Origin`（与 `Referer` 同值）。
-pub(crate) const CDN_ORIGIN: &str = "https://www.bilibili.com";
-
-/// 下载音频时必须带上的请求头。**不要删**，见 [`CDN_REFERER`]。
-const CDN_HEADERS: &[(&str, &str)] = &[("Referer", CDN_REFERER), ("Origin", CDN_ORIGIN)];
-
 /// 一次下载的结局。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadOutcome {
@@ -73,7 +62,7 @@ impl Downloader for HttpDownloader {
         let part = partial_path(dest);
         let _ = fs::remove_file(&part);
 
-        let result = write_atomically(self.transport.as_ref(), &stream.url, &part, dest);
+        let result = write_atomically(self.transport.as_ref(), stream, &part, dest);
         if result.is_err() {
             // 失败时不能留下半截文件，否则下次会被当成缓存。
             let _ = fs::remove_file(&part);
@@ -84,12 +73,18 @@ impl Downloader for HttpDownloader {
 
 fn write_atomically(
     transport: &dyn Transport,
-    url: &str,
+    stream: &ResolvedStream,
     part: &Path,
     dest: &Path,
 ) -> Result<DownloadOutcome> {
+    // 源自己声明下载所需的 header；下载器不认识任何具体的源。
+    let headers: Vec<(&str, &str)> = stream
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
     let mut file = fs::File::create(part).map_err(download_io)?;
-    let written = transport.get_to(url, CDN_HEADERS, &mut file)?;
+    let written = transport.get_to(&stream.url, &headers, &mut file)?;
     file.flush().map_err(download_io)?;
     let bytes = file.metadata().map(|meta| meta.len()).unwrap_or(written);
     drop(file);
@@ -175,11 +170,12 @@ mod tests {
         }
     }
 
-    fn stream() -> ResolvedStream {
+    fn stream(headers: Vec<(String, String)>) -> ResolvedStream {
         ResolvedStream {
             url: "https://example.invalid/audio.m4a".to_string(),
             mime: "audio/mp4".to_string(),
             expires_at: None,
+            headers,
         }
     }
 
@@ -196,8 +192,12 @@ mod tests {
         let temp = TempDir::new("download-ok");
         let (downloader, transport) = downloader(b"aac audio bytes", None);
         let dest = temp.path().join("streams/bilibili-BV1xx411c7mD.m4a");
+        let stream = stream(vec![(
+            "Referer".to_string(),
+            "https://example.invalid/ref".to_string(),
+        )]);
 
-        let outcome = downloader.download(&stream(), &dest).expect("下载成功");
+        let outcome = downloader.download(&stream, &dest).expect("下载成功");
 
         assert_eq!(
             outcome,
@@ -208,18 +208,13 @@ mod tests {
         assert_eq!(fs::read(&dest).expect("读取下载文件"), b"aac audio bytes");
         assert!(!partial_path(&dest).exists(), ".part 不应残留");
 
-        let headers = &transport.calls()[0];
-        assert!(
-            headers
-                .iter()
-                .any(|(name, value)| name == "Referer" && value == CDN_REFERER),
-            "必须带 Referer: {headers:?}"
-        );
-        assert!(
-            headers
-                .iter()
-                .any(|(name, value)| name == "Origin" && value == CDN_ORIGIN),
-            "必须带 Origin: {headers:?}"
+        // 下载器只透传 stream.headers，不再硬编码任何源的特殊 header。
+        assert_eq!(
+            transport.calls()[0],
+            vec![(
+                "Referer".to_string(),
+                "https://example.invalid/ref".to_string()
+            )]
         );
     }
 
@@ -229,7 +224,9 @@ mod tests {
         let (downloader, _transport) = downloader(b"0123456789", Some(3));
         let dest = temp.path().join("streams/bilibili-BV1xx411c7mD.m4a");
 
-        let error = downloader.download(&stream(), &dest).expect_err("应失败");
+        let error = downloader
+            .download(&stream(Vec::new()), &dest)
+            .expect_err("应失败");
 
         assert!(matches!(error, SourceError::Download(_)), "{error:?}");
         assert_eq!(error.code(), "E_SRC_DOWNLOAD");
@@ -245,7 +242,9 @@ mod tests {
         fs::create_dir_all(dest.parent().expect("parent")).expect("create dir");
         fs::write(&dest, b"old").expect("write existing");
 
-        let outcome = downloader.download(&stream(), &dest).expect("应命中");
+        let outcome = downloader
+            .download(&stream(Vec::new()), &dest)
+            .expect("应命中");
 
         assert_eq!(outcome, DownloadOutcome::AlreadyPresent);
         assert_eq!(fs::read(&dest).expect("读取"), b"old");
@@ -260,7 +259,9 @@ mod tests {
         fs::create_dir_all(dest.parent().expect("parent")).expect("create dir");
         fs::write(&dest, b"").expect("write empty");
 
-        let outcome = downloader.download(&stream(), &dest).expect("应重新下载");
+        let outcome = downloader
+            .download(&stream(Vec::new()), &dest)
+            .expect("应重新下载");
 
         assert_eq!(
             outcome,

@@ -111,6 +111,22 @@ fn resolve_picks_highest_bandwidth_audio_mp4_and_reads_deadline() {
         stream.expires_at,
         Some(UNIX_EPOCH + Duration::from_secs(DEADLINE))
     );
+    assert!(
+        stream
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Referer" && value == "https://www.bilibili.com"),
+        "B 站下载必须带 Referer: {:?}",
+        stream.headers
+    );
+    assert!(
+        stream
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Origin" && value == "https://www.bilibili.com"),
+        "B 站下载必须带 Origin: {:?}",
+        stream.headers
+    );
 
     let calls = transport.calls();
     assert_eq!(calls.len(), 2, "view + playurl");
@@ -280,4 +296,17 @@ fn resolve_view_without_cid_is_parse_error() {
     let error = source.resolve(&track("BV1xx411c7mD")).expect_err("缺 cid");
 
     assert!(matches!(error, SourceError::Parse(_)), "{error:?}");
+}
+
+#[test]
+fn resolve_rejects_overlong_track_without_network() {
+    let (source, transport) = source_with_fixtures();
+    let mut track = track("BV1xx411c7mD");
+    track.duration_ms = np_sources::MAX_TRACK_DURATION_MS + 1;
+
+    let error = source.resolve(&track).expect_err("超长曲目应拒绝");
+
+    assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
+    assert!(error.to_string().contains("30 分钟"), "{error}");
+    assert!(transport.calls().is_empty(), "不应触网");
 }

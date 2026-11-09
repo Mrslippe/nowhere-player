@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::AudioSource;
 use crate::error::{Result, SourceError};
-use crate::model::{ResolvedStream, SourceId, SourceTrack};
+use crate::model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack};
 use crate::transport::Transport;
 use crate::wbi;
 
@@ -126,6 +126,11 @@ impl AudioSource for BilibiliSource {
     }
 
     fn resolve(&self, track: &SourceTrack) -> Result<ResolvedStream> {
+        if track.duration_ms > MAX_TRACK_DURATION_MS {
+            return Err(SourceError::Unavailable(
+                "该曲目时长超过 30 分钟，暂不支持播放（音频文件可能过大）".to_string(),
+            ));
+        }
         // 搜索结果不带 cid，固定先调 view 补齐（任务卡 §6.1）；aid 也在这里换成 bvid。
         let video = parse_video_id(&track.source_id)?;
         let view_url = match &video {

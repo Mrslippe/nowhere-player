@@ -232,6 +232,7 @@ mod tests {
             url: "https://example.invalid/audio".to_string(),
             mime: mime.to_string(),
             expires_at: None,
+            headers: Vec::new(),
         }
     }
 

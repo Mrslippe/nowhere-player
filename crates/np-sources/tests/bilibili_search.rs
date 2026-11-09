@@ -89,7 +89,7 @@ fn search_ok_maps_fields_and_filters_unplayable_items() {
     let (source, transport) = source_ok();
     let tracks = source.search("测试", 10).expect("夹具应能解析");
 
-    // 5 条里 2 条非法（时长 LIVE / id 为空），只保留 3 条。
+    // 6 条里 3 条非法（时长 LIVE / id 为空 / 超过 30 分钟），只保留 3 条。
     assert_eq!(tracks.len(), 3);
 
     let first = &tracks[0];
@@ -104,11 +104,21 @@ fn search_ok_maps_fields_and_filters_unplayable_items() {
         Some("https://i0.hdslb.com/bfs/archive/example-cover-a.jpg")
     );
 
-    assert_eq!(tracks[1].duration_ms, 57_729_000);
+    assert_eq!(tracks[1].duration_ms, 1_799_000);
     assert_eq!(tracks[1].cover_url, None);
 
     assert_eq!(tracks[2].title, "带实体 '引号' 与 <尖括号>");
     assert_eq!(tracks[2].cover_url, None);
+    assert!(
+        tracks
+            .iter()
+            .all(|track| track.duration_ms <= np_sources::MAX_TRACK_DURATION_MS),
+        "超过 30 分钟的条目必须被过滤"
+    );
+    assert!(
+        !tracks.iter().any(|track| track.title.contains("31 分钟")),
+        "31 分钟的回放不应出现在结果里"
+    );
 
     // nav + search 各一次。
     assert_eq!(transport.calls().len(), 2);

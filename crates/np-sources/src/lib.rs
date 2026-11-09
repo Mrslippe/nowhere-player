@@ -19,7 +19,7 @@ pub use bilibili::BilibiliSource;
 pub use cache::{STREAM_CACHE_MAX_BYTES, STREAM_CACHE_TARGET_BYTES, StreamCache};
 pub use download::{DownloadOutcome, Downloader, HttpDownloader};
 pub use error::{Result, SourceError};
-pub use model::{ResolvedStream, SourceId, SourceTrack};
+pub use model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack};
 pub use transport::{ReqwestTransport, Transport};
 
 /// 在线音源适配器（ADR-0004 §3）。

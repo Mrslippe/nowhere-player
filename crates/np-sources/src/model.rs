@@ -2,6 +2,11 @@
 
 use std::time::SystemTime;
 
+/// 单曲时长上限：超过 30 分钟不进入搜索结果、也不下载。
+///
+/// B 站能搜到 48 小时视频，音频可能是 GB 级，500MB 缓存策略扛不住。
+pub const MAX_TRACK_DURATION_MS: u64 = 30 * 60 * 1000;
+
 /// 在线音源标识。
 ///
 /// 与目录名 / 命令层展示的短名一致：`netease` / `bilibili` / `ytdlp`。
@@ -62,4 +67,7 @@ pub struct ResolvedStream {
     pub mime: String,
     /// 过期时间；`None` 表示不适用（如 yt-dlp 直链）。
     pub expires_at: Option<SystemTime>,
+    /// 下载该 URL 时必须附带的请求头，由源自己声明（如 B 站 CDN 的
+    /// `Referer` / `Origin`）；下载器不再知道任何源的特殊 header。
+    pub headers: Vec<(String, String)>,
 }
