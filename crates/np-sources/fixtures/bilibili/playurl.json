@@ -1,0 +1,55 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "format": "flv480",
+    "timelength": 225000,
+    "dash": {
+      "duration": 225,
+      "minBufferTime": 1.5,
+      "audio": [
+        {
+          "id": 30216,
+          "baseUrl": "https://example.invalid/dash/audio-67307.m4s?deadline=1794234249&token=synthetic",
+          "backupUrl": [
+            "https://example.invalid/backup/audio-67307.m4s?deadline=1794234249&token=synthetic"
+          ],
+          "bandwidth": 67307,
+          "mimeType": "audio/mp4",
+          "codecs": "mp4a.40.2"
+        },
+        {
+          "id": 30232,
+          "baseUrl": "https://example.invalid/dash/audio-132796.m4s?deadline=1794234249&token=synthetic",
+          "backupUrl": [
+            "https://example.invalid/backup/audio-132796.m4s?deadline=1794234249&token=synthetic"
+          ],
+          "bandwidth": 132796,
+          "mimeType": "audio/mp4",
+          "codecs": "mp4a.40.2"
+        },
+        {
+          "id": 30280,
+          "baseUrl": "https://example.invalid/dash/audio-319102.m4s?deadline=1794234249&token=synthetic",
+          "backupUrl": [
+            "https://example.invalid/backup/audio-319102.m4s?deadline=1794234249&token=synthetic"
+          ],
+          "bandwidth": 319102,
+          "mimeType": "audio/mp4",
+          "codecs": "mp4a.40.2"
+        },
+        {
+          "id": 30250,
+          "baseUrl": "https://example.invalid/dash/audio-flac.m4s?deadline=1794234249&token=synthetic",
+          "backupUrl": [
+            "https://example.invalid/backup/audio-flac.m4s?deadline=1794234249&token=synthetic"
+          ],
+          "bandwidth": 999999,
+          "mimeType": "audio/flac",
+          "codecs": "fLaC"
+        }
+      ]
+    }
+  }
+}

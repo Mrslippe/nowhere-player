@@ -1,0 +1,18 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "bvid": "BV1xx411c7mD",
+    "aid": 1001,
+    "cid": 508529777,
+    "duration": 225,
+    "pages": [
+      {
+        "cid": 508529777,
+        "page": 1,
+        "duration": 225
+      }
+    ]
+  }
+}

@@ -1,4 +1,7 @@
-//! B 站音源：搜索已实现，取流地址留待 T-0035。
+//! B 站音源：搜索（T-0034）与取流地址（T-0035）。
+//!
+//! 下载与缓存不在这里：`BilibiliSource` 只返回 [`ResolvedStream`]，
+//! 由 `download` / `cache` 模块落到本地文件。
 
 mod dto;
 
@@ -13,6 +16,8 @@ use crate::wbi;
 
 const NAV_ENDPOINT: &str = "https://api.bilibili.com/x/web-interface/nav";
 const SEARCH_ENDPOINT: &str = "https://api.bilibili.com/x/web-interface/wbi/search/type";
+const VIEW_ENDPOINT: &str = "https://api.bilibili.com/x/web-interface/view";
+const PLAYURL_ENDPOINT: &str = "https://api.bilibili.com/x/player/playurl";
 /// B 站搜索单页最多返回 50 条。
 const MAX_PAGE_SIZE: usize = 50;
 /// wbi key 每日更换，缓存 1 小时。
@@ -100,9 +105,50 @@ impl AudioSource for BilibiliSource {
         Ok(tracks.into_iter().take(limit).collect())
     }
 
-    fn resolve(&self, _track: &SourceTrack) -> Result<ResolvedStream> {
-        Err(SourceError::NotImplemented(
-            "B 站取流地址将在 T-0035 实现".to_string(),
-        ))
+    fn resolve(&self, track: &SourceTrack) -> Result<ResolvedStream> {
+        // 搜索结果不带 cid，固定先调 view 补齐（任务卡 §6.1）；aid 也在这里换成 bvid。
+        let video = parse_video_id(&track.source_id)?;
+        let view_url = match &video {
+            VideoId::Bvid(bvid) => format!("{VIEW_ENDPOINT}?bvid={bvid}"),
+            VideoId::Aid(aid) => format!("{VIEW_ENDPOINT}?aid={aid}"),
+        };
+        let view_body = self.transport.get(&view_url)?;
+        let info = dto::parse_view(&view_body)?;
+
+        // fnval=16 才返回 DASH；fourk=1 与 Web 端保持一致。
+        let playurl_url = format!(
+            "{PLAYURL_ENDPOINT}?bvid={}&cid={}&fnval=16&fourk=1",
+            info.bvid, info.cid
+        );
+        let playurl_body = self.transport.get(&playurl_url)?;
+        dto::parse_playurl(&playurl_body)
     }
+}
+
+/// `source_id` 的两种合法形态：BV 号或 aid 数字。
+enum VideoId {
+    Bvid(String),
+    Aid(u64),
+}
+
+fn parse_video_id(source_id: &str) -> Result<VideoId> {
+    if source_id.len() >= 12
+        && source_id.starts_with("BV")
+        && source_id[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Ok(VideoId::Bvid(source_id.to_string()));
+    }
+    if !source_id.is_empty() && source_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        let aid: u64 = source_id
+            .parse()
+            .map_err(|_| SourceError::Unavailable(format!("B 站 aid 非法: {source_id:?}")))?;
+        if aid > 0 {
+            return Ok(VideoId::Aid(aid));
+        }
+    }
+    Err(SourceError::Unavailable(format!(
+        "B 站 source_id 既不是 BV 号也不是 aid: {source_id:?}"
+    )))
 }

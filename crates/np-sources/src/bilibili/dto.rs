@@ -3,10 +3,12 @@
 //! 结构体只声明用得到的字段，其余字段由 serde 忽略；所有字段都按 `Option`
 //! 解析，单个条目缺字段时只丢该条目，不会让整页搜索失败。
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use serde::Deserialize;
 
 use crate::error::{Result, SourceError};
-use crate::model::{SourceId, SourceTrack};
+use crate::model::{ResolvedStream, SourceId, SourceTrack};
 use crate::wbi;
 
 #[derive(Debug, Deserialize)]
@@ -217,6 +219,215 @@ pub(crate) fn normalize_cover(raw: &str) -> Option<String> {
     None
 }
 
+#[derive(Debug, Deserialize)]
+struct ViewEnvelope {
+    code: i64,
+    message: Option<String>,
+    data: Option<ViewData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ViewData {
+    bvid: Option<String>,
+    cid: Option<u64>,
+    pages: Option<Vec<ViewPage>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ViewPage {
+    cid: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayurlEnvelope {
+    code: i64,
+    message: Option<String>,
+    data: Option<PlayurlData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayurlData {
+    format: Option<String>,
+    dash: Option<Dash>,
+    durl: Option<Vec<Durl>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Dash {
+    audio: Option<Vec<DashAudio>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DashAudio {
+    #[serde(rename = "baseUrl", alias = "base_url")]
+    base_url: Option<String>,
+    bandwidth: Option<u64>,
+    #[serde(rename = "mimeType", alias = "mime_type")]
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Durl {
+    url: Option<String>,
+}
+
+/// `view` 接口里 resolve 需要的字段。
+pub(crate) struct VideoInfo {
+    pub(crate) bvid: String,
+    pub(crate) cid: u64,
+}
+
+/// 解析 `view` 响应：优先 `data.cid`，缺了再看 `data.pages[0].cid`。
+///
+/// 搜索接口不返回 `cid`，所以 `resolve` 固定要调一次 `view` 补齐
+/// （任务卡 §6.1）；aid 进、bvid 出也靠这一步。
+pub(crate) fn parse_view(body: &[u8]) -> Result<VideoInfo> {
+    let envelope: ViewEnvelope = serde_json::from_slice(body)
+        .map_err(|error| SourceError::Parse(format!("B 站 view 响应不是合法 JSON: {error}")))?;
+    if envelope.code != 0 {
+        return Err(SourceError::Unavailable(format!(
+            "B 站 view 返回 code={}: {}",
+            envelope.code,
+            envelope.message.unwrap_or_default()
+        )));
+    }
+    let data = envelope
+        .data
+        .ok_or_else(|| SourceError::Unavailable("B 站 view 响应缺少 data".into()))?;
+    let bvid = data
+        .bvid
+        .filter(|bvid| !bvid.is_empty())
+        .ok_or_else(|| SourceError::Parse("B 站 view 缺少 bvid".into()))?;
+    let cid = data
+        .cid
+        .filter(|&cid| cid > 0)
+        .or_else(|| {
+            data.pages
+                .as_ref()
+                .and_then(|pages| pages.first())
+                .and_then(|page| page.cid)
+                .filter(|&cid| cid > 0)
+        })
+        .ok_or_else(|| SourceError::Parse("B 站 view 缺少 cid".into()))?;
+    Ok(VideoInfo { bvid, cid })
+}
+
+/// 解析 `playurl` 响应，挑最高码率的可播音频。
+///
+/// - 有 `dash.audio`：只接受 `audio/mp4`，按 `bandwidth` 取最大；
+///   DASH 存在但没有 audio/mp4 时直接报不可用，不偷偷回退 durl。
+/// - 没有 DASH：回退 `durl[0]`，只接受 MP4（FLV 会被播放器拒绝）。
+/// - `expires_at` 来自 URL 的 `deadline` 参数（秒级 Unix 时间戳）。
+pub(crate) fn parse_playurl(body: &[u8]) -> Result<ResolvedStream> {
+    let envelope: PlayurlEnvelope = serde_json::from_slice(body)
+        .map_err(|error| SourceError::Parse(format!("B 站 playurl 响应不是合法 JSON: {error}")))?;
+    if envelope.code != 0 {
+        return Err(SourceError::Unavailable(format!(
+            "B 站 playurl 返回 code={}: {}",
+            envelope.code,
+            envelope.message.unwrap_or_default()
+        )));
+    }
+    let data = envelope
+        .data
+        .ok_or_else(|| SourceError::Unavailable("B 站 playurl 响应缺少 data".into()))?;
+
+    if let Some(audio) = data
+        .dash
+        .as_ref()
+        .and_then(|dash| dash.audio.as_ref())
+        .filter(|audio| !audio.is_empty())
+    {
+        let selected = audio
+            .iter()
+            .filter(|entry| is_audio_mp4(entry.mime_type.as_deref().unwrap_or_default()))
+            .filter(|entry| entry.base_url.as_deref().is_some_and(|url| !url.is_empty()))
+            .max_by_key(|entry| entry.bandwidth.unwrap_or(0))
+            .ok_or_else(|| {
+                SourceError::Unavailable(format!(
+                    "DASH 音频没有可用的 audio/mp4 地址（共 {} 条）",
+                    audio.len()
+                ))
+            })?;
+        let url = selected
+            .base_url
+            .as_deref()
+            .expect("已过滤空 URL")
+            .to_string();
+        return Ok(ResolvedStream {
+            expires_at: parse_deadline(&url),
+            url,
+            mime: "audio/mp4".to_string(),
+        });
+    }
+
+    if let Some(durl) = data.durl.as_ref().and_then(|durl| durl.first()) {
+        let url = durl
+            .url
+            .as_deref()
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| SourceError::Parse("B 站 durl 缺少 url".into()))?
+            .to_string();
+        let mime = durl_mime(data.format.as_deref(), &url)?;
+        return Ok(ResolvedStream {
+            expires_at: parse_deadline(&url),
+            url,
+            mime,
+        });
+    }
+
+    Err(SourceError::Unavailable(
+        "B 站 playurl 既没有 DASH 音频也没有 durl".into(),
+    ))
+}
+
+fn is_audio_mp4(mime: &str) -> bool {
+    mime.split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("audio/mp4")
+}
+
+/// durl 回退的 MIME：只允许 MP4；FLV 明确拒绝（symphonia 播放器会失败）。
+fn durl_mime(format: Option<&str>, url: &str) -> Result<String> {
+    let format = format.unwrap_or_default().trim().to_ascii_lowercase();
+    if format.starts_with("mp4") {
+        return Ok("video/mp4".to_string());
+    }
+    if format.starts_with("flv") {
+        return Err(SourceError::Unavailable(
+            "B 站 durl 回退拿到 FLV，播放器无法解码".into(),
+        ));
+    }
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if path.ends_with(".m4a") {
+        return Ok("audio/mp4".to_string());
+    }
+    if path.ends_with(".mp4") {
+        return Ok("video/mp4".to_string());
+    }
+    Err(SourceError::Unavailable(format!(
+        "无法确定 B 站 durl 的 MIME（format={format:?}）"
+    )))
+}
+
+/// 从下载 URL 的 `deadline` 参数解析过期时间；解析不到返回 `None`。
+pub(crate) fn parse_deadline(url: &str) -> Option<SystemTime> {
+    let query = url.split_once('?')?.1;
+    let query = query.split('#').next().unwrap_or(query);
+    let raw = query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "deadline").then_some(value)
+    })?;
+    let seconds: u64 = raw.parse().ok()?;
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +486,87 @@ mod tests {
         assert!(!is_bvid("BV1"));
         assert!(!is_bvid("av1001"));
         assert!(!is_bvid("BV1xx411c7m!"));
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn parse_deadline_reads_unix_seconds() {
+        assert_eq!(
+            parse_deadline("https://example.invalid/a.m4s?deadline=1794234249&token=x"),
+            UNIX_EPOCH.checked_add(Duration::from_secs(1_794_234_249))
+        );
+        assert_eq!(
+            parse_deadline("https://example.invalid/a.m4s?x=1&deadline=10#frag"),
+            UNIX_EPOCH.checked_add(Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn parse_deadline_missing_or_invalid_is_none() {
+        assert_eq!(parse_deadline("https://example.invalid/a.m4s"), None);
+        assert_eq!(
+            parse_deadline("https://example.invalid/a.m4s?deadline=abc"),
+            None
+        );
+        assert_eq!(
+            parse_deadline("https://example.invalid/a.m4s?deadline="),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_view_prefers_top_level_cid() {
+        let body = br#"{"code":0,"data":{"bvid":"BV1xx411c7mD","cid":11,"pages":[{"cid":22}]}}"#;
+        let info = parse_view(body).expect("解析");
+        assert_eq!(info.bvid, "BV1xx411c7mD");
+        assert_eq!(info.cid, 11);
+    }
+
+    #[test]
+    fn parse_view_falls_back_to_pages_cid() {
+        let body = br#"{"code":0,"data":{"bvid":"BV1xx411c7mD","pages":[{"cid":22}]}}"#;
+        let info = parse_view(body).expect("解析");
+        assert_eq!(info.cid, 22);
+    }
+
+    #[test]
+    fn durl_mime_rejects_flv_and_unknown_formats() {
+        assert!(matches!(
+            durl_mime(Some("flv720"), "https://example.invalid/a.flv"),
+            Err(SourceError::Unavailable(_))
+        ));
+        assert!(matches!(
+            durl_mime(Some("mpeg4"), "https://example.invalid/a.bin"),
+            Err(SourceError::Unavailable(_))
+        ));
+        assert_eq!(
+            durl_mime(Some("mp4"), "https://example.invalid/a.mp4").expect("mp4"),
+            "video/mp4"
+        );
+        assert_eq!(
+            durl_mime(None, "https://example.invalid/a.m4a").expect("m4a"),
+            "audio/mp4"
+        );
+    }
+
+    #[test]
+    fn playurl_without_dash_or_durl_is_unavailable() {
+        let body = br#"{"code":0,"data":{"format":"mp4"}}"#;
+        assert!(matches!(
+            parse_playurl(body),
+            Err(SourceError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn playurl_dash_without_audio_mp4_is_unavailable() {
+        let body = br#"{"code":0,"data":{"dash":{"audio":[{"baseUrl":"https://example.invalid/a.flac","bandwidth":9,"mimeType":"audio/flac"}]}}}"#;
+        let error = parse_playurl(body).expect_err("不应回退 durl");
+        assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
+        assert!(error.to_string().contains("audio/mp4"));
     }
 }

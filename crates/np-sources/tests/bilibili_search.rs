@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use np_sources::{AudioSource, BilibiliSource, SourceError, SourceId, SourceTrack, Transport};
+use np_sources::{AudioSource, BilibiliSource, SourceError, SourceId, Transport};
 
 const NAV: &[u8] = include_bytes!("../fixtures/bilibili/nav.json");
 const SEARCH_OK: &[u8] = include_bytes!("../fixtures/bilibili/search_ok.json");
@@ -81,18 +81,6 @@ fn source_ok() -> (BilibiliSource, Arc<FakeTransport>) {
 fn source_with(search: Reply) -> (BilibiliSource, Arc<FakeTransport>) {
     let transport = FakeTransport::new(Reply::Body(NAV.to_vec()), search);
     (BilibiliSource::new(transport.clone()), transport)
-}
-
-fn sample_track() -> SourceTrack {
-    SourceTrack {
-        source: SourceId::Bilibili,
-        source_id: "BV1xx411c7mD".to_string(),
-        title: "测试曲目".to_string(),
-        artist: "测试作者".to_string(),
-        duration_ms: 225_000,
-        album: None,
-        cover_url: None,
-    }
 }
 
 #[test]
@@ -234,17 +222,6 @@ fn search_limit_is_clamped_to_max_page_size() {
     let (source, transport) = source_ok();
     source.search("测试", 999).expect("夹具应能解析");
     assert!(transport.calls()[1].contains("page_size=50"));
-}
-
-#[test]
-fn resolve_returns_not_implemented_without_network() {
-    let (source, transport) = source_ok();
-    let error = source
-        .resolve(&sample_track())
-        .expect_err("本卡只返回占位错误");
-    assert!(matches!(error, SourceError::NotImplemented(_)), "{error:?}");
-    assert_eq!(error.code(), "E_SRC_NOT_IMPLEMENTED");
-    assert!(transport.calls().is_empty());
 }
 
 #[test]

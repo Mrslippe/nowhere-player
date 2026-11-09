@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "format": "mp4",
+    "timelength": 225000,
+    "durl": [
+      {
+        "order": 1,
+        "url": "https://example.invalid/durl/video-508529777.mp4",
+        "size": 7298519,
+        "length": 225000
+      }
+    ]
+  }
+}
