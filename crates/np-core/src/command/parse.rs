@@ -578,7 +578,7 @@ mod tests {
 
         assert_eq!(parsed.spec.name, "search");
         assert_eq!(parsed.positional, ["kid a"]);
-        assert_eq!(parsed.usage(), "search <keyword>");
+        assert_eq!(parsed.usage(), "search <keyword> [--local]");
     }
 
     #[test]
@@ -587,6 +587,24 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("keyword"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("search <keyword>"));
+        assert_eq!(error.usage.as_deref(), Some("search <keyword> [--local]"));
+    }
+
+    #[test]
+    fn search_local_flag_is_accepted_before_or_after_keyword() {
+        for input in ["search 晴天 --local", "search --local 晴天"] {
+            let parsed = parse_ok(input);
+            assert_eq!(parsed.spec.name, "search");
+            assert_eq!(parsed.positional, ["晴天"]);
+            assert!(parsed.flags.contains_key("local"));
+        }
+    }
+
+    #[test]
+    fn search_local_flag_rejects_a_value() {
+        let error = parse_err("search 晴天 --local=1");
+
+        assert_eq!(error.code, crate::CommandErrorCode::Arg);
+        assert!(error.message.contains("不接受取值"));
     }
 }

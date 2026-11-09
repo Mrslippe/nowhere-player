@@ -476,14 +476,18 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "search",
         aliases: &[],
-        summary: "在媒体库中搜索曲目，结果可按序号播放",
-        usage: "search <keyword>",
+        summary: "搜索本地库与在线音源，结果可按序号播放",
+        usage: "search <keyword> [--local]",
         args: &[ArgSpec {
             name: "keyword",
             kind: ArgKind::Text,
             required: true,
         }],
-        flags: &[],
+        flags: &[FlagSpec {
+            name: "local",
+            takes_value: false,
+            summary: "只搜本地库",
+        }],
         subcommands: &[],
         default_subcommand: None,
     },
