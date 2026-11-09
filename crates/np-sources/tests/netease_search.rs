@@ -34,14 +34,20 @@ impl Kind {
 
 struct FakeTransport {
     search: Reply,
+    detail: Reply,
     players: Mutex<Vec<Reply>>,
     calls: Mutex<Vec<String>>,
 }
 
 impl FakeTransport {
     fn new(search: Reply, players: Vec<Reply>) -> Arc<Self> {
+        Self::with_detail(search, players, body(r#"{"code":200,"songs":[]}"#))
+    }
+
+    fn with_detail(search: Reply, players: Vec<Reply>, detail: Reply) -> Arc<Self> {
         Arc::new(Self {
             search,
+            detail,
             players: Mutex::new(players),
             calls: Mutex::new(Vec::new()),
         })
@@ -64,6 +70,8 @@ impl Transport for FakeTransport {
 
         let reply = if url.contains("/api/search/get") {
             self.search.clone()
+        } else if url.contains("/api/song/detail") {
+            self.detail.clone()
         } else {
             let mut players = self
                 .players
@@ -84,6 +92,15 @@ impl Transport for FakeTransport {
 
 fn source(search: Reply, players: Vec<Reply>) -> (NeteaseSource, Arc<FakeTransport>) {
     let transport = FakeTransport::new(search, players);
+    (NeteaseSource::new(transport.clone()), transport)
+}
+
+fn source_with_detail(
+    search: Reply,
+    players: Vec<Reply>,
+    detail: Reply,
+) -> (NeteaseSource, Arc<FakeTransport>) {
+    let transport = FakeTransport::with_detail(search, players, detail);
     (NeteaseSource::new(transport.clone()), transport)
 }
 
@@ -141,11 +158,17 @@ fn search_maps_old_and_new_fields_and_filters_overlong() {
 
     assert!(!tracks.iter().any(|track| track.source_id == "10003"));
     let calls = transport.calls();
-    assert_eq!(calls.len(), 1);
+    // 搜索 + 为唯一缺封面的 10004 补一次 detail。
+    assert_eq!(calls.len(), 2);
     assert!(
         calls[0].contains("/api/search/get?s=%E6%B5%8B%E8%AF%95&type=1&limit=10"),
         "{}",
         calls[0]
+    );
+    assert!(
+        calls[1].contains("/api/song/detail?ids=%5B10004%5D"),
+        "{}",
+        calls[1]
     );
 }
 
@@ -346,4 +369,68 @@ fn resolve_network_error_propagates() {
 
     assert!(matches!(error, SourceError::Network(_)), "{error:?}");
     assert_eq!(transport.calls().len(), 1);
+}
+
+#[test]
+fn search_enriches_missing_cover_from_detail() {
+    let detail = body(
+        r#"{"code":200,"songs":[{"id":10004,"album":{"picUrl":"http://p1.music.126.net/boundary.jpg"}}]}"#,
+    );
+    let (source, transport) =
+        source_with_detail(Reply::Body(SEARCH_OK.to_vec()), Vec::new(), detail);
+
+    let tracks = source.search("测试", 10).expect("夹具应能解析");
+
+    assert_eq!(
+        tracks[2].cover_url.as_deref(),
+        Some("https://p1.music.126.net/boundary.jpg")
+    );
+    assert!(
+        transport
+            .calls()
+            .iter()
+            .any(|url| url.contains("/api/song/detail?ids=%5B10004%5D"))
+    );
+}
+
+#[test]
+fn search_detail_failure_does_not_break_search() {
+    let (source, _transport) = source_with_detail(
+        Reply::Body(SEARCH_OK.to_vec()),
+        Vec::new(),
+        Reply::Error(Kind::Network),
+    );
+
+    let tracks = source.search("测试", 10).expect("封面失败不影响搜索");
+
+    assert_eq!(tracks.len(), 3);
+    assert_eq!(tracks[2].source_id, "10004");
+    assert_eq!(tracks[2].cover_url, None);
+}
+
+#[test]
+fn search_batches_detail_ids_by_twenty() {
+    let songs: Vec<String> = (1..=25)
+        .map(|id| {
+            format!(r#"{{"id":{id},"name":"歌{id}","duration":120000,"artists":[],"album":{{}}}}"#)
+        })
+        .collect();
+    let search = body(&format!(
+        r#"{{"code":200,"result":{{"songs":[{}]}}}}"#,
+        songs.join(",")
+    ));
+    let (source, transport) = source(search, Vec::new());
+
+    let tracks = source.search("测试", 100).expect("夹具应能解析");
+
+    assert_eq!(tracks.len(), 25);
+    let calls = transport.calls();
+    let details: Vec<&String> = calls
+        .iter()
+        .filter(|url| url.contains("/api/song/detail"))
+        .collect();
+    assert_eq!(details.len(), 2);
+    // id 之间用编码后的 %2C：20 个 id 有 19 个，剩下 5 个有 4 个。
+    assert_eq!(details[0].matches("%2C").count(), 19);
+    assert_eq!(details[1].matches("%2C").count(), 4);
 }

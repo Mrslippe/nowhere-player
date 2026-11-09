@@ -144,6 +144,47 @@ fn map_song(song: Song) -> Option<SourceTrack> {
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct DetailEnvelope {
+    code: i64,
+    msg: Option<String>,
+    message: Option<String>,
+    songs: Option<Vec<DetailSong>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DetailSong {
+    id: Option<u64>,
+    album: Option<Album>,
+    al: Option<Album>,
+}
+
+/// 解析 `song/detail` 批量响应，返回 `(song_id, https 封面 URL)`。
+///
+/// 老接口返回 `songs[].album.picUrl`；新的可能用 `al`，两者都支持。
+pub(crate) fn parse_detail(body: &[u8]) -> Result<Vec<(u64, String)>> {
+    let envelope: DetailEnvelope = serde_json::from_slice(body)
+        .map_err(|error| SourceError::Parse(format!("网易云歌曲详情响应不是合法 JSON: {error}")))?;
+    if envelope.code != 200 {
+        return Err(SourceError::Unavailable(format!(
+            "网易云歌曲详情返回 code={}: {}",
+            envelope.code,
+            error_text(envelope.message, envelope.msg)
+        )));
+    }
+    Ok(envelope
+        .songs
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|song| {
+            let id = song.id?;
+            let album = song.al.or(song.album)?;
+            let url = album.pic_url()?;
+            Some((id, httpsify(url)))
+        })
+        .collect())
+}
+
 /// 解析取流响应。
 ///
 /// - `Ok(Some(stream))`：这个码率可用；
@@ -258,6 +299,26 @@ mod tests {
         assert_eq!(mime_for_type(Some("m4a")), "audio/mp4");
         assert_eq!(mime_for_type(Some("flac")), "audio/flac");
         assert_eq!(mime_for_type(None), "audio/mpeg");
+    }
+
+    #[test]
+    fn detail_parses_old_and_new_album_fields() {
+        let body = r#"{"code":200,"songs":[
+            {"id":1,"album":{"picUrl":"http://p1.music.126.net/a.jpg"}},
+            {"id":2,"al":{"picUrl":"https://p1.music.126.net/b.jpg"}},
+            {"id":3,"album":{}}
+        ]}"#
+        .as_bytes();
+        let covers = parse_detail(body).expect("解析");
+        assert_eq!(covers.len(), 2);
+        assert_eq!(covers[0], (1, "https://p1.music.126.net/a.jpg".to_string()));
+        assert_eq!(covers[1], (2, "https://p1.music.126.net/b.jpg".to_string()));
+    }
+
+    #[test]
+    fn detail_api_error_is_unavailable() {
+        let error = parse_detail(br#"{"code":-460,"message":"Cheating"}"#).expect_err("接口错误");
+        assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
     }
 
     #[test]

@@ -18,6 +18,9 @@ use crate::transport::Transport;
 
 const SEARCH_ENDPOINT: &str = "https://music.163.com/api/search/get";
 const PLAYER_URL_ENDPOINT: &str = "https://music.163.com/api/song/enhance/player/url";
+const DETAIL_ENDPOINT: &str = "https://music.163.com/api/song/detail";
+/// `song/detail` 单次最多 20 个 id。
+const DETAIL_BATCH: usize = 20;
 /// 老接口单页上限（保守值）。
 const SEARCH_LIMIT_MAX: usize = 100;
 /// 取流码率降级顺序。
@@ -59,8 +62,10 @@ impl AudioSource for NeteaseSource {
             encode_query(query)
         );
         let body = self.transport.get(&url)?;
-        let tracks = dto::parse_search(&body)?;
-        Ok(tracks.into_iter().take(limit).collect())
+        let mut tracks = dto::parse_search(&body)?;
+        tracks.truncate(limit);
+        self.enrich_covers(&mut tracks);
+        Ok(tracks)
     }
 
     fn resolve(&self, track: &SourceTrack) -> Result<ResolvedStream> {
@@ -82,6 +87,43 @@ impl AudioSource for NeteaseSource {
         Err(SourceError::Unavailable(
             dto::UNPLAYABLE_MESSAGE.to_string(),
         ))
+    }
+}
+
+impl NeteaseSource {
+    /// 老搜索接口没有 `picUrl`，按 20 个一批调 `song/detail` 补齐。
+    ///
+    /// 封面是可选信息：详情请求失败时静默保留 `None`，不影响搜索结果。
+    fn enrich_covers(&self, tracks: &mut [SourceTrack]) {
+        for chunk in tracks.chunks_mut(DETAIL_BATCH) {
+            let ids: Vec<String> = chunk
+                .iter()
+                .filter(|track| track.cover_url.is_none())
+                .map(|track| track.source_id.clone())
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let ids_arg = format!("[{}]", ids.join(","));
+            let url = format!("{DETAIL_ENDPOINT}?ids={}", encode_query(&ids_arg));
+            let Ok(body) = self.transport.get(&url) else {
+                continue;
+            };
+            let Ok(covers) = dto::parse_detail(&body) else {
+                continue;
+            };
+            for track in chunk.iter_mut() {
+                if track.cover_url.is_some() {
+                    continue;
+                }
+                if let Some((_, cover)) = covers
+                    .iter()
+                    .find(|(id, _)| id.to_string() == track.source_id)
+                {
+                    track.cover_url = Some(cover.clone());
+                }
+            }
+        }
     }
 }
 
