@@ -22,6 +22,8 @@ const MIXIN_KEY_TTL: Duration = Duration::from_secs(60 * 60);
 pub struct BilibiliSource {
     transport: Arc<dyn Transport>,
     mixin_key: Mutex<Option<CachedMixinKey>>,
+    /// ADR-0004 §4：搜索串行，避免并发触发风控。
+    search_lock: Mutex<()>,
 }
 
 struct CachedMixinKey {
@@ -35,6 +37,7 @@ impl BilibiliSource {
         Self {
             transport,
             mixin_key: Mutex::new(None),
+            search_lock: Mutex::new(()),
         }
     }
 
@@ -74,6 +77,10 @@ impl AudioSource for BilibiliSource {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let _search_guard = self
+            .search_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let page_size = limit.min(MAX_PAGE_SIZE);
         let mixin_key = self.mixin_key()?;
         let wts = SystemTime::now()
