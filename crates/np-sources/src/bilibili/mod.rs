@@ -72,7 +72,19 @@ impl BilibiliSource {
         Ok(mixin_key)
     }
 
-    fn search_body(&self, query: &str, page_size: usize) -> Result<Vec<u8>> {
+    /// 搜一个 `duration` 桶；-403 时刷新 wbi key 重试一次。
+    fn search_bucket_body(&self, query: &str, page_size: usize, duration: u32) -> Result<Vec<u8>> {
+        let body = self.search_body(query, page_size, duration)?;
+        if dto::is_code(&body, -403) {
+            // wbi key 每日更换；缓存内可能刚过期。清掉重取一次（ADR-0004 §10）。
+            self.invalidate_mixin_key();
+            self.search_body(query, page_size, duration)
+        } else {
+            Ok(body)
+        }
+    }
+
+    fn search_body(&self, query: &str, page_size: usize, duration: u32) -> Result<Vec<u8>> {
         let mixin_key = self.mixin_key()?;
         let wts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -83,6 +95,7 @@ impl BilibiliSource {
             ("keyword".to_string(), query.to_string()),
             ("page".to_string(), "1".to_string()),
             ("page_size".to_string(), page_size.to_string()),
+            ("duration".to_string(), duration.to_string()),
         ];
         let signed_query = wbi::sign(&params, &mixin_key, wts);
         let url = format!("{SEARCH_ENDPOINT}?{signed_query}");
@@ -112,17 +125,20 @@ impl AudioSource for BilibiliSource {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let page_size = limit.min(MAX_PAGE_SIZE);
 
-        let body = self.search_body(query, page_size)?;
-        let body = if dto::is_code(&body, -403) {
-            // wbi key 每日更换；缓存内可能刚过期。清掉重取一次（ADR-0004 §10）。
-            self.invalidate_mixin_key();
-            self.search_body(query, page_size)?
-        } else {
-            body
-        };
-
-        let tracks = dto::parse_search(&body)?;
-        Ok(tracks.into_iter().take(limit).collect())
+        // 服务端 duration 单值只能是 1=<10min / 2=10–30min；
+        // 两次请求合并后才等价于“30 分钟内”，客户端仍会兜底过滤。
+        let mut ranked = Vec::new();
+        for duration in [1u32, 2u32] {
+            let body = self.search_bucket_body(query, page_size, duration)?;
+            ranked.extend(dto::parse_search(&body)?);
+        }
+        dto::dedupe(&mut ranked);
+        dto::rank_tracks(&mut ranked, query);
+        Ok(ranked
+            .into_iter()
+            .take(limit)
+            .map(|ranked| ranked.track)
+            .collect())
     }
 
     fn resolve(&self, track: &SourceTrack) -> Result<ResolvedStream> {

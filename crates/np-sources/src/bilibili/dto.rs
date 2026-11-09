@@ -3,6 +3,7 @@
 //! 结构体只声明用得到的字段，其余字段由 serde 忽略；所有字段都按 `Option`
 //! 解析，单个条目缺字段时只丢该条目，不会让整页搜索失败。
 
+use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -33,6 +34,14 @@ struct SearchItem {
     author: Option<String>,
     pic: Option<String>,
     duration: Option<String>,
+    /// 播放量；相关性排序的次级键。
+    play: Option<u64>,
+}
+
+/// 带播放量的中间结果，排序后再丢掉。
+pub(crate) struct RankedTrack {
+    pub(crate) track: SourceTrack,
+    pub(crate) play: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,7 +66,7 @@ struct WbiImg {
 ///
 /// 接口 `code` 非 0（如 -412 风控、-403 签名错）一律映射为
 /// [`SourceError::Unavailable`]；`data.result` 为 `null` 时返回空列表而不是错误。
-pub(crate) fn parse_search(body: &[u8]) -> Result<Vec<SourceTrack>> {
+pub(crate) fn parse_search(body: &[u8]) -> Result<Vec<RankedTrack>> {
     let envelope: SearchEnvelope = serde_json::from_slice(body)
         .map_err(|error| SourceError::Parse(format!("B 站搜索响应不是合法 JSON: {error}")))?;
     if envelope.code != 0 {
@@ -72,6 +81,40 @@ pub(crate) fn parse_search(body: &[u8]) -> Result<Vec<SourceTrack>> {
         .and_then(|data| data.result)
         .unwrap_or_default();
     Ok(items.into_iter().filter_map(map_item).collect())
+}
+
+/// 丢弃 60 秒以下 / 30 分钟以上的条目；后者在服务端 `duration` 已限制，
+/// 这里仍兜底一次，防止接口忽略参数。
+const MIN_TRACK_DURATION_MS: u64 = 60_000;
+
+/// 同源去重（两条 `duration` 桶理论上不相交，仍按 BV/aid 兜底）。
+pub(crate) fn dedupe(tracks: &mut Vec<RankedTrack>) {
+    let mut seen = HashSet::new();
+    tracks.retain(|ranked| seen.insert(ranked.track.source_id.clone()));
+}
+
+/// 相关性重排：标题完整包含 query → 包含全部关键词 → 其它；
+/// 同档按播放量降序，完全同档保持接口顺序（稳定排序）。
+pub(crate) fn rank_tracks(tracks: &mut [RankedTrack], query: &str) {
+    let query = query.trim().to_lowercase();
+    let keywords: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+
+    tracks.sort_by(|left, right| {
+        relevance(&left.track, &query, &keywords)
+            .cmp(&relevance(&right.track, &query, &keywords))
+            .then_with(|| right.play.cmp(&left.play))
+    });
+}
+
+fn relevance(track: &SourceTrack, query: &str, keywords: &[String]) -> u8 {
+    let title = track.title.to_lowercase();
+    if !query.is_empty() && title.contains(query) {
+        0
+    } else if !keywords.is_empty() && keywords.iter().all(|keyword| title.contains(keyword)) {
+        1
+    } else {
+        2
+    }
 }
 
 /// 解析 nav 响应，返回 mixin key。
@@ -98,7 +141,7 @@ pub(crate) fn parse_nav(body: &[u8]) -> Result<String> {
     Ok(wbi::mixin_key(img_key, sub_key))
 }
 
-fn map_item(item: SearchItem) -> Option<SourceTrack> {
+fn map_item(item: SearchItem) -> Option<RankedTrack> {
     if item.kind.as_deref().is_some_and(|kind| kind != "video") {
         return None;
     }
@@ -112,23 +155,26 @@ fn map_item(item: SearchItem) -> Option<SourceTrack> {
         return None;
     };
     let duration_ms = parse_duration_ms(item.duration.as_deref().unwrap_or_default())?;
-    if duration_ms == 0 || duration_ms > MAX_TRACK_DURATION_MS {
+    if !(MIN_TRACK_DURATION_MS..=MAX_TRACK_DURATION_MS).contains(&duration_ms) {
         return None;
     }
     let title = clean_title(item.title.as_deref().unwrap_or_default());
     if title.is_empty() {
         return None;
     }
-    Some(SourceTrack {
-        source: SourceId::Bilibili,
-        source_id,
-        title,
-        artist: decode_entities(item.author.as_deref().unwrap_or_default())
-            .trim()
-            .to_string(),
-        duration_ms,
-        album: None,
-        cover_url: normalize_cover(item.pic.as_deref().unwrap_or_default()),
+    Some(RankedTrack {
+        track: SourceTrack {
+            source: SourceId::Bilibili,
+            source_id,
+            title,
+            artist: decode_entities(item.author.as_deref().unwrap_or_default())
+                .trim()
+                .to_string(),
+            duration_ms,
+            album: None,
+            cover_url: normalize_cover(item.pic.as_deref().unwrap_or_default()),
+        },
+        play: item.play.unwrap_or(0),
     })
 }
 

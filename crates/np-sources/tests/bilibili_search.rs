@@ -120,8 +120,8 @@ fn search_ok_maps_fields_and_filters_unplayable_items() {
         "31 分钟的回放不应出现在结果里"
     );
 
-    // nav + search 各一次。
-    assert_eq!(transport.calls().len(), 2);
+    // nav + 两个 duration 桶（1=<10min、2=10–30min）各一次。
+    assert_eq!(transport.calls().len(), 3);
 }
 
 #[test]
@@ -131,27 +131,33 @@ fn search_url_contains_wbi_signature_and_sorted_params() {
 
     let calls = transport.calls();
     assert!(calls[0].ends_with("/x/web-interface/nav"), "{}", calls[0]);
-    let url = &calls[1];
-    assert!(url.starts_with("https://api.bilibili.com/x/web-interface/wbi/search/type?"));
-    assert!(url.contains("keyword=%E5%91%A8%E6%9D%B0%E4%BC%A6"));
-    assert!(url.contains("search_type=video"));
-    assert!(url.contains("page=1"));
-    assert!(url.contains("page_size=2"));
-    assert!(url.contains("&wts="));
+    assert_eq!(calls.len(), 3, "nav + duration=1 + duration=2");
+    assert!(calls[1].contains("duration=1"), "{}", calls[1]);
+    assert!(calls[2].contains("duration=2"), "{}", calls[2]);
 
-    // wbi 要求参数按 key 升序，w_rid 追加在最后。
-    let keyword = url.find("keyword=").expect("keyword");
-    let page = url.find("page=").expect("page");
-    let page_size = url.find("page_size=").expect("page_size");
-    let search_type = url.find("search_type=").expect("search_type");
-    let wts = url.find("&wts=").expect("wts");
-    let w_rid = url.find("&w_rid=").expect("w_rid");
-    assert!(keyword < page && page < page_size && page_size < search_type);
-    assert!(search_type < wts && wts < w_rid);
+    for url in &calls[1..] {
+        assert!(url.starts_with("https://api.bilibili.com/x/web-interface/wbi/search/type?"));
+        assert!(url.contains("keyword=%E5%91%A8%E6%9D%B0%E4%BC%A6"));
+        assert!(url.contains("search_type=video"));
+        assert!(url.contains("page=1"));
+        assert!(url.contains("page_size=2"));
+        assert!(url.contains("&wts="));
 
-    let rid = &url[w_rid + "&w_rid=".len()..];
-    assert_eq!(rid.len(), 32);
-    assert!(rid.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        // wbi 要求参数按 key 升序，w_rid 追加在最后。
+        let duration = url.find("duration=").expect("duration");
+        let keyword = url.find("keyword=").expect("keyword");
+        let page = url.find("page=").expect("page");
+        let page_size = url.find("page_size=").expect("page_size");
+        let search_type = url.find("search_type=").expect("search_type");
+        let wts = url.find("&wts=").expect("wts");
+        let w_rid = url.find("&w_rid=").expect("w_rid");
+        assert!(duration < keyword && keyword < page && page < page_size);
+        assert!(page_size < search_type && search_type < wts && wts < w_rid);
+
+        let rid = &url[w_rid + "&w_rid=".len()..];
+        assert_eq!(rid.len(), 32);
+        assert!(rid.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
 }
 
 #[test]
@@ -264,7 +270,7 @@ fn nav_keys_are_cached_between_searches() {
     source.search("测试", 1).expect("第二次搜索");
 
     let calls = transport.calls();
-    assert_eq!(calls.len(), 3, "nav + search + search");
+    assert_eq!(calls.len(), 5, "nav + 2 searches × 2 duration buckets");
     assert_eq!(
         calls
             .iter()
@@ -321,6 +327,44 @@ fn search_refreshes_wbi_key_once_on_403() {
     let tracks = source.search("测试", 5).expect("-403 后刷新 key 应成功");
 
     assert_eq!(tracks.len(), 3);
-    assert_eq!(transport.search_calls(), 2, "首次 + 刷新后重试");
+    assert_eq!(
+        transport.search_calls(),
+        3,
+        "duration1 失败+重试 + duration2"
+    );
     assert_eq!(transport.nav_calls(), 2, "首次取 key + 刷新 key");
+}
+
+#[test]
+fn search_ranks_full_query_then_play_count() {
+    let body = r#"{"code":0,"message":"OK","data":{"result":[
+        {"type":"video","id":1,"bvid":"BV1aa411c7m1","author":"A","title":"无关视频","duration":"3:00","play":999},
+        {"type":"video","id":2,"bvid":"BV1bb411c7m2","author":"B","title":"测试 副标题","duration":"3:00","play":10},
+        {"type":"video","id":3,"bvid":"BV1cc411c7m3","author":"C","title":"测试 晴天","duration":"3:00","play":100}
+    ]}}"#;
+    let (source, _transport) = source_with(Reply::Body(body.as_bytes().to_vec()));
+
+    let tracks = source.search("测试", 10).expect("夹具应能解析");
+
+    let ids: Vec<&str> = tracks
+        .iter()
+        .map(|track| track.source_id.as_str())
+        .collect();
+    assert_eq!(ids, ["BV1cc411c7m3", "BV1bb411c7m2", "BV1aa411c7m1"]);
+}
+
+#[test]
+fn search_drops_videos_shorter_than_sixty_seconds() {
+    let body = r#"{"code":0,"message":"OK","data":{"result":[
+        {"type":"video","id":1,"bvid":"BV1aa411c7m1","author":"A","title":"测试 切片","duration":"0:59","play":1},
+        {"type":"video","id":2,"bvid":"BV1bb411c7m2","author":"B","title":"测试 正片","duration":"1:00","play":1},
+        {"type":"video","id":3,"bvid":"BV1cc411c7m3","author":"C","title":"测试 超长","duration":"30:01","play":1}
+    ]}}"#;
+    let (source, _transport) = source_with(Reply::Body(body.as_bytes().to_vec()));
+
+    let tracks = source.search("测试", 10).expect("夹具应能解析");
+
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].source_id, "BV1bb411c7m2");
+    assert_eq!(tracks[0].duration_ms, 60_000);
 }
