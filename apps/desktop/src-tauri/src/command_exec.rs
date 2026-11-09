@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -200,6 +200,21 @@ pub(crate) struct PreparedTrack {
     pub(crate) bytes: u64,
     /// 是否命中已有缓存（没有 resolve / 下载）。
     pub(crate) cached: bool,
+}
+
+/// 会话级的远程曲目元数据；不持久化，进程退出即丢。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteMeta {
+    /// 源 id（`bilibili` / `netease`）。
+    source: String,
+    /// 源内 id。
+    source_id: String,
+    /// 标题。
+    title: String,
+    /// 艺人。
+    artist: String,
+    /// 时长，毫秒。
+    duration_ms: u64,
 }
 
 /// 命令层依赖的在线音源能力；生产实现是 [`OnlineService`]，单测用假实现。
@@ -1551,9 +1566,10 @@ impl LibraryHandle {
             .unwrap_or_else(|| PathBuf::from("covers"))
     }
 
-    /// 按绝对路径精确查一首曲目；不存在返回 `None`。
+    /// 按绝对路径精确查一首曲目；本地库未命中时回退到在线会话映射。
     pub(crate) fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
-        self.with_db(|db| db.track_by_path(path))
+        let local = self.with_db(|db| db.track_by_path(path))?;
+        Ok(lookup_track(local, &self.online, Path::new(path)))
     }
 
     /// 懒打开（必要时建库）主线程连接；单测不经过这里。
@@ -1788,6 +1804,10 @@ pub(crate) struct OnlineService {
     /// 单测注入的现成 runtime；生产恒为 `None`。
     fixed: Option<OnlineRuntime>,
     locks: Mutex<HashMap<DedupKey, DedupLock>>,
+    /// 会话级远程元数据：缓存路径 → 源信息。进程退出即丢。
+    remote_meta: Mutex<HashMap<PathBuf, RemoteMeta>>,
+    /// 仅用于测试断言“本地命中时没有查映射”。
+    track_lookups: AtomicUsize,
 }
 
 impl OnlineService {
@@ -1797,6 +1817,8 @@ impl OnlineService {
             runtime: OnceLock::new(),
             fixed: None,
             locks: Mutex::new(HashMap::new()),
+            remote_meta: Mutex::new(HashMap::new()),
+            track_lookups: AtomicUsize::new(0),
         }
     }
 
@@ -1807,6 +1829,8 @@ impl OnlineService {
             runtime: OnceLock::new(),
             fixed: Some(OnlineRuntime { registry, cache }),
             locks: Mutex::new(HashMap::new()),
+            remote_meta: Mutex::new(HashMap::new()),
+            track_lookups: AtomicUsize::new(0),
         }
     }
 
@@ -1841,6 +1865,88 @@ impl OnlineService {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
+
+    /// 下载/命中缓存后登记远程元数据；会话级，不持久化。
+    fn remember_remote(&self, path: &Path, track: &SourceTrack) {
+        let meta = RemoteMeta {
+            source: track.source.as_str().to_owned(),
+            source_id: track.source_id.clone(),
+            title: track.title.clone(),
+            artist: track.artist.clone(),
+            duration_ms: track.duration_ms,
+        };
+        self.remote_meta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(path.to_path_buf(), meta);
+    }
+
+    /// 缓存清理/文件消失后同步移除映射，避免“元数据有、文件没了”。
+    fn prune_remote_meta(&self) {
+        self.remote_meta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|path, _| {
+                fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+            });
+    }
+
+    /// 按缓存路径查远程元数据；文件不存在时顺手清掉映射。
+    pub(crate) fn track_by_path(&self, path: &Path) -> Option<Track> {
+        self.track_lookups.fetch_add(1, Ordering::SeqCst);
+        let meta = self
+            .remote_meta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(path)
+            .cloned()?;
+        let Ok(metadata) = fs::metadata(path) else {
+            self.remove_remote(path);
+            return None;
+        };
+        if !metadata.is_file() || metadata.len() == 0 {
+            self.remove_remote(path);
+            return None;
+        }
+        Some(remote_track(path, &meta, &metadata))
+    }
+
+    fn remove_remote(&self, path: &Path) {
+        self.remote_meta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(path);
+    }
+
+    /// 准备成功后登记元数据并清理已消失的缓存映射。
+    fn finish_prepared(
+        &self,
+        track: &SourceTrack,
+        path: PathBuf,
+        bytes: u64,
+        cached: bool,
+    ) -> PreparedTrack {
+        self.remember_remote(&path, track);
+        self.prune_remote_meta();
+        PreparedTrack {
+            path,
+            bytes,
+            cached,
+        }
+    }
+
+    #[cfg(test)]
+    fn remote_meta_len(&self) -> usize {
+        self.remote_meta
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    #[cfg(test)]
+    fn track_lookups(&self) -> usize {
+        self.track_lookups.load(Ordering::SeqCst)
+    }
 }
 
 impl OnlineApi for OnlineService {
@@ -1868,11 +1974,7 @@ impl OnlineApi for OnlineService {
         // 命中缓存时连 resolve 都不做（网易云 URL 只有 20 分钟有效期）。
         if let Some(path) = runtime.cache.lookup(track.source, &track.source_id) {
             let bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-            return Ok(PreparedTrack {
-                path,
-                bytes,
-                cached: true,
-            });
+            return Ok(self.finish_prepared(track, path, bytes, true));
         }
 
         let source = runtime.registry.source(track.source).ok_or_else(|| {
@@ -1893,11 +1995,7 @@ impl OnlineApi for OnlineService {
             match outcome {
                 Ok(path) => {
                     let bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-                    return Ok(PreparedTrack {
-                        path,
-                        bytes,
-                        cached: false,
-                    });
+                    return Ok(self.finish_prepared(track, path, bytes, false));
                 }
                 Err(error) if is_expired_url_error(&error) && attempt == 0 => continue,
                 Err(error) if is_expired_url_error(&error) => return Err(expired_url_error()),
@@ -1906,6 +2004,45 @@ impl OnlineApi for OnlineService {
         }
 
         Err(expired_url_error())
+    }
+}
+
+/// 本地命中优先；未命中才查在线会话映射。
+fn lookup_track(local: Option<Track>, online: &OnlineService, path: &Path) -> Option<Track> {
+    local.or_else(|| online.track_by_path(path))
+}
+
+/// 把会话元数据包成前端已经在消费的 `Track` 形状（`kind: "remote"`）。
+fn remote_track(path: &Path, meta: &RemoteMeta, metadata: &fs::Metadata) -> Track {
+    Track {
+        id: 0,
+        kind: "remote".to_owned(),
+        path: path.to_string_lossy().into_owned(),
+        source: meta.source.clone(),
+        source_id: meta.source_id.clone(),
+        title: meta.title.clone(),
+        album_id: None,
+        album: String::new(),
+        artist: meta.artist.clone(),
+        album_artist: String::new(),
+        track_no: 0,
+        disc_no: 0,
+        year: 0,
+        duration_ms: i64::try_from(meta.duration_ms).unwrap_or(i64::MAX),
+        sample_rate: 0,
+        channels: 0,
+        bitrate: 0,
+        codec: String::new(),
+        cover_key: None,
+        size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+        mtime_ms: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0),
+        added_at: 0,
+        last_seen_at: 0,
     }
 }
 
@@ -4320,6 +4457,10 @@ mod tests {
         assert_eq!(prepared.bytes, 3);
         assert_eq!(source.resolves(), 1, "命中缓存不应 resolve");
         assert_eq!(downloader.calls(), 1, "命中缓存不应下载");
+        assert!(
+            service.track_by_path(&prepared.path).is_some(),
+            "命中缓存也要保证元数据已登记"
+        );
     }
 
     #[test]
@@ -4877,5 +5018,145 @@ mod tests {
             "队列优先"
         );
         assert!(online_play_hit(&play_three, true, &hits).is_none(), "越界");
+    }
+
+    // ---- 远程曲目元数据（T-0039） ----
+
+    #[test]
+    fn remote_track_has_the_frontend_track_shape() {
+        let dir = TestDir::new("remote-shape");
+        let service = OnlineService::new(dir.path().to_path_buf());
+        let path = dir.path().join("bilibili-BV1xx411c7mD.m4a");
+        fs::write(&path, b"abc").expect("write cache");
+        let source_track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "晴天");
+        service.remember_remote(&path, &source_track);
+
+        let track = service.track_by_path(&path).expect("远程命中");
+
+        assert_eq!(track.id, 0);
+        assert_eq!(track.kind, "remote");
+        assert_eq!(track.path, path.to_string_lossy());
+        assert_eq!(track.source, "bilibili");
+        assert_eq!(track.source_id, "BV1xx411c7mD");
+        assert_eq!(track.title, "晴天");
+        assert_eq!(track.artist, "在线艺人");
+        assert_eq!(track.duration_ms, 200_000);
+        assert_eq!(track.album, "");
+        assert_eq!(track.cover_key, None);
+        assert_eq!(track.size_bytes, 3);
+        assert_eq!(track.track_no, 0);
+    }
+
+    #[test]
+    fn lookup_track_prefers_local_and_skips_remote_map() {
+        let dir = TestDir::new("remote-local-first");
+        let service = OnlineService::new(dir.path().to_path_buf());
+        let path = dir.path().join("bilibili-BV1xx.m4a");
+        fs::write(&path, b"abc").expect("write cache");
+        service.remember_remote(
+            &path,
+            &online_track(SourceId::Bilibili, "BV1xx", "远程标题"),
+        );
+        let local = track(1, "本地标题", "本地艺人", "/music/local.flac", 1_000);
+
+        let found = lookup_track(Some(local.clone()), &service, &path);
+
+        assert_eq!(found, Some(local));
+        assert_eq!(service.track_lookups(), 0, "本地命中不应查远程映射");
+    }
+
+    #[test]
+    fn lookup_track_returns_none_when_both_sides_miss() {
+        let dir = TestDir::new("remote-miss");
+        let service = OnlineService::new(dir.path().to_path_buf());
+
+        assert!(lookup_track(None, &service, &dir.path().join("nope.m4a")).is_none());
+        assert_eq!(service.track_lookups(), 1);
+    }
+
+    #[test]
+    fn prepare_success_registers_remote_metadata() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let source_track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "晴天");
+
+        let prepared = service.prepare(&source_track, &mut |_| {}).expect("下载");
+
+        let track = service.track_by_path(&prepared.path).expect("已登记");
+        assert_eq!(track.kind, "remote");
+        assert_eq!(track.title, "晴天");
+        assert_eq!(track.source_id, "BV1xx411c7mD");
+        assert_eq!(service.remote_meta_len(), 1);
+    }
+
+    #[test]
+    fn prepare_failure_does_not_register_remote_metadata() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", true, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+
+        service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BV1xx411c7mD", "失败"),
+                &mut |_| {},
+            )
+            .expect_err("下载失败");
+
+        assert_eq!(service.remote_meta_len(), 0);
+    }
+
+    #[test]
+    fn missing_cache_file_removes_remote_metadata() {
+        let dir = TestDir::new("remote-missing");
+        let service = OnlineService::new(dir.path().to_path_buf());
+        let path = dir.path().join("netease-10001.mp3");
+        fs::write(&path, b"abc").expect("write cache");
+        service.remember_remote(&path, &online_track(SourceId::Netease, "10001", "Song"));
+        fs::remove_file(&path).expect("remove cache");
+
+        assert!(service.track_by_path(&path).is_none());
+        assert_eq!(service.remote_meta_len(), 0);
+    }
+
+    #[test]
+    fn prepare_prunes_metadata_for_files_removed_by_cache_cleanup() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
+        let stale = _dir.path().join("bilibili-BVstale.m4a");
+        fs::write(&stale, b"old").expect("write stale");
+        service.remember_remote(&stale, &online_track(SourceId::Bilibili, "BVstale", "Old"));
+        fs::remove_file(&stale).expect("模拟 LRU 清理");
+
+        service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BVnew", "New"),
+                &mut |_| {},
+            )
+            .expect("新曲目下载");
+
+        assert_eq!(service.remote_meta_len(), 1, "只应保留新下载的映射");
+        assert!(service.track_by_path(&stale).is_none());
+    }
+
+    #[test]
+    fn library_track_by_path_falls_back_to_remote_metadata() {
+        let dir = TestDir::new("remote-library");
+        let handle = LibraryHandle::new(dir.path().join("library.db"));
+        let path = dir.path().join("netease-10001.mp3");
+        fs::write(&path, b"abc").expect("write cache");
+        handle
+            .online
+            .remember_remote(&path, &online_track(SourceId::Netease, "10001", "Song"));
+
+        let found = handle
+            .track_by_path(path.to_str().expect("utf8"))
+            .expect("查询")
+            .expect("远程命中");
+
+        assert_eq!(found.kind, "remote");
+        assert_eq!(found.source, "netease");
+        assert_eq!(found.title, "Song");
     }
 }
