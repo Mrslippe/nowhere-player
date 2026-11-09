@@ -215,6 +215,8 @@ struct RemoteMeta {
     artist: String,
     /// 时长，毫秒。
     duration_ms: u64,
+    /// 本地封面缓存 key（`np-library` 的 16 位 hex）；无封面为 `None`。
+    cover_key: Option<String>,
 }
 
 /// 命令层依赖的在线音源能力；生产实现是 [`OnlineService`]，单测用假实现。
@@ -1530,6 +1532,10 @@ impl LibraryHandle {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        let covers_dir = db_path
+            .parent()
+            .map(|parent| parent.join("covers"))
+            .unwrap_or_else(|| PathBuf::from("covers"));
         Self {
             inner: Arc::new(LibraryInner {
                 db_path,
@@ -1537,7 +1543,7 @@ impl LibraryHandle {
                 scan: Mutex::new(None),
                 hits: Mutex::new(Vec::new()),
             }),
-            online: Arc::new(OnlineService::new(cache_root)),
+            online: Arc::new(OnlineService::new(cache_root, covers_dir)),
         }
     }
 
@@ -1546,7 +1552,7 @@ impl LibraryHandle {
         Arc::clone(&self.online) as Arc<dyn OnlineApi>
     }
 
-    /// 退出时打断后台扫描并等它提交已入库部分（复用 T-0013 的 shutdown 路径）。
+    /// 退出时取消进行中的下载，并打断后台扫描、等它提交已入库部分。
     pub(crate) fn shutdown(&self) {
         if let Ok(mut slot) = self.inner.scan.lock()
             && let Some(job) = slot.take()
@@ -1789,9 +1795,23 @@ impl From<CmdError> for CmdErrorPayload {
 type DedupKey = (SourceId, String);
 type DedupLock = Arc<Mutex<()>>;
 
+/// 把远端封面字节编码并落盘；生产实现只调用 `np_library::store_cover`。
+trait CoverStore: Send + Sync {
+    fn store(&self, dir: &Path, bytes: &[u8]) -> Option<String>;
+}
+
+struct NpCoverStore;
+
+impl CoverStore for NpCoverStore {
+    fn store(&self, dir: &Path, bytes: &[u8]) -> Option<String> {
+        np_library::store_cover(dir, bytes)
+    }
+}
+
 struct OnlineRuntime {
     registry: SourceRegistry,
     cache: StreamCache,
+    transport: Arc<dyn Transport>,
 }
 
 /// 生产版 [`OnlineApi`]：持有注册表、下载缓存与进程内去重锁。
@@ -1800,6 +1820,8 @@ struct OnlineRuntime {
 /// 客户端构造失败会变成一次可读的 `E_SRC_UNAVAILABLE`，不影响本地命令。
 pub(crate) struct OnlineService {
     cache_root: PathBuf,
+    covers_dir: PathBuf,
+    cover_store: Arc<dyn CoverStore>,
     runtime: OnceLock<Result<OnlineRuntime, String>>,
     /// 单测注入的现成 runtime；生产恒为 `None`。
     fixed: Option<OnlineRuntime>,
@@ -1811,9 +1833,11 @@ pub(crate) struct OnlineService {
 }
 
 impl OnlineService {
-    pub(crate) fn new(cache_root: PathBuf) -> Self {
+    pub(crate) fn new(cache_root: PathBuf, covers_dir: PathBuf) -> Self {
         Self {
             cache_root,
+            covers_dir,
+            cover_store: Arc::new(NpCoverStore),
             runtime: OnceLock::new(),
             fixed: None,
             locks: Mutex::new(HashMap::new()),
@@ -1823,11 +1847,23 @@ impl OnlineService {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_parts(registry: SourceRegistry, cache: StreamCache) -> Self {
+    fn from_parts(
+        registry: SourceRegistry,
+        cache: StreamCache,
+        transport: Arc<dyn Transport>,
+        covers_dir: PathBuf,
+        cover_store: Arc<dyn CoverStore>,
+    ) -> Self {
         Self {
             cache_root: PathBuf::new(),
+            covers_dir,
+            cover_store,
             runtime: OnceLock::new(),
-            fixed: Some(OnlineRuntime { registry, cache }),
+            fixed: Some(OnlineRuntime {
+                registry,
+                cache,
+                transport,
+            }),
             locks: Mutex::new(HashMap::new()),
             remote_meta: Mutex::new(HashMap::new()),
             track_lookups: AtomicUsize::new(0),
@@ -1852,9 +1888,13 @@ impl OnlineService {
             Arc::new(BilibiliSource::new(Arc::clone(&transport))) as Arc<dyn AudioSource>,
             Arc::new(NeteaseSource::new(Arc::clone(&transport))) as Arc<dyn AudioSource>,
         ]);
-        let downloader: Arc<dyn Downloader> = Arc::new(HttpDownloader::new(transport));
+        let downloader: Arc<dyn Downloader> = Arc::new(HttpDownloader::new(Arc::clone(&transport)));
         let cache = StreamCache::new(self.cache_root.clone(), downloader);
-        Ok(OnlineRuntime { registry, cache })
+        Ok(OnlineRuntime {
+            registry,
+            cache,
+            transport,
+        })
     }
 
     fn lock_for(&self, key: &DedupKey) -> DedupLock {
@@ -1867,18 +1907,35 @@ impl OnlineService {
     }
 
     /// 下载/命中缓存后登记远程元数据；会话级，不持久化。
-    fn remember_remote(&self, path: &Path, track: &SourceTrack) {
+    fn remember_remote(&self, path: &Path, track: &SourceTrack, cover_key: Option<String>) {
         let meta = RemoteMeta {
             source: track.source.as_str().to_owned(),
             source_id: track.source_id.clone(),
             title: track.title.clone(),
             artist: track.artist.clone(),
             duration_ms: track.duration_ms,
+            cover_key,
         };
         self.remote_meta
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(path.to_path_buf(), meta);
+    }
+
+    /// 取封面字节并交给 `np-library` 编码落盘；任何一步失败都只丢图。
+    fn fetch_cover(&self, runtime: &OnlineRuntime, track: &SourceTrack) -> Option<String> {
+        let url = track.cover_url.as_deref()?;
+        let headers: &[(&str, &str)] = if track.source == SourceId::Bilibili {
+            &[("Referer", "https://www.bilibili.com")]
+        } else {
+            &[]
+        };
+        let mut bytes = Vec::new();
+        runtime.transport.get_to(url, headers, &mut bytes).ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        self.cover_store.store(&self.covers_dir, &bytes)
     }
 
     /// 缓存清理/文件消失后同步移除映射，避免“元数据有、文件没了”。
@@ -1921,12 +1978,22 @@ impl OnlineService {
     /// 准备成功后登记元数据并清理已消失的缓存映射。
     fn finish_prepared(
         &self,
+        runtime: &OnlineRuntime,
         track: &SourceTrack,
         path: PathBuf,
         bytes: u64,
         cached: bool,
     ) -> PreparedTrack {
-        self.remember_remote(&path, track);
+        // 已登记的 cover_key 直接复用；否则在这一步取图（失败只丢图）。
+        let existing_cover = {
+            self.remote_meta
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&path)
+                .and_then(|meta| meta.cover_key.clone())
+        };
+        let cover_key = existing_cover.or_else(|| self.fetch_cover(runtime, track));
+        self.remember_remote(&path, track, cover_key);
         self.prune_remote_meta();
         PreparedTrack {
             path,
@@ -1974,7 +2041,7 @@ impl OnlineApi for OnlineService {
         // 命中缓存时连 resolve 都不做（网易云 URL 只有 20 分钟有效期）。
         if let Some(path) = runtime.cache.lookup(track.source, &track.source_id) {
             let bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-            return Ok(self.finish_prepared(track, path, bytes, true));
+            return Ok(self.finish_prepared(runtime, track, path, bytes, true));
         }
 
         let source = runtime.registry.source(track.source).ok_or_else(|| {
@@ -1995,7 +2062,7 @@ impl OnlineApi for OnlineService {
             match outcome {
                 Ok(path) => {
                     let bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-                    return Ok(self.finish_prepared(track, path, bytes, false));
+                    return Ok(self.finish_prepared(runtime, track, path, bytes, false));
                 }
                 Err(error) if is_expired_url_error(&error) && attempt == 0 => continue,
                 Err(error) if is_expired_url_error(&error) => return Err(expired_url_error()),
@@ -2033,7 +2100,7 @@ fn remote_track(path: &Path, meta: &RemoteMeta, metadata: &fs::Metadata) -> Trac
         channels: 0,
         bitrate: 0,
         codec: String::new(),
-        cover_key: None,
+        cover_key: meta.cover_key.clone(),
         size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
         mtime_ms: metadata
             .modified()
@@ -4408,6 +4475,87 @@ mod tests {
         }
     }
 
+    type CoverCalls = Vec<(String, Vec<(String, String)>)>;
+
+    struct FakeCoverTransport {
+        body: Vec<u8>,
+        calls: Mutex<CoverCalls>,
+    }
+
+    impl FakeCoverTransport {
+        fn new(body: &[u8]) -> Self {
+            Self {
+                body: body.to_vec(),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> CoverCalls {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl Transport for FakeCoverTransport {
+        fn get(&self, _url: &str) -> Result<Vec<u8>, SourceError> {
+            Ok(self.body.clone())
+        }
+
+        fn get_to(
+            &self,
+            url: &str,
+            headers: &[(&str, &str)],
+            sink: &mut dyn std::io::Write,
+        ) -> Result<u64, SourceError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((
+                    url.to_string(),
+                    headers
+                        .iter()
+                        .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                        .collect(),
+                ));
+            sink.write_all(&self.body)
+                .map_err(|error| SourceError::Download(error.to_string()))?;
+            Ok(self.body.len() as u64)
+        }
+    }
+
+    struct FakeCoverStore {
+        key: Option<String>,
+        calls: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl FakeCoverStore {
+        fn new(key: Option<&str>) -> Self {
+            Self {
+                key: key.map(str::to_owned),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<Vec<u8>> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl CoverStore for FakeCoverStore {
+        fn store(&self, _dir: &Path, bytes: &[u8]) -> Option<String> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(bytes.to_vec());
+            self.key.clone()
+        }
+    }
+
     fn online_service(
         source: Arc<FakeOnlineSource>,
         downloader: Arc<FakeDownloader>,
@@ -4420,7 +4568,13 @@ mod tests {
             5 * 1024 * 1024,
         );
         let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
-        (dir, OnlineService::from_parts(registry, cache))
+        let transport: Arc<dyn Transport> = Arc::new(FakeCoverTransport::new(&[]));
+        let cover_store: Arc<dyn CoverStore> = Arc::new(FakeCoverStore::new(None));
+        let covers_dir = dir.path().join("covers");
+        (
+            dir,
+            OnlineService::from_parts(registry, cache, transport, covers_dir, cover_store),
+        )
     }
 
     #[test]
@@ -5025,11 +5179,11 @@ mod tests {
     #[test]
     fn remote_track_has_the_frontend_track_shape() {
         let dir = TestDir::new("remote-shape");
-        let service = OnlineService::new(dir.path().to_path_buf());
+        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
         let path = dir.path().join("bilibili-BV1xx411c7mD.m4a");
         fs::write(&path, b"abc").expect("write cache");
         let source_track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "晴天");
-        service.remember_remote(&path, &source_track);
+        service.remember_remote(&path, &source_track, Some("0123456789abcdef".to_string()));
 
         let track = service.track_by_path(&path).expect("远程命中");
 
@@ -5042,7 +5196,7 @@ mod tests {
         assert_eq!(track.artist, "在线艺人");
         assert_eq!(track.duration_ms, 200_000);
         assert_eq!(track.album, "");
-        assert_eq!(track.cover_key, None);
+        assert_eq!(track.cover_key.as_deref(), Some("0123456789abcdef"));
         assert_eq!(track.size_bytes, 3);
         assert_eq!(track.track_no, 0);
     }
@@ -5050,12 +5204,13 @@ mod tests {
     #[test]
     fn lookup_track_prefers_local_and_skips_remote_map() {
         let dir = TestDir::new("remote-local-first");
-        let service = OnlineService::new(dir.path().to_path_buf());
+        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
         let path = dir.path().join("bilibili-BV1xx.m4a");
         fs::write(&path, b"abc").expect("write cache");
         service.remember_remote(
             &path,
             &online_track(SourceId::Bilibili, "BV1xx", "远程标题"),
+            None,
         );
         let local = track(1, "本地标题", "本地艺人", "/music/local.flac", 1_000);
 
@@ -5068,7 +5223,7 @@ mod tests {
     #[test]
     fn lookup_track_returns_none_when_both_sides_miss() {
         let dir = TestDir::new("remote-miss");
-        let service = OnlineService::new(dir.path().to_path_buf());
+        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
 
         assert!(lookup_track(None, &service, &dir.path().join("nope.m4a")).is_none());
         assert_eq!(service.track_lookups(), 1);
@@ -5109,10 +5264,14 @@ mod tests {
     #[test]
     fn missing_cache_file_removes_remote_metadata() {
         let dir = TestDir::new("remote-missing");
-        let service = OnlineService::new(dir.path().to_path_buf());
+        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
         let path = dir.path().join("netease-10001.mp3");
         fs::write(&path, b"abc").expect("write cache");
-        service.remember_remote(&path, &online_track(SourceId::Netease, "10001", "Song"));
+        service.remember_remote(
+            &path,
+            &online_track(SourceId::Netease, "10001", "Song"),
+            None,
+        );
         fs::remove_file(&path).expect("remove cache");
 
         assert!(service.track_by_path(&path).is_none());
@@ -5126,7 +5285,11 @@ mod tests {
         let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
         let stale = _dir.path().join("bilibili-BVstale.m4a");
         fs::write(&stale, b"old").expect("write stale");
-        service.remember_remote(&stale, &online_track(SourceId::Bilibili, "BVstale", "Old"));
+        service.remember_remote(
+            &stale,
+            &online_track(SourceId::Bilibili, "BVstale", "Old"),
+            None,
+        );
         fs::remove_file(&stale).expect("模拟 LRU 清理");
 
         service
@@ -5146,9 +5309,11 @@ mod tests {
         let handle = LibraryHandle::new(dir.path().join("library.db"));
         let path = dir.path().join("netease-10001.mp3");
         fs::write(&path, b"abc").expect("write cache");
-        handle
-            .online
-            .remember_remote(&path, &online_track(SourceId::Netease, "10001", "Song"));
+        handle.online.remember_remote(
+            &path,
+            &online_track(SourceId::Netease, "10001", "Song"),
+            None,
+        );
 
         let found = handle
             .track_by_path(path.to_str().expect("utf8"))
@@ -5158,5 +5323,143 @@ mod tests {
         assert_eq!(found.kind, "remote");
         assert_eq!(found.source, "netease");
         assert_eq!(found.title, "Song");
+    }
+
+    #[test]
+    fn prepare_fetches_bilibili_cover_with_referer_and_records_key() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let dir = TestDir::new("cover-bili");
+        let cache = StreamCache::with_limits(
+            dir.path(),
+            Arc::clone(&downloader) as Arc<dyn Downloader>,
+            10 * 1024 * 1024,
+            5 * 1024 * 1024,
+        );
+        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
+        let transport = Arc::new(FakeCoverTransport::new(b"jpeg"));
+        let store = Arc::new(FakeCoverStore::new(Some("0123456789abcdef")));
+        let service = OnlineService::from_parts(
+            registry,
+            cache,
+            Arc::clone(&transport) as Arc<dyn Transport>,
+            dir.path().join("covers"),
+            Arc::clone(&store) as Arc<dyn CoverStore>,
+        );
+        let mut track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video");
+        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
+
+        let prepared = service.prepare(&track, &mut |_| {}).expect("下载");
+
+        assert_eq!(store.calls(), vec![b"jpeg".to_vec()]);
+        let calls = transport.calls();
+        assert_eq!(calls[0].0, "https://example.invalid/cover.jpg");
+        assert!(
+            calls[0]
+                .1
+                .iter()
+                .any(|(name, value)| { name == "Referer" && value == "https://www.bilibili.com" })
+        );
+        let remote = service.track_by_path(&prepared.path).expect("元数据");
+        assert_eq!(remote.cover_key.as_deref(), Some("0123456789abcdef"));
+    }
+
+    #[test]
+    fn cover_failure_does_not_fail_prepare() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let dir = TestDir::new("cover-fail");
+        let cache = StreamCache::with_limits(
+            dir.path(),
+            Arc::clone(&downloader) as Arc<dyn Downloader>,
+            10 * 1024 * 1024,
+            5 * 1024 * 1024,
+        );
+        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
+        let transport = Arc::new(FakeCoverTransport::new(b"not-an-image"));
+        let store = Arc::new(FakeCoverStore::new(None));
+        let service = OnlineService::from_parts(
+            registry,
+            cache,
+            Arc::clone(&transport) as Arc<dyn Transport>,
+            dir.path().join("covers"),
+            Arc::clone(&store) as Arc<dyn CoverStore>,
+        );
+        let mut track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video");
+        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
+
+        let prepared = service
+            .prepare(&track, &mut |_| {})
+            .expect("播放不受封面影响");
+
+        assert!(service.track_by_path(&prepared.path).is_some());
+        assert_eq!(store.calls().len(), 1);
+        assert_eq!(
+            service
+                .track_by_path(&prepared.path)
+                .expect("元数据")
+                .cover_key,
+            None
+        );
+    }
+
+    #[test]
+    fn cache_hit_reuses_cover_key_without_refetching() {
+        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let dir = TestDir::new("cover-cache");
+        let cache = StreamCache::with_limits(
+            dir.path(),
+            Arc::clone(&downloader) as Arc<dyn Downloader>,
+            10 * 1024 * 1024,
+            5 * 1024 * 1024,
+        );
+        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
+        let transport = Arc::new(FakeCoverTransport::new(b"jpeg"));
+        let store = Arc::new(FakeCoverStore::new(Some("0123456789abcdef")));
+        let service = OnlineService::from_parts(
+            registry,
+            cache,
+            Arc::clone(&transport) as Arc<dyn Transport>,
+            dir.path().join("covers"),
+            Arc::clone(&store) as Arc<dyn CoverStore>,
+        );
+        let mut track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video");
+        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
+
+        service.prepare(&track, &mut |_| {}).expect("首次");
+        service.prepare(&track, &mut |_| {}).expect("命中缓存");
+
+        assert_eq!(transport.calls().len(), 1, "缓存命中不应重新抓封面");
+        assert_eq!(store.calls().len(), 1);
+    }
+
+    #[test]
+    fn netease_cover_has_no_referer_header() {
+        let source = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let dir = TestDir::new("cover-netease");
+        let cache = StreamCache::with_limits(
+            dir.path(),
+            Arc::clone(&downloader) as Arc<dyn Downloader>,
+            10 * 1024 * 1024,
+            5 * 1024 * 1024,
+        );
+        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
+        let transport = Arc::new(FakeCoverTransport::new(b"jpeg"));
+        let store = Arc::new(FakeCoverStore::new(Some("0123456789abcdef")));
+        let service = OnlineService::from_parts(
+            registry,
+            cache,
+            Arc::clone(&transport) as Arc<dyn Transport>,
+            dir.path().join("covers"),
+            Arc::clone(&store) as Arc<dyn CoverStore>,
+        );
+        let mut track = online_track(SourceId::Netease, "10001", "Song");
+        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
+
+        service.prepare(&track, &mut |_| {}).expect("下载");
+
+        assert!(transport.calls()[0].1.is_empty());
     }
 }
