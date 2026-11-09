@@ -219,6 +219,14 @@ pub(crate) fn normalize_cover(raw: &str) -> Option<String> {
     None
 }
 
+/// 响应 JSON 顶层 `code` 是否等于给定值；非法 JSON 返回 false。
+pub(crate) fn is_code(body: &[u8], expected: i64) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("code").and_then(|code| code.as_i64()))
+        == Some(expected)
+}
+
 #[derive(Debug, Deserialize)]
 struct ViewEnvelope {
     code: i64,
@@ -259,11 +267,33 @@ struct Dash {
 
 #[derive(Debug, Deserialize)]
 struct DashAudio {
-    #[serde(rename = "baseUrl", alias = "base_url")]
+    // B 站真实响应会同时给 camelCase 与 snake_case 两份；分开收，
+    // 用 alias 会被 serde 判成 duplicate field。
+    #[serde(default, rename = "baseUrl")]
     base_url: Option<String>,
+    #[serde(default, rename = "base_url")]
+    base_url_snake: Option<String>,
     bandwidth: Option<u64>,
-    #[serde(rename = "mimeType", alias = "mime_type")]
+    #[serde(default, rename = "mimeType")]
     mime_type: Option<String>,
+    #[serde(default, rename = "mime_type")]
+    mime_type_snake: Option<String>,
+}
+
+impl DashAudio {
+    fn url(&self) -> Option<&str> {
+        self.base_url
+            .as_deref()
+            .or(self.base_url_snake.as_deref())
+            .filter(|url| !url.is_empty())
+    }
+
+    fn mime(&self) -> &str {
+        self.mime_type
+            .as_deref()
+            .or(self.mime_type_snake.as_deref())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,8 +370,8 @@ pub(crate) fn parse_playurl(body: &[u8]) -> Result<ResolvedStream> {
     {
         let selected = audio
             .iter()
-            .filter(|entry| is_audio_mp4(entry.mime_type.as_deref().unwrap_or_default()))
-            .filter(|entry| entry.base_url.as_deref().is_some_and(|url| !url.is_empty()))
+            .filter(|entry| is_audio_mp4(entry.mime()))
+            .filter(|entry| entry.url().is_some())
             .max_by_key(|entry| entry.bandwidth.unwrap_or(0))
             .ok_or_else(|| {
                 SourceError::Unavailable(format!(
@@ -349,11 +379,7 @@ pub(crate) fn parse_playurl(body: &[u8]) -> Result<ResolvedStream> {
                     audio.len()
                 ))
             })?;
-        let url = selected
-            .base_url
-            .as_deref()
-            .expect("已过滤空 URL")
-            .to_string();
+        let url = selected.url().expect("已过滤空 URL").to_string();
         return Ok(ResolvedStream {
             expires_at: parse_deadline(&url),
             url,
@@ -568,5 +594,29 @@ mod resolve_tests {
         let error = parse_playurl(body).expect_err("不应回退 durl");
         assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
         assert!(error.to_string().contains("audio/mp4"));
+    }
+
+    #[test]
+    fn dash_audio_accepts_camel_and_snake_case_fields() {
+        // 真实响应同时包含 baseUrl/base_url 与 mimeType/mime_type。
+        let body = br#"{"code":0,"data":{"dash":{"audio":[{"baseUrl":"https://example.invalid/camel.m4s","base_url":"https://example.invalid/snake.m4s","bandwidth":2,"mimeType":"audio/mp4","mime_type":"audio/mp4"}]}}}"#;
+        let stream = parse_playurl(body).expect("解析");
+        assert_eq!(stream.url, "https://example.invalid/camel.m4s");
+        assert_eq!(stream.mime, "audio/mp4");
+    }
+
+    #[test]
+    fn dash_audio_accepts_snake_case_only() {
+        let body = br#"{"code":0,"data":{"dash":{"audio":[{"base_url":"https://example.invalid/snake.m4s","bandwidth":2,"mime_type":"audio/mp4"}]}}}"#;
+        let stream = parse_playurl(body).expect("解析");
+        assert_eq!(stream.url, "https://example.invalid/snake.m4s");
+        assert_eq!(stream.mime, "audio/mp4");
+    }
+
+    #[test]
+    fn detects_api_error_codes() {
+        assert!(is_code(br#"{"code":-403}"#, -403));
+        assert!(!is_code(br#"{"code":0}"#, -403));
+        assert!(!is_code(b"not json", -403));
     }
 }

@@ -1,5 +1,6 @@
 //! B 站搜索的离线测试：`Transport` 注入夹具，测试代码不含任何网络调用。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use np_sources::{AudioSource, BilibiliSource, SourceError, SourceId, Transport};
@@ -261,4 +262,55 @@ fn nav_keys_are_cached_between_searches() {
             .count(),
         1
     );
+}
+
+struct RotatingTransport {
+    nav_calls: AtomicUsize,
+    search_calls: AtomicUsize,
+}
+
+impl RotatingTransport {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            nav_calls: AtomicUsize::new(0),
+            search_calls: AtomicUsize::new(0),
+        })
+    }
+
+    fn nav_calls(&self) -> usize {
+        self.nav_calls.load(Ordering::SeqCst)
+    }
+
+    fn search_calls(&self) -> usize {
+        self.search_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Transport for RotatingTransport {
+    fn get(&self, url: &str) -> Result<Vec<u8>, SourceError> {
+        if url.contains("/x/web-interface/nav") {
+            self.nav_calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(NAV.to_vec());
+        }
+        let call = self.search_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            Ok(r#"{"code":-403,"message":"访问权限不足","data":null}"#
+                .as_bytes()
+                .to_vec())
+        } else {
+            Ok(SEARCH_OK.to_vec())
+        }
+    }
+}
+
+#[test]
+fn search_refreshes_wbi_key_once_on_403() {
+    let transport = RotatingTransport::new();
+    let source = BilibiliSource::new(transport.clone());
+
+    let tracks = source.search("测试", 5).expect("-403 后刷新 key 应成功");
+
+    assert_eq!(tracks.len(), 3);
+    assert_eq!(transport.search_calls(), 2, "首次 + 刷新后重试");
+    assert_eq!(transport.nav_calls(), 2, "首次取 key + 刷新 key");
 }

@@ -17,7 +17,9 @@
           ],
           "bandwidth": 67307,
           "mimeType": "audio/mp4",
-          "codecs": "mp4a.40.2"
+          "codecs": "mp4a.40.2",
+          "base_url": "https://example.invalid/dash/audio-67307.m4s?deadline=1794234249&token=synthetic",
+          "mime_type": "audio/mp4"
         },
         {
           "id": 30232,
@@ -27,7 +29,9 @@
           ],
           "bandwidth": 132796,
           "mimeType": "audio/mp4",
-          "codecs": "mp4a.40.2"
+          "codecs": "mp4a.40.2",
+          "base_url": "https://example.invalid/dash/audio-132796.m4s?deadline=1794234249&token=synthetic",
+          "mime_type": "audio/mp4"
         },
         {
           "id": 30280,
@@ -37,7 +41,9 @@
           ],
           "bandwidth": 319102,
           "mimeType": "audio/mp4",
-          "codecs": "mp4a.40.2"
+          "codecs": "mp4a.40.2",
+          "base_url": "https://example.invalid/dash/audio-319102.m4s?deadline=1794234249&token=synthetic",
+          "mime_type": "audio/mp4"
         },
         {
           "id": 30250,
@@ -47,7 +53,9 @@
           ],
           "bandwidth": 999999,
           "mimeType": "audio/flac",
-          "codecs": "fLaC"
+          "codecs": "fLaC",
+          "base_url": "https://example.invalid/dash/audio-flac.m4s?deadline=1794234249&token=synthetic",
+          "mime_type": "audio/flac"
         }
       ]
     }

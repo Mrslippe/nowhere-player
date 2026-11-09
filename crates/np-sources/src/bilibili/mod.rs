@@ -71,6 +71,30 @@ impl BilibiliSource {
         });
         Ok(mixin_key)
     }
+
+    fn search_body(&self, query: &str, page_size: usize) -> Result<Vec<u8>> {
+        let mixin_key = self.mixin_key()?;
+        let wts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let params = vec![
+            ("search_type".to_string(), "video".to_string()),
+            ("keyword".to_string(), query.to_string()),
+            ("page".to_string(), "1".to_string()),
+            ("page_size".to_string(), page_size.to_string()),
+        ];
+        let signed_query = wbi::sign(&params, &mixin_key, wts);
+        let url = format!("{SEARCH_ENDPOINT}?{signed_query}");
+        self.transport.get(&url)
+    }
+
+    fn invalidate_mixin_key(&self) {
+        *self
+            .mixin_key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
 }
 
 impl AudioSource for BilibiliSource {
@@ -87,20 +111,16 @@ impl AudioSource for BilibiliSource {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let page_size = limit.min(MAX_PAGE_SIZE);
-        let mixin_key = self.mixin_key()?;
-        let wts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_secs())
-            .unwrap_or(0);
-        let params = vec![
-            ("search_type".to_string(), "video".to_string()),
-            ("keyword".to_string(), query.to_string()),
-            ("page".to_string(), "1".to_string()),
-            ("page_size".to_string(), page_size.to_string()),
-        ];
-        let signed_query = wbi::sign(&params, &mixin_key, wts);
-        let url = format!("{SEARCH_ENDPOINT}?{signed_query}");
-        let body = self.transport.get(&url)?;
+
+        let body = self.search_body(query, page_size)?;
+        let body = if dto::is_code(&body, -403) {
+            // wbi key 每日更换；缓存内可能刚过期。清掉重取一次（ADR-0004 §10）。
+            self.invalidate_mixin_key();
+            self.search_body(query, page_size)?
+        } else {
+            body
+        };
+
         let tracks = dto::parse_search(&body)?;
         Ok(tracks.into_iter().take(limit).collect())
     }
