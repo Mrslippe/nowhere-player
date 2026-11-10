@@ -3,6 +3,7 @@
 //! 边界见 ADR-0004：本 crate 只负责搜索与取流地址，不碰播放、不碰命令层。
 //! 所有网络访问都经过可注入的 [`Transport`]，因此测试可以完全离线。
 
+pub mod artist;
 pub mod wbi;
 
 mod bilibili;
@@ -17,6 +18,7 @@ mod transport;
 #[cfg(test)]
 mod testing;
 
+pub use artist::{MatchKind, build_query, match_artist_name, matches_artist};
 pub use bilibili::BilibiliSource;
 pub use cache::{STREAM_CACHE_MAX_BYTES, STREAM_CACHE_TARGET_BYTES, StreamCache};
 pub use download::{DownloadOutcome, Downloader, HttpDownloader};

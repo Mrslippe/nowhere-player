@@ -20,7 +20,9 @@ pub use settings::{
     SETTINGS_BACKUP_FILE, SETTINGS_FILE, SettingValue, Settings, SettingsError, SettingsWarning,
     settings_path, validate_setting,
 };
-pub use terminal::{Block, BlockStatus, MediaKind, Output, SCHEMA_VERSION, Span, SpanColor, Tone};
+pub use terminal::{
+    Block, BlockAction, BlockStatus, MediaKind, Output, SCHEMA_VERSION, Span, SpanColor, Tone,
+};
 pub use theme::{
     BUILTIN_THEMES, BuiltinTheme, MAX_THEME_ID_LEN, MAX_THEME_NAME_CHARS, RawTheme, Skin,
     THEME_CONTRACT, THEME_TOKEN_NAMES, ThemeApplyReply, ThemeError, ThemeListEntry, ThemeSource,

@@ -1,0 +1,38 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "page": 1,
+    "pagesize": 1,
+    "numResults": 1,
+    "numPages": 1,
+    "result": [
+      {
+        "type": "video",
+        "id": 2001,
+        "author": "切片搬运号",
+        "mid": 0,
+        "typeid": "21",
+        "typename": "日常",
+        "arcurl": "https://www.bilibili.com/video/BV1artistT1t",
+        "aid": 2001,
+        "bvid": "BV1artistT1t",
+        "title": "【明前奶绿】不为谁而作的歌 翻唱切片",
+        "description": "",
+        "pic": "",
+        "play": 0,
+        "video_review": 0,
+        "favorites": 0,
+        "tag": "",
+        "review": 0,
+        "pubdate": 0,
+        "senddate": 0,
+        "duration": "4:00",
+        "badgepay": false,
+        "is_pay": 0,
+        "danmaku": 0
+      }
+    ]
+  }
+}

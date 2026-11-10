@@ -3,12 +3,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use np_sources::{AudioSource, BilibiliSource, SourceError, SourceId, Transport};
+use np_sources::{
+    AudioSource, BilibiliSource, MatchKind, SourceError, SourceId, Transport, matches_artist,
+};
 
 const NAV: &[u8] = include_bytes!("../fixtures/bilibili/nav.json");
 const SEARCH_OK: &[u8] = include_bytes!("../fixtures/bilibili/search_ok.json");
 const SEARCH_EMPTY: &[u8] = include_bytes!("../fixtures/bilibili/search_empty.json");
 const SEARCH_DENIED: &[u8] = include_bytes!("../fixtures/bilibili/search_denied.json");
+const SEARCH_ARTIST_TITLE: &[u8] = include_bytes!("../fixtures/bilibili/search_artist_title.json");
 
 #[derive(Clone, Debug)]
 enum Reply {
@@ -82,6 +85,20 @@ fn source_ok() -> (BilibiliSource, Arc<FakeTransport>) {
 fn source_with(search: Reply) -> (BilibiliSource, Arc<FakeTransport>) {
     let transport = FakeTransport::new(Reply::Body(NAV.to_vec()), search);
     (BilibiliSource::new(transport.clone()), transport)
+}
+
+#[test]
+fn fixture_title_contains_artist_but_uploader_does_not() {
+    let (source, _transport) = source_with(Reply::Body(SEARCH_ARTIST_TITLE.to_vec()));
+    let tracks = source
+        .search("明前奶绿 不为谁而作的歌", 10)
+        .expect("夹具应能解析");
+    let target = tracks
+        .iter()
+        .find(|track| track.source_id == "BV1artistT1t")
+        .expect("标题切片应保留");
+    assert_eq!(target.artist, "切片搬运号");
+    assert_eq!(matches_artist(target, "明前奶绿"), MatchKind::Title);
 }
 
 #[test]

@@ -338,6 +338,19 @@ impl<'de> Deserialize<'de> for Output {
     }
 }
 
+/// 错误块上的可执行动作（T-0045 阶段 3）。
+///
+/// `label` 是按钮文案，`input` 是点击后要执行的完整命令；两者分离，
+/// 避免把「跳过该目录」这类没有命令的旧 label 伪装成可执行动作。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockAction {
+    /// 按钮文案，如「重试」。
+    pub label: String,
+    /// 点击后提交给命令层的输入。
+    pub input: String,
+}
+
 /// 一条命令 = 一个块。渲染器按 `outputs` 顺序绘制，进度通过 `id` 原地替换。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -361,6 +374,10 @@ pub struct Block {
     /// 载荷版本；当前恒为 [`SCHEMA_VERSION`]。
     #[serde(default = "default_schema_version")]
     pub schema_version: u16,
+    /// 错误块的可执行动作；非错误块/旧块不写该字段（T-0045 阶段 3）。
+    /// 旧 `Output::Error.actions` 仍保留兼容，但 UI 不再渲染它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions: Option<Vec<BlockAction>>,
 }
 
 fn default_schema_version() -> u16 {

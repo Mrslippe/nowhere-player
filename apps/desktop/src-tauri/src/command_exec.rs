@@ -23,8 +23,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use np_core::command::{Completion, complete, parse, registry};
 use np_core::{
-    Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
-    PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, SettingValue, Settings,
+    Block, BlockAction, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState,
+    PlayerError, PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, SettingValue, Settings,
     SettingsWarning, Span, ThemeApplyReply, ThemeError, ThemeListEntry, ThemeSource,
     validate_setting,
 };
@@ -33,8 +33,9 @@ use np_library::{
     cover_cache_usage,
 };
 use np_sources::{
-    AudioSource, BilibiliSource, Downloader, HttpDownloader, NeteaseSource, ReqwestTransport,
-    SourceError, SourceId, SourceRegistry, SourceTrack, StreamCache, Transport,
+    AudioSource, BilibiliSource, Downloader, HttpDownloader, MatchKind, NeteaseSource,
+    ReqwestTransport, SourceError, SourceId, SourceRegistry, SourceTrack, StreamCache, Transport,
+    build_query, matches_artist as match_source_artist,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -305,11 +306,27 @@ impl SearchOptions {
         }
     }
 
-    fn matches_artist(&self, artist: &str) -> bool {
-        match &self.artist {
-            Some(wanted) => artist.to_lowercase().contains(&wanted.to_lowercase()),
-            None => true,
+    /// 带 `--artist` 时扩大候选池；无 artist 维持现有配额。
+    fn candidate_pool(&self) -> usize {
+        if self.artist.is_some() {
+            self.limit.saturating_mul(3).clamp(1, 50)
+        } else {
+            self.per_source()
         }
+    }
+
+    /// 带 artist 时本地也扩大抓取，过滤后再截断。
+    fn local_fetch_limit(&self) -> usize {
+        if self.artist.is_some() {
+            self.limit.saturating_mul(3).clamp(1, 50)
+        } else {
+            self.limit.saturating_add(1)
+        }
+    }
+
+    /// 发给在线源的 query；构造规则集中在 `np-sources`。
+    fn source_query(&self) -> String {
+        build_query(&self.keyword, self.artist.as_deref())
     }
 
     fn footer(&self, count: usize, with_source_column: bool) -> String {
@@ -369,6 +386,25 @@ impl SearchHit {
             Self::Local(_) => "本地",
             Self::Online(track) => source_label(track.source),
         }
+    }
+
+    fn artist_match(&self, name: &str) -> MatchKind {
+        match self {
+            Self::Local(track) => local_artist_match(track, name),
+            Self::Online(track) => match_source_artist(track, name),
+        }
+    }
+}
+
+/// 本地库的 artist 是结构化字段，只比它，不比标题。
+fn local_artist_match(track: &Track, name: &str) -> MatchKind {
+    let wanted = name.trim().to_lowercase();
+    if wanted.is_empty() {
+        MatchKind::None
+    } else if track.artist.to_lowercase().contains(&wanted) {
+        MatchKind::Author
+    } else {
+        MatchKind::None
     }
 }
 
@@ -963,6 +999,7 @@ pub(crate) fn execute_with_services(
         outputs: Vec::new(),
         footer: None,
         schema_version: SCHEMA_VERSION,
+        actions: None,
     };
 
     let clock = Instant::now();
@@ -1001,6 +1038,7 @@ pub(crate) fn execute_with_services(
             duration_ms: Some(duration_ms),
             status: BlockStatus::Error,
             outputs: vec![error.to_output()],
+            actions: error_actions(input, parsed.as_ref().ok()),
             ..running.clone()
         },
     };
@@ -1008,6 +1046,52 @@ pub(crate) fn execute_with_services(
     Execution::Blocks {
         running: Box::new(running),
         done: Box::new(done),
+    }
+}
+
+/// 错误块动作（T-0045 阶段 3）：只生成真实存在的命令。
+///
+/// - 所有非空错误块都有「重试」（原命令）。
+/// - 只有 `search` 且当前不是本地搜索时，追加「只用本地搜索」；
+///   关键词来自 `SearchOptions`，不伪造不存在的「跳过该目录」。
+pub(crate) fn error_actions(input: &str, parsed: Option<&Parsed>) -> Option<Vec<BlockAction>> {
+    let retry = input.trim();
+    if retry.is_empty() {
+        return None;
+    }
+
+    let mut actions = vec![BlockAction {
+        label: "重试".to_owned(),
+        input: retry.to_owned(),
+    }];
+
+    if let Some(parsed) = parsed
+        && parsed.spec.name == "search"
+        && let Ok(options) = SearchOptions::parse(parsed)
+        && !options.local
+        && !options.keyword.trim().is_empty()
+    {
+        actions.push(BlockAction {
+            label: "只用本地搜索".to_owned(),
+            input: format!(
+                "search {} --local",
+                quote_search_keyword(options.keyword.trim())
+            ),
+        });
+    }
+
+    Some(actions)
+}
+
+/// 关键词含空白/引号时用双引号包住，保证动作命令仍是一个 search 查询。
+fn quote_search_keyword(keyword: &str) -> String {
+    if keyword
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch == '"' || ch == '\\')
+    {
+        format!("\"{}\"", keyword.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        keyword.to_owned()
     }
 }
 
@@ -1562,12 +1646,10 @@ impl Executor<'_> {
     fn search(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let options = SearchOptions::parse(parsed)?;
         let keyword = &options.keyword;
-        let mut tracks = self
-            .library
-            .search(keyword, options.limit.saturating_add(1))?;
+        let mut tracks = self.library.search(keyword, options.local_fetch_limit())?;
         let before_artist = tracks.len();
-        if options.artist.is_some() {
-            tracks.retain(|track| options.matches_artist(&track.artist));
+        if let Some(artist) = &options.artist {
+            tracks.retain(|track| !matches!(local_artist_match(track, artist), MatchKind::None));
         }
         let removed = before_artist.saturating_sub(tracks.len());
         let truncated = tracks.len() > options.limit;
@@ -2547,6 +2629,7 @@ impl EventObserver {
             outputs,
             footer,
             schema_version: SCHEMA_VERSION,
+            actions: None,
         }
     }
 }
@@ -2585,6 +2668,7 @@ impl LibraryObserver for EventObserver {
             ],
             footer: file.map(|name| format!("当前：{name}")),
             schema_version: SCHEMA_VERSION,
+            actions: None,
         };
         (self.emit)(&block);
     }
@@ -3704,6 +3788,7 @@ fn finish_block(
         outputs,
         footer,
         schema_version: SCHEMA_VERSION,
+        actions: None,
     }
 }
 
@@ -3732,7 +3817,7 @@ pub(crate) fn run_online_search_with_options(
 ) {
     // `--source <具体源>` 只搜该在线源，不混本地库。
     let mut local = if options.source.is_none() {
-        match library.search(&options.keyword, options.limit.saturating_add(1)) {
+        match library.search(&options.keyword, options.local_fetch_limit()) {
             Ok(tracks) => tracks,
             Err(error) => {
                 emit(&finish_block(
@@ -3749,22 +3834,26 @@ pub(crate) fn run_online_search_with_options(
         Vec::new()
     };
     let local_before = local.len();
-    if options.artist.is_some() {
-        local.retain(|track| options.matches_artist(&track.artist));
+    if let Some(artist) = &options.artist {
+        local.retain(|track| !matches!(local_artist_match(track, artist), MatchKind::None));
     }
     let local_removed = local_before.saturating_sub(local.len());
     // 默认视图给本地留 10 条上限，剩余名额给在线；显式 --limit 不压本地。
     local.truncate(options.local_cap());
 
-    let (mut online_tracks, all_failed) =
-        match online.search_all_for(&options.keyword, options.per_source(), options.source) {
-            Ok(result) => (result.tracks, result.all_failed),
-            // 在线客户端初始化失败也不能吞掉本地结果。
-            Err(_) => (Vec::new(), true),
-        };
+    let (mut online_tracks, all_failed) = match online.search_all_for(
+        &options.source_query(),
+        options.candidate_pool(),
+        options.source,
+    ) {
+        Ok(result) => (result.tracks, result.all_failed),
+        // 在线客户端初始化失败也不能吞掉本地结果。
+        Err(_) => (Vec::new(), true),
+    };
     let online_before = online_tracks.len();
-    if options.artist.is_some() {
-        online_tracks.retain(|track| options.matches_artist(&track.artist));
+    if let Some(artist) = &options.artist {
+        online_tracks
+            .retain(|track| !matches!(match_source_artist(track, artist), MatchKind::None));
     }
     let online_removed = online_before.saturating_sub(online_tracks.len());
 
@@ -3772,6 +3861,15 @@ pub(crate) fn run_online_search_with_options(
     let removed = local_removed.saturating_add(online_removed);
     let mut hits: Vec<SearchHit> = local.into_iter().map(SearchHit::Local).collect();
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
+    if let Some(artist) = &options.artist {
+        // Author 排前、Title 排后；同档保持“本地在前 + 各源返回顺序”。
+        let mut ranked: Vec<(MatchKind, SearchHit)> = hits
+            .into_iter()
+            .map(|hit| (hit.artist_match(artist), hit))
+            .collect();
+        ranked.sort_by_key(|(kind, _)| *kind);
+        hits = ranked.into_iter().map(|(_, hit)| hit).collect();
+    }
     hits.truncate(options.limit);
     library.remember_hits(hits.clone());
     // 即使 0 条，也把上下文切成“空的 Search”，不保留上一张旧表。
@@ -3892,6 +3990,7 @@ pub(crate) fn scan_started_block(block_id: &str, input: &str, full: bool) -> Blo
         outputs,
         footer,
         schema_version: SCHEMA_VERSION,
+        actions: None,
     }
 }
 
@@ -3990,6 +4089,7 @@ fn search_started_block(block_id: &str, input: &str, keyword: &str) -> Block {
         outputs: vec![text_of(vec![bold("搜索中"), dim(format!(" · {keyword}"))])],
         footer: Some("本地结果与在线源串行搜索，请稍候".to_owned()),
         schema_version: SCHEMA_VERSION,
+        actions: None,
     }
 }
 
@@ -4017,6 +4117,7 @@ fn online_play_started_block(
         ])],
         footer: Some("正在解析地址并下载到本地缓存…".to_owned()),
         schema_version: SCHEMA_VERSION,
+        actions: None,
     }
 }
 
@@ -5624,7 +5725,7 @@ mod tests {
 
         assert_eq!(
             library.calls(),
-            vec![LibraryCall::Search("周杰伦".to_owned(), 21)]
+            vec![LibraryCall::Search("周杰伦".to_owned(), 50)]
         );
         let (_, rows) = table_of_block(&block);
         assert_eq!(rows.len(), 1);
@@ -6758,6 +6859,138 @@ mod tests {
         );
     }
 
+    fn run_online_capture(
+        options: &SearchOptions,
+        online: &RecordingOnline,
+        library: &FakeLibraryApi,
+    ) -> Block {
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        run_online_search_with_options(
+            options,
+            online,
+            library,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+        emitted
+            .lock()
+            .expect("emitted")
+            .last()
+            .expect("done block")
+            .clone()
+    }
+
+    fn artist_options(keyword: &str, artist: &str, limit: usize) -> SearchOptions {
+        SearchOptions {
+            keyword: keyword.to_owned(),
+            artist: Some(artist.to_owned()),
+            source: None,
+            limit,
+            local: false,
+            explicit_limit: false,
+        }
+    }
+
+    #[test]
+    fn artist_query_is_artist_first_and_pool_expands() {
+        let library = FakeLibraryApi::new();
+        let mut author = online_track(SourceId::Bilibili, "BV1xx", "晴天");
+        author.artist = "周杰伦".to_owned();
+        let online = RecordingOnline::new(vec![author]);
+        let options = artist_options("晴天", "周杰伦", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(online.calls(), vec![("周杰伦 晴天".to_owned(), 50, None)]);
+        assert_eq!(table_of_block(&block).1.len(), 1);
+    }
+
+    #[test]
+    fn explicit_limit_scales_artist_pool_by_three() {
+        let library = FakeLibraryApi::new();
+        let online = RecordingOnline::new(Vec::new());
+        let options = artist_options("晴天", "周杰伦", 5);
+
+        run_online_capture(&options, &online, &library);
+
+        assert_eq!(online.calls()[0].1, 15);
+    }
+
+    #[test]
+    fn author_match_sorts_before_title_match() {
+        let library = FakeLibraryApi::new();
+        let mut title_match = online_track(SourceId::Bilibili, "BVtitle", "上传者A");
+        title_match.title = "【周杰伦】晴天 翻唱".to_owned();
+        title_match.artist = "上传者A".to_owned();
+        let mut author_match = online_track(SourceId::Bilibili, "BVauthor", "晴天");
+        author_match.artist = "周杰伦".to_owned();
+        let online = RecordingOnline::new(vec![title_match, author_match]);
+        let options = artist_options("晴天", "周杰伦", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][3], "周杰伦");
+        assert_eq!(rows[1][3], "上传者A");
+    }
+
+    #[test]
+    fn bilibili_title_match_is_kept() {
+        let library = FakeLibraryApi::new();
+        let mut track = online_track(SourceId::Bilibili, "BVtitle", "切片号");
+        track.title = "【明前奶绿】不为谁而作的歌".to_owned();
+        track.artist = "切片号".to_owned();
+        let online = RecordingOnline::new(vec![track]);
+        let options = artist_options("不为谁而作的歌", "明前奶绿", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][3], "切片号");
+    }
+
+    #[test]
+    fn netease_title_match_is_not_kept() {
+        let library = FakeLibraryApi::new();
+        let mut track = online_track(SourceId::Netease, "10001", "别的艺人");
+        track.title = "明前奶绿 翻唱".to_owned();
+        let online = RecordingOnline::new(vec![track]);
+        let options = artist_options("歌", "明前奶绿", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. }
+                if text.contains("过滤前有 1 条，被 --artist 过滤掉了 1 条")
+        )));
+    }
+
+    #[test]
+    fn no_artist_keeps_per_source_pool() {
+        let library = FakeLibraryApi::new();
+        let online = RecordingOnline::new(Vec::new());
+        let options = SearchOptions {
+            keyword: "晴天".to_owned(),
+            artist: None,
+            source: None,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+        };
+
+        run_online_capture(&options, &online, &library);
+
+        assert_eq!(online.calls()[0].1, ONLINE_SEARCH_PER_SOURCE);
+    }
+
     #[test]
     fn run_online_search_empty_hits_sets_empty_search_listing() {
         let library = FakeLibraryApi::new();
@@ -7046,6 +7279,61 @@ mod tests {
         }
     }
 
+    struct RecordingOnline {
+        tracks: Vec<SourceTrack>,
+        calls: Mutex<Vec<(String, usize, Option<SourceId>)>>,
+    }
+
+    impl RecordingOnline {
+        fn new(tracks: Vec<SourceTrack>) -> Self {
+            Self {
+                tracks,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, usize, Option<SourceId>)> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl OnlineApi for RecordingOnline {
+        fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError> {
+            self.search_all_for(query, limit, None)
+        }
+
+        fn search_all_for(
+            &self,
+            query: &str,
+            limit: usize,
+            source: Option<SourceId>,
+        ) -> Result<OnlineSearch, CmdError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((query.to_owned(), limit, source));
+            let mut tracks = self.tracks.clone();
+            if let Some(source) = source {
+                tracks.retain(|track| track.source == source);
+            }
+            Ok(OnlineSearch {
+                tracks,
+                all_failed: false,
+            })
+        }
+
+        fn prepare(
+            &self,
+            _track: &SourceTrack,
+            _progress: &mut dyn FnMut(u64),
+        ) -> Result<PreparedTrack, CmdError> {
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "测试未实现"))
+        }
+    }
+
     struct FakeQueueOnline {
         path: PathBuf,
     }
@@ -7081,6 +7369,7 @@ mod tests {
             outputs: Vec::new(),
             footer: None,
             schema_version: SCHEMA_VERSION,
+            actions: None,
         }
     }
 
@@ -8444,5 +8733,62 @@ mod tests {
             assert!(text.contains(family), "help 缺少 {family}: {text}");
         }
         assert!(block.outputs.len() >= 18);
+    }
+}
+
+#[cfg(test)]
+mod error_actions_tests {
+    use super::*;
+
+    /// 解析一个必然合法的命令；返回 Option<Parsed>。
+    fn parsed(input: &str) -> Option<Parsed> {
+        Some(
+            parse(input)
+                .expect("parse error")
+                .expect("expected a command"),
+        )
+    }
+
+    #[test]
+    fn search_error_gets_retry_and_local_search() {
+        let input = "search 晴天 --source netease";
+        let actions = error_actions(input, parsed(input).as_ref()).expect("actions");
+
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].label, "重试");
+        assert_eq!(actions[0].input, input);
+        assert_eq!(actions[1].label, "只用本地搜索");
+        assert_eq!(actions[1].input, "search 晴天 --local");
+    }
+
+    #[test]
+    fn local_search_error_only_gets_retry() {
+        let input = "search 晴天 --local";
+        let actions = error_actions(input, parsed(input).as_ref()).expect("actions");
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].label, "重试");
+    }
+
+    #[test]
+    fn non_search_error_only_gets_retry() {
+        let input = "queue list";
+        let actions = error_actions(input, parsed(input).as_ref()).expect("actions");
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].input, input);
+    }
+
+    #[test]
+    fn empty_input_has_no_actions() {
+        assert_eq!(error_actions("   ", None), None);
+    }
+
+    #[test]
+    fn keyword_with_spaces_is_quoted_for_the_action() {
+        let input = "search \"a b\" --source netease";
+        let actions = error_actions(input, parsed(input).as_ref()).expect("actions");
+
+        assert_eq!(actions[1].input, "search \"a b\" --local");
     }
 }

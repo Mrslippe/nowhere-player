@@ -81,6 +81,7 @@ fn sample_block() -> Block {
         ],
         footer: Some("6 项输出 · 输入 play 1 开始播放".to_string()),
         schema_version: SCHEMA_VERSION,
+        actions: None,
     }
 }
 
@@ -241,4 +242,33 @@ fn demo_fixture_roundtrips_to_identical_wire_json() {
 
     // 字段名、枚举标签、null 形状必须与夹具（也就是 TS 镜像）逐字段一致。
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn block_actions_are_optional_and_roundtrip() {
+    let mut block = sample_block();
+    let old_json = serde_json::to_string(&block).expect("serialize old block");
+    let old_value: serde_json::Value = serde_json::from_str(&old_json).expect("old block JSON");
+    assert!(
+        old_value.get("actions").is_none(),
+        "None actions must be omitted at block level: {old_json}"
+    );
+
+    let old: Block = serde_json::from_str(&old_json).expect("old block deserialize");
+    assert_eq!(old.actions, None);
+
+    block.actions = Some(vec![
+        BlockAction {
+            label: "重试".to_string(),
+            input: "search 晴天 --source netease".to_string(),
+        },
+        BlockAction {
+            label: "只用本地搜索".to_string(),
+            input: "search 晴天 --local".to_string(),
+        },
+    ]);
+    let json = serde_json::to_string(&block).expect("serialize new block");
+    assert!(json.contains(r#""actions":[{"label":"重试","input":"search 晴天 --source netease"}"#));
+    let parsed: Block = serde_json::from_str(&json).expect("new block deserialize");
+    assert_eq!(parsed, block);
 }
