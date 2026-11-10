@@ -4739,39 +4739,11 @@ pub(crate) fn run_online_search_with_options(
 
         let over_deadline = || clock().saturating_sub(started) > 4_000;
 
-        if bili_allowed && local.len() + online_tracks.len() < options.limit {
-            // B：艺人 + 关键词。
-            if over_deadline() {
-                notices.push("召回超过 4s，已停止后续 B/C 通道".to_owned());
-            } else {
-                let query = build_query(&options.keyword, Some(artist));
-                match online.search_all_for(
-                    &query,
-                    options.candidate_pool(),
-                    Some(SourceId::Bilibili),
-                ) {
-                    Ok(result) => {
-                        if result.all_failed {
-                            all_failed = true;
-                        }
-                        let (fetched, removed) = absorb_online_tracks(
-                            options,
-                            result.tracks,
-                            &mut seen,
-                            &mut online_tracks,
-                        );
-                        online_before += fetched;
-                        online_removed += removed;
-                    }
-                    Err(_) => all_failed = true,
-                }
-            }
-        }
-
         let mut d_resolution_failed = false;
         let mut d_blocked = false;
+
+        // D 先于 B：单请求、最高价值，不设超时守卫；只解析一次、只发一次，412 不重试。
         if bili_allowed && local.len() + online_tracks.len() < options.limit {
-            // D：单请求、最高价值，不设超时守卫；只解析一次、只发一次，412 不重试。
             match online.resolve_up(artist) {
                 Ok(resolution) if resolution.same_name == 1 => {
                     let name = resolution.name.as_deref().unwrap_or(artist);
@@ -4812,7 +4784,37 @@ pub(crate) fn run_online_search_with_options(
             }
         }
 
-        // C 是 D 解析失败时的退路；D 已解析出唯一 mid 就不再发 C。
+        // D 不够（或解析失败）才发 B；D 已够数时直接结束。
+        if bili_allowed && !d_blocked && local.len() + online_tracks.len() < options.limit {
+            // B：艺人 + 关键词。
+            if over_deadline() {
+                notices.push("召回超过 4s，已停止后续 B/C 通道".to_owned());
+            } else {
+                let query = build_query(&options.keyword, Some(artist));
+                match online.search_all_for(
+                    &query,
+                    options.candidate_pool(),
+                    Some(SourceId::Bilibili),
+                ) {
+                    Ok(result) => {
+                        if result.all_failed {
+                            all_failed = true;
+                        }
+                        let (fetched, removed) = absorb_online_tracks(
+                            options,
+                            result.tracks,
+                            &mut seen,
+                            &mut online_tracks,
+                        );
+                        online_before += fetched;
+                        online_removed += removed;
+                    }
+                    Err(_) => all_failed = true,
+                }
+            }
+        }
+
+        // C 只在 D 解析失败时兜底；D 已解析出唯一 mid 就不再发 C。
         if bili_allowed
             && local.len() + online_tracks.len() < options.limit
             && d_resolution_failed
@@ -4820,7 +4822,7 @@ pub(crate) fn run_online_search_with_options(
         {
             // C：仅艺人；标题仍要满足关键词约束。
             if over_deadline() {
-                notices.push("召回超过 4s，已停止后续 B/C 通道".to_owned());
+                notices.push("召回超过 4s，已停止后续 C 通道".to_owned());
             } else {
                 match online.search_all_for(
                     artist,
@@ -8764,6 +8766,25 @@ mod tests {
     }
 
     #[test]
+    fn recall_d_enough_skips_b_and_c() {
+        let library = FakeLibraryApi::new();
+        let mut d_track = online_track(SourceId::Bilibili, "BVd", "花骨朵");
+        d_track.artist = "缪尔Miru".to_owned();
+        let online = ChannelOnline::new(
+            HashMap::from([("缪尔Miru 花骨朵".to_owned(), vec![d_track.clone()])]),
+            Ok(resolved_up("缪尔Miru", 42, 1)),
+            Ok(vec![d_track]),
+        );
+        let options = artist_options("花骨朵", "缪尔Miru", 1);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(table_of_block(&block).1.len(), 1);
+        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
+        assert_eq!(online.archive_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn recall_c_is_fallback_when_d_cannot_resolve_and_reports_it() {
         let library = FakeLibraryApi::new();
         let mut c_track = online_track(SourceId::Bilibili, "BVc", "花骨朵");
@@ -8808,13 +8829,7 @@ mod tests {
 
         let block = run_online_capture(&options, &online, &library);
 
-        assert_eq!(
-            online.calls(),
-            vec![
-                ("花骨朵".to_owned(), None),
-                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
-            ]
-        );
+        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
         assert_eq!(online.resolve_calls.load(Ordering::SeqCst), 1);
         assert_eq!(online.archive_calls.load(Ordering::SeqCst), 0);
         assert!(block.outputs.iter().any(|output| matches!(
@@ -8839,13 +8854,7 @@ mod tests {
         let block = run_online_capture(&options, &online, &library);
 
         assert_eq!(online.archive_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            online.calls(),
-            vec![
-                ("花骨朵".to_owned(), None),
-                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
-            ]
-        );
+        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
         assert!(block.outputs.iter().any(|output| matches!(
             output,
             Output::Hint { text, .. } if text.contains("B 站限流")
