@@ -36,6 +36,10 @@ describe("BlockItem", () => {
     for (const marker of OUTPUT_MARKERS) {
       expect(html, marker).toContain(marker);
     }
+
+    // 块级 actions 由 ErrorOutput 渲染；title 是点击将执行的命令。
+    expect(html).toContain('title="scan ~/Music --deep"');
+    expect(html).toContain("重试");
   });
 
   it("空 input（欢迎块）不渲染空命令行与状态点", () => {

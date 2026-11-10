@@ -368,7 +368,12 @@ export function TerminalLab({
         <WindowControls />
       </header>
 
-      <TerminalStage variant={variant} blocks={blocks} lab={lab} />
+      <TerminalStage
+        variant={variant}
+        blocks={blocks}
+        lab={lab}
+        onRunAction={submit}
+      />
 
       <CommandInput
         onSubmit={submit}

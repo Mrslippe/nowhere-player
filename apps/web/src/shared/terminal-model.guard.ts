@@ -1,4 +1,12 @@
-import type { Block, BlockStatus, Output, Span, SpanColor, Tone } from "./terminal-model";
+import type {
+  Block,
+  BlockAction,
+  BlockStatus,
+  Output,
+  Span,
+  SpanColor,
+  Tone,
+} from "./terminal-model";
 
 /** 未知 `Output.type` 的降级文本，与 Rust 侧保持一致（ARCH-005 §5）。 */
 export const UNSUPPORTED_OUTPUT_TEXT = "[unsupported]";
@@ -39,6 +47,36 @@ function isTone(value: unknown): value is Tone {
 
 function isSpanColor(value: unknown): value is SpanColor {
   return typeof value === "string" && (TONES as readonly string[]).includes(value);
+}
+
+/**
+ * 读取块级 actions（ARCH-005 §8）。
+ *
+ * 非法形状（非数组 / 任一元素缺 label|input / 空字符串）时**整组降级为空**
+ * （返回 `undefined`），但 Block 本体保留；旧块缺字段也返回 `undefined`。
+ */
+export function readBlockActions(value: unknown): BlockAction[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const actions: BlockAction[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || !isString(item.label) || !isString(item.input)) {
+      return undefined;
+    }
+    const label = item.label.trim();
+    const input = item.input.trim();
+    if (label.length === 0 || input.length === 0) {
+      return undefined;
+    }
+    actions.push({ label, input });
+  }
+
+  return actions;
 }
 
 function isSpan(value: unknown): value is Span {

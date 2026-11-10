@@ -93,6 +93,14 @@ export type Output =
   | HintOutput
   | MediaOutput;
 
+/** 错误块上的可执行动作（ARCH-005 §8，T-0045）。 */
+export interface BlockAction {
+  /** 按钮文案，如「重试」。 */
+  label: string;
+  /** 点击后提交给命令层的完整命令。 */
+  input: string;
+}
+
 /** 一条命令 = 一个块。进度通过 `id` 原地替换同一块。 */
 export interface Block {
   /** 稳定标识，用于增量更新。 */
@@ -107,6 +115,11 @@ export interface Block {
   outputs: Output[];
   /** 尾注，如“3 条结果 · 输入 add 1-2 加入队列”。 */
   footer: string | null;
+  /**
+   * 错误块的可执行动作；缺省即“无动作”（ARCH-005 §8）。
+   * 不是 `Output::Error.actions`（后者 legacy，UI 不再渲染）。
+   */
+  actions?: BlockAction[];
   /** 载荷版本；当前为 {@link SCHEMA_VERSION}。 */
   schemaVersion: number;
 }

@@ -284,8 +284,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--np-space-1);
-  padding: var(--np-space-1) 0 var(--np-space-1) var(--np-space-2);
-  border-left: var(--np-border-error);
+  width: 100%;
+  padding: var(--np-space-2);
+  border-left: var(--np-border-error-card);
+  border-radius: var(--np-radius-control);
+  background: var(--bg-hover);
   animation: np-error-border var(--np-dur-fast) var(--np-ease-out);
 }
 

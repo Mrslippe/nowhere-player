@@ -109,8 +109,9 @@ describe("runMockCommand", () => {
       type: "error",
       code: "E_LIB_PERMISSION",
       hint: "检查文件权限，或输入 scan --skip-private",
-      actions: ["重试", "跳过该目录"],
+      actions: null,
     });
+    expect(block.actions).toEqual([{ label: "重试", input: "perm" }]);
   });
 
   it("play 序号越界时返回 E_CMD_ARG，而不是假装播放", () => {
@@ -118,6 +119,7 @@ describe("runMockCommand", () => {
 
     expect(block.status).toBe("error");
     expect(block.outputs[0]).toMatchObject({ type: "error", code: "E_CMD_ARG" });
+    expect(block.actions).toEqual([{ label: "重试", input: "play 99" }]);
   });
 
   it("cover 返回 media/cover，尺寸与 fixture 一致", () => {

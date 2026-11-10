@@ -27,6 +27,7 @@
   --np-border-hairline: 1px solid var(--line); /* 分隔线：border-bottom / top / left */
   --np-border-transparent: 1px solid transparent; /* 预留描边位，避免 hover 时跳动 */
   --np-border-error: 2px solid var(--danger);
+  --np-border-error-card: 4px solid var(--danger);
   --np-border-table-header: var(--np-table-header-line) solid var(--line-strong); /* 错误块左侧强调条 */
   --np-border-width-emphasis: 2px; /* Kbd 底部厚边 */
   /* 滚动条滑块内缩：2px 透明边 + background-clip，让滑块比 10px 轨道窄。 */

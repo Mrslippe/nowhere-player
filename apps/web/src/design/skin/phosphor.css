@@ -23,6 +23,7 @@
   --np-border-hairline: 1px solid var(--line);
   --np-border-transparent: 1px solid transparent;
   --np-border-error: 2px solid var(--danger);
+  --np-border-error-card: 4px solid var(--danger);
   --np-border-table-header: var(--np-table-header-line) solid var(--line-strong);
   --np-border-width-emphasis: 2px;
   /* 滚动条滑块内缩：2px 透明边 + background-clip，让滑块比 10px 轨道窄。 */

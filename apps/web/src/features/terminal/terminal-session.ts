@@ -159,6 +159,7 @@ export function ipcErrorBlock(
       },
     ],
     footer: null,
+    actions: [{ label: "重试", input }],
   };
 }
 

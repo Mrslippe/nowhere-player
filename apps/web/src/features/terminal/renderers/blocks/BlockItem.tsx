@@ -1,11 +1,15 @@
 import type { Block, BlockStatus, Output } from "../../../../shared/terminal-model";
-import { normalizeOutput } from "../../../../shared/terminal-model.guard";
+import {
+  normalizeOutput,
+  readBlockActions,
+} from "../../../../shared/terminal-model.guard";
 import { ErrorOutput } from "./outputs/ErrorOutput";
 import { HintOutput } from "./outputs/HintOutput";
 import { MediaOutput } from "./outputs/MediaOutput";
 import { ProgressOutput } from "./outputs/ProgressOutput";
 import { TableOutput } from "./outputs/TableOutput";
 import { TextOutput } from "./outputs/TextOutput";
+import type { BlockAction } from "../../../../shared/terminal-model";
 
 const KNOWN_STATUSES: readonly BlockStatus[] = [
   "pending",
@@ -39,7 +43,12 @@ function formatDuration(durationMs: number | null): string | null {
     : `${Math.round(seconds)}s`;
 }
 
-function renderOutput(output: Output, key: number) {
+function renderOutput(
+  output: Output,
+  key: number,
+  actions: BlockAction[] | undefined,
+  onRunAction: ((input: string) => void) | undefined,
+) {
   switch (output.type) {
     case "text":
       return <TextOutput key={key} output={output} />;
@@ -48,7 +57,14 @@ function renderOutput(output: Output, key: number) {
     case "progress":
       return <ProgressOutput key={key} output={output} />;
     case "error":
-      return <ErrorOutput key={key} output={output} />;
+      return (
+        <ErrorOutput
+          key={key}
+          output={output}
+          actions={actions}
+          onAction={onRunAction}
+        />
+      );
     case "hint":
       return <HintOutput key={key} output={output} />;
     case "media":
@@ -60,16 +76,19 @@ function renderOutput(output: Output, key: number) {
 
 export type BlockItemProps = {
   block: Block;
+  /** 块级 actions 的执行入口；由 TerminalLab 注入同一个 submit。 */
+  onRunAction?: (input: string) => void;
 };
 
 /**
  * 单个命令块：输入行 + 输出区 + 尾注。
  * 只负责呈现，不接 IPC、不持有命令状态（T-0008 负责容器与接线）。
  */
-export function BlockItem({ block }: BlockItemProps) {
+export function BlockItem({ block, onRunAction }: BlockItemProps) {
   const status = normalizeStatus(block.status);
   const duration = formatDuration(block.durationMs);
   const running = status === "pending" || status === "running";
+  const actions = readBlockActions(block.actions);
   const statusText = running
     ? status === "pending"
       ? "等待"
@@ -101,7 +120,7 @@ export function BlockItem({ block }: BlockItemProps) {
 
       <div className="np-blocks-item__outputs">
         {block.outputs.map((output, index) =>
-          renderOutput(normalizeOutput(output), index),
+          renderOutput(normalizeOutput(output), index, actions, onRunAction),
         )}
       </div>
 

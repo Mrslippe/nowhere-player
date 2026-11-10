@@ -23,6 +23,8 @@ export interface TerminalStageProps {
   blocks: Block[];
   /** 实验台才显示 pane 头（A 结构化 / B xterm）；产品视图只有块流。 */
   lab?: boolean;
+  /** 块级错误动作的入口；TerminalLab 注入与输入框相同的 submit。 */
+  onRunAction?: (input: string) => void;
 }
 
 /**
@@ -32,7 +34,12 @@ export interface TerminalStageProps {
  * both 模式下按滚动百分比同步（§6.4）：xterm 的滚动容器是内部 `.xterm-viewport`，
  * 从宿主 div 里查；查不到就静默降级为不同步。
  */
-export function TerminalStage({ variant, blocks, lab = true }: TerminalStageProps) {
+export function TerminalStage({
+  variant,
+  blocks,
+  lab = true,
+  onRunAction,
+}: TerminalStageProps) {
   const stageRef = useRef<HTMLElement | null>(null);
   const blockScrollRef = useRef<HTMLDivElement | null>(null);
   const xtermWrapRef = useRef<HTMLDivElement | null>(null);
@@ -232,7 +239,7 @@ export function TerminalStage({ variant, blocks, lab = true }: TerminalStageProp
             tabIndex={0}
             aria-label="结构化终端输出"
           >
-            <BlocksView blocks={blocks} />
+            <BlocksView blocks={blocks} onRunAction={onRunAction} />
           </div>
         </div>
       ) : null}

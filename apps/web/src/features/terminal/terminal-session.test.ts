@@ -155,6 +155,7 @@ describe("ipcErrorBlock", () => {
       type: "error",
       hint: "确认 Tauri 运行时已启动，或检查 cmd.exec 是否注册",
     });
+    expect(block.actions).toEqual([{ label: "重试", input: "help" }]);
   });
 });
 

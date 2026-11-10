@@ -10,7 +10,13 @@
  *
  * 一个命令 = 一个 Block；`progress` 等原语只是输出，不在这里做原地刷新。
  */
-import type { Block, BlockStatus, Output, Span } from "../../shared/terminal-model";
+import type {
+  Block,
+  BlockAction,
+  BlockStatus,
+  Output,
+  Span,
+} from "../../shared/terminal-model";
 import { SCHEMA_VERSION } from "../../shared/terminal-model";
 import { APP_VERSION } from "./terminal-session";
 
@@ -63,6 +69,8 @@ interface MockResult {
   status: BlockStatus;
   durationMs: number;
   footer: string | null;
+  /** 块级 actions（ARCH-005 §8）；非错误块缺省。 */
+  actions?: BlockAction[];
 }
 
 function span(text: string, style: Partial<Omit<Span, "text">> = {}): Span {
@@ -136,7 +144,7 @@ function searchResult(query: string): MockResult {
   };
 }
 
-function playResult(index: number): MockResult {
+function playResult(index: number, input: string): MockResult {
   const track = TRACKS[index - 1];
 
   if (track === undefined) {
@@ -153,6 +161,7 @@ function playResult(index: number): MockResult {
         },
       ],
       footer: null,
+      actions: [{ label: "重试", input }],
     };
   }
 
@@ -174,7 +183,7 @@ function playResult(index: number): MockResult {
   };
 }
 
-function permResult(): MockResult {
+function permResult(input: string): MockResult {
   return {
     status: "error",
     durationMs: 6,
@@ -184,10 +193,12 @@ function permResult(): MockResult {
         code: "E_LIB_PERMISSION",
         message: "无法读取目录 ~/Music/Private",
         hint: "检查文件权限，或输入 scan --skip-private",
-        actions: ["重试", "跳过该目录"],
+        // legacy 字段：UI 不再渲染；动作走块级 actions。
+        actions: null,
       },
     ],
     footer: null,
+    actions: [{ label: "重试", input }],
   };
 }
 
@@ -278,6 +289,7 @@ function unknownResult(input: string): MockResult {
       },
     ],
     footer: null,
+    actions: [{ label: "重试", input }],
   };
 }
 
@@ -323,9 +335,9 @@ function resolve(input: string): MockResult {
     case "search":
       return searchResult(parsed.query ?? "");
     case "play":
-      return playResult(parsed.index ?? 0);
+      return playResult(parsed.index ?? 0, input);
     case "perm":
-      return permResult();
+      return permResult(input);
     case "hint":
       return hintResult();
     case "cover":
@@ -364,5 +376,6 @@ export function runMockCommand(input: string, options: MockCommandOptions = {}):
     status: result.status,
     outputs: result.outputs,
     footer: result.footer,
+    ...(result.actions ? { actions: result.actions } : {}),
   };
 }
