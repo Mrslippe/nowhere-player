@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh-CN" data-dir="d2">
+<head>
+<meta charset="utf-8">
+<title>D2 · Instrument — Nowhere Player 视觉方向</title>
+<style>
+/* ==========================================================================
+   0. 复核页外壳（三页共用同一份，只有方向色块不同）
+   ========================================================================== */
+:root{
+  --doc-paper:#e7e6e1;
+  --doc-ink:#17181b;
+  --doc-2:#5e6269;
+  --doc-3:#8b8e94;
+  --doc-rule:rgba(23,24,27,.20);
+  --doc-rule-2:rgba(23,24,27,.09);
+  --doc-sans:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  --doc-mono:"Cascadia Code",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--doc-paper);
+  color:var(--doc-ink);
+  font-family:var(--doc-sans);
+  font-size:13px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.sheet{width:1440px;margin:0 auto;padding:0 40px 44px}
+.edge{height:2px;background:var(--doc-ink);margin:0 -40px}
+
+/* 顶部三行 */
+.brief{padding:26px 0 24px;border-bottom:1px solid var(--doc-rule)}
+.b-row{display:grid;grid-template-columns:52px minmax(0,1fr) 176px;column-gap:24px;align-items:baseline}
+.b-row + .b-row{margin-top:8px}
+.b-k{font:10.5px/1.6 var(--doc-mono);color:var(--doc-2);letter-spacing:.08em}
+.b-v{margin:0;font-size:13px;line-height:1.6;color:var(--doc-2)}
+.b-v.big{font-size:20px;line-height:1.4;font-weight:600;color:var(--doc-ink);letter-spacing:-.005em;white-space:nowrap}
+.b-tag{justify-self:end;display:flex;align-items:center;gap:8px;font:11px/1 var(--doc-mono);color:var(--doc-2)}
+.chip{width:9px;height:9px;background:#d9a13f;display:block}
+
+/* 段落标题 */
+.sec{margin-top:30px}
+.sec-h{display:flex;align-items:baseline;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--doc-rule-2);margin-bottom:22px}
+.sec-n{font:10.5px/1 var(--doc-mono);color:var(--doc-3)}
+.sec-t{font-size:12.5px;font-weight:600;color:var(--doc-ink)}
+.sec-s{margin-left:auto;font:10.5px/1 var(--doc-mono);color:var(--doc-2)}
+
+/* 舞台 */
+.stage{display:grid;grid-template-columns:880px minmax(0,1fr);column-gap:48px;align-items:start}
+.side{width:432px}
+.side .cap{margin:0 0 8px;font:10.5px/1.4 var(--doc-mono);color:var(--doc-3);letter-spacing:.06em}
+.side .player + .cap{margin-top:16px}
+.note{margin:0 0 12px;font-size:12px;line-height:1.65;color:var(--doc-2)}
+.note b{color:var(--doc-ink);font-weight:600}
+.note .m{font-family:var(--doc-mono);font-size:11px;color:var(--doc-ink)}
+.cost{margin-top:20px;padding-top:12px;border-top:1px solid var(--doc-rule-2)}
+
+/* 2× 区 */
+.zoom{display:grid;grid-template-columns:680px minmax(0,1fr);column-gap:56px;align-items:start}
+.crop-wrap + .crop-wrap{margin-top:16px}
+.crop-lbl{display:flex;justify-content:space-between;font:10.5px/1.4 var(--doc-mono);color:var(--doc-3);margin-bottom:6px}
+.crop{position:relative;width:680px;overflow:hidden;background:#0b0c0c;border:1px solid #2a2c2b}
+.crop-inner{position:absolute;left:0;top:0;transform:scale(2);transform-origin:0 0;width:340px}
+
+/* 数值表 */
+table.spec{width:100%;border-collapse:collapse;font-size:12px}
+table.spec th,table.spec td{text-align:left;padding:0;vertical-align:baseline}
+table.spec thead th{font:10.5px/1 var(--doc-mono);color:var(--doc-2);letter-spacing:.06em;padding:0 0 8px;border-bottom:1px solid var(--doc-rule)}
+table.spec tbody td{padding:7px 0;border-bottom:1px solid var(--doc-rule-2);line-height:1.45}
+table.spec td.k{color:var(--doc-2);width:172px}
+table.spec td.v{font:11.5px/1.45 var(--doc-mono);color:var(--doc-ink);width:240px;font-variant-numeric:tabular-nums}
+table.spec td.u{color:var(--doc-2);width:auto}
+table.spec td.n{font:11px/1.45 var(--doc-mono);color:var(--doc-2);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;width:150px}
+table.spec th.n{text-align:right}
+.foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--doc-rule);display:flex;justify-content:space-between;font:10.5px/1.5 var(--doc-mono);color:var(--doc-2)}
+.foot a{color:var(--doc-ink);text-decoration:none;border-bottom:1px solid var(--doc-3);padding-bottom:1px}
+.foot a + a{margin-left:16px}
+
+/* ==========================================================================
+   D2 · Instrument —— 产品 token（终端与播放器共用这一套）
+   ========================================================================== */
+[data-dir="d2"]{
+  --bg:#0b0c0c;
+  --t100:#eef0ea;
+  --t70:rgba(238,240,234,.70);
+  --t50:rgba(238,240,234,.50);
+  --t30:rgba(238,240,234,.30);   /* 只做线与刻度，不做文字 */
+  --t18:rgba(238,240,234,.18);   /* 只做 zebra 与细边 */
+  --line:rgba(238,240,234,.09);
+  --zebra:rgba(238,240,234,.022);
+  --accent:#d9a13f;
+  --alarm:#e0684b;
+  --m:"Cascadia Code","Microsoft YaHei",Consolas,"Courier New",monospace;
+}
+
+/* ---- 终端 880×560 ---- */
+[data-dir="d2"] .term{
+  width:880px;height:560px;flex:none;
+  background:var(--bg);border:1px solid rgba(238,240,234,.10);border-radius:3px;
+  display:flex;flex-direction:column;overflow:hidden;
+  color:var(--t100);font-family:var(--m);
+}
+[data-dir="d2"] .tbar{
+  flex:none;height:32px;display:flex;align-items:center;gap:10px;
+  padding:0 16px;border-bottom:1px solid var(--line);
+}
+[data-dir="d2"] .tname{font-size:11px;line-height:1;font-weight:600;letter-spacing:.01em;color:var(--t100)}
+[data-dir="d2"] .ttag{font-size:9.5px;line-height:1;color:var(--t50);letter-spacing:.08em}
+[data-dir="d2"] .tright{margin-left:auto;display:flex;align-items:center;gap:14px}
+[data-dir="d2"] .tstate{font-size:9.5px;line-height:1;color:var(--t50);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+[data-dir="d2"] .tclear{
+  font:9.5px/1 var(--m);color:var(--t50);letter-spacing:.06em;
+  border:1px solid var(--t18);border-radius:2px;padding:4px 7px;background:none;
+}
+[data-dir="d2"] .wctl{display:flex;align-items:center;gap:12px;color:var(--t50)}
+[data-dir="d2"] .wctl svg{display:block}
+
+[data-dir="d2"] .body{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden}
+[data-dir="d2"] .body::-webkit-scrollbar{width:4px}
+[data-dir="d2"] .body::-webkit-scrollbar-thumb{background:rgba(238,240,234,.16)}
+[data-dir="d2"] .body::-webkit-scrollbar-track{background:transparent}
+
+/* 结果表：行高 22，1px 行间线 + zebra，表头下 2px 强调线 */
+[data-dir="d2"] .trow{
+  display:grid;
+  grid-template-columns:28px 52px minmax(0,1fr) 84px 60px;
+  column-gap:12px;padding:0 16px;height:22px;align-items:center;
+}
+[data-dir="d2"] .thead{
+  position:sticky;top:0;z-index:2;background:var(--bg);
+  height:24px;border-bottom:2px solid var(--t70);
+  font-size:9.5px;line-height:1;color:var(--t50);letter-spacing:.10em;
+}
+[data-dir="d2"] .tr{border-bottom:1px solid rgba(238,240,234,.07)}
+[data-dir="d2"] .tr.zebra{background:rgba(238,240,234,.028)}
+[data-dir="d2"] .c-idx{font-size:9.5px;color:var(--t50);text-align:right;font-variant-numeric:tabular-nums;letter-spacing:.04em}
+[data-dir="d2"] .c-src{font-size:10px;color:var(--t50);letter-spacing:.02em}
+[data-dir="d2"] .c-title{font-size:12.5px;line-height:1;color:var(--t100);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[data-dir="d2"] .c-artist{font-size:10px;line-height:1;color:var(--t70);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[data-dir="d2"] .c-dur{font-size:10.5px;color:var(--t100);text-align:right;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+[data-dir="d2"] .thead .c-idx,[data-dir="d2"] .thead .c-dur{text-align:right}
+
+[data-dir="d2"] .tfoot{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:5px 16px 4px;border-bottom:1px solid var(--line);
+  font-size:9.5px;color:var(--t50);letter-spacing:.02em;
+}
+[data-dir="d2"] .tfoot .m{color:var(--t70)}
+
+[data-dir="d2"] .cmd{display:flex;align-items:baseline;gap:8px;padding:11px 16px 0;font-size:12.5px}
+[data-dir="d2"] .cmd .caret{color:var(--accent)}
+[data-dir="d2"] .cmd .ms{margin-left:auto;font-size:9.5px;color:var(--t50);letter-spacing:.06em;font-variant-numeric:tabular-nums}
+
+/* library stat：label ···· 值，点线 4px 节距，值右对齐 tabular */
+[data-dir="d2"] .stat{padding:4px 16px 0 24px}
+[data-dir="d2"] .stat-row{display:grid;grid-template-columns:max-content 1fr max-content;height:22px;align-items:baseline}
+[data-dir="d2"] .stat-k{font-size:10.5px;color:var(--t50)}
+[data-dir="d2"] .stat-lead{
+  height:22px;margin:0 9px;
+  background-image:radial-gradient(circle at 1.5px 13px, var(--t30) 1px, transparent 1.2px);
+  background-size:4px 22px;background-repeat:repeat-x;
+}
+[data-dir="d2"] .stat-v{font-size:12.5px;color:var(--t100);font-variant-numeric:tabular-nums;text-align:right}
+[data-dir="d2"] .stat-v .unit{font-size:9.5px;color:var(--t50);margin-left:4px}
+
+[data-dir="d2"] .err{
+  margin:12px 16px 0;padding:7px 10px 8px;border-left:2px solid var(--alarm);
+  background:rgba(224,104,75,.045);
+  display:grid;grid-template-columns:max-content 1fr;column-gap:12px;row-gap:3px;
+}
+[data-dir="d2"] .err-code{font-size:9.5px;color:var(--alarm);letter-spacing:.08em;align-self:center}
+[data-dir="d2"] .err-msg{font-size:12px;color:var(--t100);line-height:1.4}
+[data-dir="d2"] .err-hint{grid-column:2;font-size:10px;color:var(--t50);line-height:1.4}
+[data-dir="d2"] .err-act{grid-column:2;display:flex;gap:6px;margin-top:3px}
+[data-dir="d2"] .err-act span{
+  font-size:9.5px;color:var(--t100);border:1px solid var(--t18);border-radius:2px;
+  padding:4px 8px;line-height:1;
+}
+
+[data-dir="d2"] .tinput{
+  flex:none;height:36px;display:flex;align-items:center;gap:8px;
+  padding:0 16px;border-top:1px solid var(--line);
+}
+[data-dir="d2"] .tinput .caret{font-size:12.5px;color:var(--accent)}
+[data-dir="d2"] .tinput .ph{font-size:12.5px;color:var(--t50)}
+[data-dir="d2"] .tinput .keys{margin-left:auto;font-size:9.5px;color:var(--t50);letter-spacing:.06em}
+
+[data-dir="d2"] .tstatus{
+  flex:none;height:20px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 16px;border-top:1px solid var(--line);
+  font-size:9.5px;color:var(--t50);letter-spacing:.04em;
+}
+[data-dir="d2"] .tstatus b{font-weight:400;color:var(--t70)}
+
+/* ---- 播放器 340×120 ---- */
+[data-dir="d2"] .player{
+  position:relative;width:340px;height:120px;flex:none;
+  background:var(--bg);border:1px solid rgba(238,240,234,.10);border-radius:3px;
+  font-family:var(--m);overflow:hidden;
+}
+[data-dir="d2"] .cov{
+  position:absolute;left:12px;top:11px;width:40px;height:40px;
+  border:1px solid rgba(238,240,234,.16);overflow:hidden;
+}
+[data-dir="d2"] .cov svg{display:block;width:100%;height:100%;filter:grayscale(1) contrast(.95) brightness(.9)}
+[data-dir="d2"] .id{position:absolute;left:62px;top:10px;right:12px}
+[data-dir="d2"] .lbl{font-size:9px;line-height:1;color:var(--t50);letter-spacing:.10em}
+[data-dir="d2"] .ttl{font-size:12.5px;line-height:1.3;color:var(--t100);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[data-dir="d2"] .art{font-size:10px;line-height:1.3;color:var(--t50);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:13px}
+[data-dir="d2"] .readout{position:absolute;left:12px;bottom:50px;display:flex;align-items:baseline;gap:4px;font-variant-numeric:tabular-nums}
+[data-dir="d2"] .pos{font-size:15px;line-height:1;color:var(--t100);letter-spacing:.01em}
+[data-dir="d2"] .dur{font-size:10px;line-height:1;color:var(--t50)}
+[data-dir="d2"] .left{position:absolute;right:12px;bottom:51px;font-size:9.5px;line-height:1;color:var(--t50);font-variant-numeric:tabular-nums;letter-spacing:.04em}
+[data-dir="d2"] .scale{position:absolute;left:12px;right:12px;bottom:34px;height:8px}
+[data-dir="d2"] .ticks{
+  position:absolute;left:0;right:0;top:0;height:3px;
+  background-image:linear-gradient(90deg,var(--t30) 0 1px,transparent 1px 10%);
+  background-size:10% 100%;
+}
+[data-dir="d2"] .rail{position:absolute;left:0;right:0;bottom:0;height:4px;background:var(--t18)}
+[data-dir="d2"] .fill{position:absolute;left:0;top:0;height:4px;background:var(--t70);width:30.9%}
+[data-dir="d2"] .head{position:absolute;top:-4px;width:2px;height:12px;background:var(--accent);left:30.9%}
+[data-dir="d2"] .ctl{position:absolute;left:12px;bottom:8px;display:flex;gap:6px}
+[data-dir="d2"] .key{
+  width:26px;height:18px;border:1px solid var(--t18);border-radius:2px;
+  display:flex;align-items:center;justify-content:center;color:var(--t70);
+}
+[data-dir="d2"] .key svg{display:block}
+[data-dir="d2"] .vol{position:absolute;right:12px;bottom:11px;font-size:9.5px;color:var(--t50);letter-spacing:.06em;font-variant-numeric:tabular-nums}
+[data-dir="d2"] .vol b{font-weight:400;color:var(--t70)}
+[data-dir="d2"] .player.is-empty .rail .fill{width:0}
+[data-dir="d2"] .player.is-empty .pos{color:var(--t50)}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="npSky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9d6ae"/>
+      <stop offset="1" stop-color="#c6a472"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<div class="sheet">
+  <div class="edge"></div>
+
+  <header class="brief">
+    <div class="b-row">
+      <div class="b-k">主张</div>
+      <p class="b-v big">窗口是一台仪表：每个数字站在自己的刻度上，颜色只表示远近，不表示情绪。</p>
+      <div class="b-tag"><i class="chip"></i>D2 · Instrument</div>
+    </div>
+    <div class="b-row">
+      <div class="b-k">规则</div>
+      <p class="b-v">所有尺寸落在 4 px 栅格；所有数字 tabular 右对齐；文字只用五级明度（100 / 70 / 50 / 30 / 18）。</p>
+    </div>
+    <div class="b-row">
+      <div class="b-k">靶点</div>
+      <p class="b-v">B 密度与比例、A 远中近层级两条主攻；D 靠面板式结构解决；C 只解决一半——等宽保留，粗框与整屏琥珀去掉。</p>
+    </div>
+  </header>
+
+  <section class="stage sec">
+    <div class="term" id="term">
+      <div class="tbar">
+        <span class="tname">Nowhere Player</span>
+        <span class="ttag">终端</span>
+        <span class="tright">
+          <span class="tstate">本地 18 首</span>
+          <button class="tclear">清空</button>
+          <span class="wctl">
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 5h8"/></svg>
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1.5" y="1.5" width="7" height="7"/></svg>
+            <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg>
+          </span>
+        </span>
+      </div>
+
+      <div class="body" id="tbl-body">
+        <div class="tbl" id="tbl">
+          <div class="trow thead">
+            <span class="c-idx">#</span>
+            <span class="c-src">来源</span>
+            <span class="c-title">标题</span>
+            <span class="c-artist">艺人</span>
+            <span class="c-dur">时长</span>
+          </div>
+        </div>
+
+        <div class="tfoot">
+          <span>41 条结果 · <span class="m">play &lt;序号&gt;</span> 播放</span>
+          <span>来源 4 个：网易云、B站、本地、yt-dlp</span>
+        </div>
+
+        <div class="cmd">
+          <span class="caret">›</span><span>library stat</span><span class="ms">1 ms</span>
+        </div>
+        <div class="stat">
+          <div class="stat-row"><span class="stat-k">曲目</span><span class="stat-lead"></span><span class="stat-v">18</span></div>
+          <div class="stat-row"><span class="stat-k">专辑</span><span class="stat-lead"></span><span class="stat-v">0</span></div>
+          <div class="stat-row"><span class="stat-k">艺人</span><span class="stat-lead"></span><span class="stat-v">0</span></div>
+          <div class="stat-row"><span class="stat-k">总时长</span><span class="stat-lead"></span><span class="stat-v">31<span class="unit">秒</span></span></div>
+          <div class="stat-row"><span class="stat-k">最近扫描</span><span class="stat-lead"></span><span class="stat-v">2<span class="unit">小时前</span></span></div>
+          <div class="stat-row"><span class="stat-k">封面缓存</span><span class="stat-lead"></span><span class="stat-v">10<span class="unit">个文件 / 0.1 MB</span></span></div>
+        </div>
+
+        <div class="err">
+          <div class="err-code">E_NET_TIMEOUT</div>
+          <div class="err-msg">网易云第 2 页 8.0 s 无响应，已用本地与 B 站结果补全。</div>
+          <div class="err-hint">源没挂，只是慢；重试会从第 2 页继续。</div>
+          <div class="err-act"><span>重试</span><span>只用本地再搜</span></div>
+        </div>
+      </div>
+
+      <div class="tinput">
+        <span class="caret">›</span>
+        <span class="ph">输入 help 查看命令，例如 play 1 / queue</span>
+        <span class="keys">Enter 执行</span>
+      </div>
+      <div class="tstatus">
+        <span>↑↓ 历史　 Tab 补全　 Ctrl+L 清屏</span>
+        <span><b>41</b> 条结果 · 本地 <b>18</b> 首</span>
+      </div>
+    </div>
+
+    <aside class="side">
+      <p class="cap">A · 长标题（正在播放）</p>
+      <div class="player" id="player-a">
+        <div class="cov">
+          <svg viewBox="0 0 52 52" aria-hidden="true">
+            <rect width="52" height="52" fill="url(#npSky)"/>
+            <circle cx="35" cy="15" r="6.6" fill="#2a3c3e"/>
+            <path d="M0 36 Q13 33 26 35.5 T52 34 V52 H0Z" fill="#223335"/>
+            <path d="M0 36h52" stroke="#f2e4c4" stroke-opacity=".55" stroke-width=".8"/>
+            <path d="M0 42 Q18 39 34 42 T52 41 V52 H0Z" fill="#0e191a"/>
+          </svg>
+        </div>
+        <div class="id">
+          <div class="lbl">正在播放</div>
+          <div class="ttl" id="ttl-a">【𝐇𝐢-𝐑𝐞𝐬无损音质】｜《晴天》- 周杰伦 -'故事的小黄花'</div>
+          <div class="art">周杰伦 · 叶惠美</div>
+        </div>
+        <div class="readout"><span class="pos">01:23</span><span class="dur">/ 04:29</span></div>
+        <div class="left">−03:06</div>
+        <div class="scale">
+          <div class="ticks"></div>
+          <div class="rail"><div class="fill"></div></div>
+          <div class="head"></div>
+        </div>
+        <div class="ctl">
+          <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M8 1.5v7L2.5 5z"/><path d="M1 1.5v7"/></svg></span>
+          <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 1.5v7M7 1.5v7"/></svg></span>
+          <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 1.5v7L7.5 5z"/></svg></span>
+        </div>
+        <div class="vol">VOL <b>72</b></div>
+      </div>
+
+      <p class="cap">B · 空艺人 / 00:00</p>
+      <div class="player is-empty" id="player-b">
+        <div class="cov">
+          <svg viewBox="0 0 52 52" aria-hidden="true">
+            <rect width="52" height="52" fill="url(#npSky)"/>
+            <circle cx="35" cy="15" r="6.6" fill="#2a3c3e"/>
+            <path d="M0 36 Q13 33 26 35.5 T52 34 V52 H0Z" fill="#223335"/>
+            <path d="M0 36h52" stroke="#f2e4c4" stroke-opacity=".55" stroke-width=".8"/>
+            <path d="M0 42 Q18 39 34 42 T52 41 V52 H0Z" fill="#0e191a"/>
+          </svg>
+        </div>
+        <div class="id">
+          <div class="lbl">已暂停</div>
+          <div class="ttl">晴天</div>
+          <div class="art"></div>
+        </div>
+        <div class="readout"><span class="pos">00:00</span><span class="dur">/ 00:00</span></div>
+        <div class="left">−00:00</div>
+        <div class="scale">
+          <div class="ticks"></div>
+          <div class="rail"><div class="fill"></div></div>
+        </div>
+        <div class="ctl">
+          <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M8 1.5v7L2.5 5z"/><path d="M1 1.5v7"/></svg></span>
+          <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2.5 1.5v7L8 5z"/></svg></span>
+          <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 1.5v7L7.5 5z"/></svg></span>
+        </div>
+        <div class="vol">VOL <b>72</b></div>
+      </div>
+
+      <div class="cost">
+        <p class="note"><b>列宽是按内容量出来的</b>：序号 28 / 来源 52 / 艺人 84 / 时长 60，四舍五入到 4 的倍数；标题吃掉剩下的 574 px。</p>
+        <p class="note"><b>22 px 行高是一次决策</b>：12.5×1.45 = 18.1 + 4；一屏 7 行，41 行是 6 屏——不装作全放得下。</p>
+        <p class="note"><b>后两级明度只做线与底</b>：45% 实测 4.09:1 不达 AA，文字最低用 50%（4.78:1）。</p>
+        <p class="note costline"><b>代价</b>：等宽 + 结构线离「更像终端」只差一步；D 靠密度与精度解决，不靠材质。</p>
+      </div>
+    </aside>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h"><span class="sec-n">02</span><span class="sec-t">2× 放大：标题断点与刻度对齐</span><span class="sec-s">transform: scale(2)，与 1× 同一份 DOM</span></div>
+    <div class="zoom">
+      <div>
+        <div class="crop-wrap">
+          <div class="crop-lbl"><span>2× · 标题与读数 y 6–74</span><span>264 px 文本列 → 528 px</span></div>
+          <div class="crop" style="height:136px">
+            <div class="crop-inner" style="top:-12px">
+              <div class="player" aria-hidden="true">
+                <div class="cov"><svg viewBox="0 0 52 52"><rect width="52" height="52" fill="url(#npSky)"/><circle cx="35" cy="15" r="6.6" fill="#2a3c3e"/><path d="M0 36 Q13 33 26 35.5 T52 34 V52 H0Z" fill="#223335"/><path d="M0 36h52" stroke="#f2e4c4" stroke-opacity=".55" stroke-width=".8"/><path d="M0 42 Q18 39 34 42 T52 41 V52 H0Z" fill="#0e191a"/></svg></div>
+                <div class="id">
+                  <div class="lbl">正在播放</div>
+                  <div class="ttl">【𝐇𝐢-𝐑𝐞𝐬无损音质】｜《晴天》- 周杰伦 -'故事的小黄花'</div>
+                  <div class="art">周杰伦 · 叶惠美</div>
+                </div>
+                <div class="readout"><span class="pos">01:23</span><span class="dur">/ 04:29</span></div>
+                <div class="left">−03:06</div>
+                <div class="scale"><div class="ticks"></div><div class="rail"><div class="fill"></div></div><div class="head"></div></div>
+                <div class="ctl">
+                  <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M8 1.5v7L2.5 5z"/><path d="M1 1.5v7"/></svg></span>
+                  <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 1.5v7M7 1.5v7"/></svg></span>
+                  <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 1.5v7L7.5 5z"/></svg></span>
+                </div>
+                <div class="vol">VOL <b>72</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="crop-wrap">
+          <div class="crop-lbl"><span>2× · 刻度、轨道与键帽 y 78–120</span><span>4 px 轨 + 2×12 px 播放头</span></div>
+          <div class="crop" style="height:84px">
+            <div class="crop-inner" style="top:-156px">
+              <div class="player" aria-hidden="true">
+                <div class="cov"><svg viewBox="0 0 52 52"><rect width="52" height="52" fill="url(#npSky)"/><circle cx="35" cy="15" r="6.6" fill="#2a3c3e"/><path d="M0 36 Q13 33 26 35.5 T52 34 V52 H0Z" fill="#223335"/><path d="M0 36h52" stroke="#f2e4c4" stroke-opacity=".55" stroke-width=".8"/><path d="M0 42 Q18 39 34 42 T52 41 V52 H0Z" fill="#0e191a"/></svg></div>
+                <div class="id">
+                  <div class="lbl">正在播放</div>
+                  <div class="ttl">【𝐇𝐢-𝐑𝐞𝐬无损音质】｜《晴天》- 周杰伦 -'故事的小黄花'</div>
+                  <div class="art">周杰伦 · 叶惠美</div>
+                </div>
+                <div class="readout"><span class="pos">01:23</span><span class="dur">/ 04:29</span></div>
+                <div class="left">−03:06</div>
+                <div class="scale"><div class="ticks"></div><div class="rail"><div class="fill"></div></div><div class="head"></div></div>
+                <div class="ctl">
+                  <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M8 1.5v7L2.5 5z"/><path d="M1 1.5v7"/></svg></span>
+                  <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 1.5v7M7 1.5v7"/></svg></span>
+                  <span class="key"><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 1.5v7L7.5 5z"/></svg></span>
+                </div>
+                <div class="vol">VOL <b>72</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="note"><b>断在第 30 个字符</b>：37 个字符里前 30 个排得下 264 px 的列，第 31 个换成省略号；标题死守一行，绝不挤压读数。</p>
+        <p class="note"><b>读数独立成行</b>：<span class="m">01:23</span> 15 px tabular，比标题大 2.5 px——仪表上时间是主角，歌名是标签。</p>
+        <p class="note"><b>同一把刻度尺</b>：10 格刻度按 10% 铺满 316 px；播放头落在 30.9% 的同一位置上，1×/2× 都测得出来。</p>
+        <p class="note"><b>空艺人 / 00:00</b>：读数位保留，<span class="m">00:00 / 00:00</span> 降一档明度；行高与键帽位置不动。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="sec-h"><span class="sec-n">03</span><span class="sec-t">实际数值（不是形容词）</span><span class="sec-s">实测环境：headless Edge · 1440 px · dpr 1</span></div>
+    <table class="spec">
+      <thead>
+        <tr><th>角色</th><th>值</th><th>落在哪里</th><th class="n">实测</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="k">字阶</td><td class="v">9.5 / 10.5 / 12.5 / 15</td><td class="u">微标签 / 元信息与列头 / 正文 / 读数</td><td class="n">4 级</td></tr>
+        <tr><td class="k">结果行高</td><td class="v">22 px</td><td class="u">12.5×1.45 = 18.1 + 4；一屏 7 行，共 41 行</td><td class="n">7 行</td></tr>
+        <tr><td class="k">列宽</td><td class="v">28 / 52 / 574 / 84 / 60</td><td class="u">序号 / 来源 / 标题 / 艺人 / 时长；除标题外实测上取整到 4 的倍数</td><td class="n">848 px</td></tr>
+        <tr><td class="k">栅格</td><td class="v">4 px（水平）</td><td class="u">列宽、间距、刻度 10%、点线 4 px 节距；行高 22 是半格例外，不硬凑 24</td><td class="n">22 = 5.5×4</td></tr>
+        <tr><td class="k">明度 t100</td><td class="v">#eef0ea</td><td class="u">标题、读数、值</td><td class="n">17.1:1</td></tr>
+        <tr><td class="k">明度 t70</td><td class="v">rgba(238,240,234,.70)</td><td class="u">艺人、表头下 2 px 强调线、键帽图标</td><td class="n">8.6:1</td></tr>
+        <tr><td class="k">明度 t50</td><td class="v">rgba(238,240,234,.50)</td><td class="u">列头、状态栏、单位、标签</td><td class="n">4.8:1</td></tr>
+        <tr><td class="k">明度 t30</td><td class="v">rgba(238,240,234,.30)</td><td class="u">刻度、点线；<b>不做文字</b></td><td class="n">2.4:1</td></tr>
+        <tr><td class="k">明度 t18</td><td class="v">rgba(238,240,234,.18)</td><td class="u">zebra 之上的细线、键帽边、进度轨；不做文字</td><td class="n">1.6:1</td></tr>
+        <tr><td class="k">强调</td><td class="v">#d9a13f</td><td class="u">只标「现在」：输入提示 › 与播放头</td><td class="n">8.5:1</td></tr>
+        <tr><td class="k">错误</td><td class="v">#e0684b</td><td class="u">错误边线、错误码；不用于警告以外的语义</td><td class="n">5.8:1</td></tr>
+        <tr><td class="k">结构线</td><td class="v">1 px / 2 px</td><td class="u">行间 1 px（.09）；表头下 2 px（t70）；窗口边 1 px（.10）</td><td class="n">21 条</td></tr>
+        <tr><td class="k">留白</td><td class="v">4 / 8 / 12 / 16</td><td class="u">窗口内边距 16；表格左右 16；读区块 12</td><td class="n">—</td></tr>
+        <tr><td class="k">尺寸实测</td><td class="v">880×560 / 340×120</td><td class="u">终端 / 播放器；document 溢出 0×0</td><td class="n">0 / 0</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer class="foot">
+    <span>2026-11-10 · 三方向复核 · 终端 880×560 · 播放器 340×120 · 无溢出</span>
+    <span><a href="d1-editorial.html">D1 Editorial</a><a href="d3-modern.html">D3 Modern</a><a href="index.html">并排对照</a></span>
+  </footer>
+</div>
+
+<pre id="np-audit" hidden></pre>
+<script>
+/* 与 D1 完全相同的 41 行数据 */
+const ROWS = [
+  ["网易云","晴天","周杰伦","04:29"],
+  ["网易云","晴天 (Live)","周杰伦","05:02"],
+  ["本地","晴天","周杰伦","04:29"],
+  ["B站","【4K修复】无与伦比演唱会 晴天 2004","音乐搬运工","05:31"],
+  ["网易云","晴天","周杰伦","04:29"],
+  ["yt-dlp","晴天 - Jay Chou (Official Audio)","Jay Chou","04:30"],
+  ["网易云","晴天 (钢琴版)","CIP Music","04:27"],
+  ["网易云","晴天 (女生版)","空匪","03:22"],
+  ["本地","晴天（吉他 cover）","老张","03:58"],
+  ["B站","周杰伦《晴天》MV 官方版","杰威尔音乐","04:57"],
+  ["网易云","晴天","刘瑞琦","04:12"],
+  ["网易云","晴天 (纯音乐)","群星","04:29"],
+  ["本地","晴天 - 伴奏","阿南","04:29"],
+  ["B站","晴天 吉他弹唱 附谱","木木吉他","04:33"],
+  ["网易云","晴天","张碧晨","04:36"],
+  ["yt-dlp","Jay Chou - Sunny Day (晴天) Lyrics Pinyin English","4.7M views","04:29"],
+  ["网易云","晴天 (DJ版)","DJ小可","05:12"],
+  ["B站","【晴天】钢琴 高音质 纯享","琴键上的猫","04:20"],
+  ["本地","晴天.flac","周杰伦","04:29"],
+  ["网易云","晴天 (2024 重制)","周杰伦","04:31"],
+  ["网易云","晴天 · 女生治愈版","苏晚","03:48"],
+  ["B站","晴天 合唱 现场 大合唱名场面","现场歌单","06:02"],
+  ["yt-dlp","Sunny Day - Jay Chou (Live in Taipei)","Jay Chou","04:58"],
+  ["网易云","晴天 (8bit)","像素音乐","03:05"],
+  ["本地","晴天 - 手机录音 2023","我自己","04:12"],
+  ["B站","一首《晴天》唱哭了全场","音综现场","05:44"],
+  ["网易云","晴天 (R&B 版)","陈一","04:19"],
+  ["yt-dlp","晴天 周杰伦 高音质 无损 车载","车机歌单","04:29"],
+  ["网易云","晴天 (女声)","林小满","04:02"],
+  ["B站","晴天｜指弹吉他改编","指弹阿星","04:41"],
+  ["网易云","晴天 (Lo-fi)","夜航星","03:36"],
+  ["本地","晴天 (Live 2013)","周杰伦","05:18"],
+  ["网易云","晴天","周杰伦","04:29"],
+  ["B站","《晴天》MV 完整版 高清","音乐区bot","04:57"],
+  ["网易云","十年","陈奕迅","03:25"],
+  ["网易云","Like Sunday, Like Rain","Ed Harcourt","07:04"],
+  ["网易云","【𝐇𝐢-𝐑𝐞𝐬无损音质】｜《晴天》- 周杰伦 -'故事的小黄花'","音乐搬运工","04:29"],
+  ["网易云","夏日友晴天","周深","03:29"],
+  ["网易云","晴天（女生版）","","00:00"],
+  ["网易云","晴天 (Live)","周杰伦","05:02"],
+  ["B站","世界级名画！wayward晴天看On萨乐芬妮大四个接蝎子大一波究极完美开…","wayward晴天","03:12"]
+];
+
+(function renderRows(){
+  const tbl = document.getElementById('tbl');
+  const frag = document.createDocumentFragment();
+  ROWS.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'tr trow' + (i % 2 ? ' zebra' : '');
+    row.innerHTML =
+      '<span class="c-idx">' + (i + 1) + '</span>' +
+      '<span class="c-src">' + r[0] + '</span>' +
+      '<span class="c-title">' + r[1] + '</span>' +
+      '<span class="c-artist">' + r[2] + '</span>' +
+      '<span class="c-dur">' + r[3] + '</span>';
+    frag.appendChild(row);
+  });
+  tbl.appendChild(frag);
+})();
+
+(function audit(){
+  const px = v => Math.round(v * 10) / 10;
+  const rect = el => { const b = el.getBoundingClientRect(); return { w: px(b.width), h: px(b.height) }; };
+  const term = document.getElementById('term');
+  const body = document.getElementById('tbl-body');
+  const pa = document.getElementById('player-a');
+  const pb = document.getElementById('player-b');
+  body.scrollTop = body.scrollHeight;
+
+  let hOver = [];
+  term.querySelectorAll('*').forEach(el => {
+    const b = el.getBoundingClientRect(), t = term.getBoundingClientRect();
+    if (b.width > 0 && (b.right > t.right + 0.6 || b.left < t.left - 0.6)) hOver.push(el.className || el.tagName);
+  });
+
+  const bb = body.getBoundingClientRect();
+  const hd = term.querySelector('.thead').getBoundingClientRect();
+  let visRows = 0;
+  document.querySelectorAll('.tbl .tr').forEach(r => {
+    const b = r.getBoundingClientRect();
+    if (b.top >= Math.max(bb.top, hd.bottom) - 0.5 && b.bottom <= bb.bottom + 0.5) visRows++;
+  });
+
+  const out = {
+    pageH: px(document.documentElement.scrollHeight),
+    term: rect(term),
+    playerA: rect(pa),
+    playerB: rect(pb),
+    rows: ROWS.length,
+    visibleRows: visRows,
+    termInner: { scrollW: term.scrollWidth, clientW: term.clientWidth, scrollH: term.scrollHeight, clientH: term.clientHeight },
+    body: { scrollTop: px(body.scrollTop), scrollH: body.scrollHeight, clientH: body.clientHeight, xOver: body.scrollWidth - body.clientWidth },
+    horizontalOverflow: hOver,
+    tracks: getComputedStyle(document.querySelector('.tr')).gridTemplateColumns
+  };
+
+  /* 标题列宽：按真实字体测量能放下几个字符 */
+  const ttl = document.getElementById('ttl-a');
+  const cs = getComputedStyle(ttl);
+  const cv = document.createElement('canvas').getContext('2d');
+  cv.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+  const txt = ttl.textContent;
+  let fit = 0;
+  for (let i = 1; i <= txt.length; i++) {
+    if (cv.measureText(txt.slice(0, i)).width <= ttl.clientWidth) fit = i; else break;
+  }
+  out.titleA = { w: px(ttl.clientWidth), fitChars: fit, totalChars: txt.length };
+  document.getElementById('np-audit').textContent = JSON.stringify(out);
+})();
+</script>
+</body>
+</html>
