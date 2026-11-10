@@ -18,7 +18,9 @@ mod transport;
 #[cfg(test)]
 mod testing;
 
-pub use artist::{MatchKind, build_query, match_artist_name, matches_artist};
+pub use artist::{
+    MatchKind, build_query, match_artist_name, matches_artist, matches_artist_in_query,
+};
 pub use bilibili::BilibiliSource;
 pub use cache::{STREAM_CACHE_MAX_BYTES, STREAM_CACHE_TARGET_BYTES, StreamCache};
 pub use download::{DownloadOutcome, Downloader, HttpDownloader};

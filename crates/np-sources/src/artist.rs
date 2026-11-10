@@ -69,6 +69,25 @@ pub fn matches_artist(track: &SourceTrack, name: &str) -> MatchKind {
     match_artist_name(track.source, &track.artist, &track.title, name)
 }
 
+/// 同时给了关键词与 artist 时的匹配（T-0047 精度规则）。
+///
+/// B 站要求标题同时含关键词——关键词表达“要什么内容”，artist 表达“谁”，
+/// 两者都给了就该同时满足。只给 artist 时 `keyword = None`，不做这个约束。
+/// 网易云接口本身精确，忽略关键词约束。
+pub fn matches_artist_in_query(
+    track: &SourceTrack,
+    name: &str,
+    keyword: Option<&str>,
+) -> MatchKind {
+    if track.source == SourceId::Bilibili
+        && let Some(keyword) = keyword.map(str::trim).filter(|value| !value.is_empty())
+        && !track.title.to_lowercase().contains(&keyword.to_lowercase())
+    {
+        return MatchKind::None;
+    }
+    matches_artist(track, name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +180,64 @@ mod tests {
     fn matching_is_case_insensitive_and_trims_name() {
         let track = track(SourceId::Bilibili, "Jay Chou", "晴天");
         assert_eq!(matches_artist(&track, "  jay  "), MatchKind::Author);
+    }
+
+    #[test]
+    fn both_keyword_and_artist_require_title_keyword_on_bilibili() {
+        let track = track(SourceId::Bilibili, "明前奶绿", "别的视频");
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("不为谁而作的歌")),
+            MatchKind::None
+        );
+    }
+
+    #[test]
+    fn both_keyword_and_artist_keep_matching_title_on_bilibili() {
+        let track = track(
+            SourceId::Bilibili,
+            "切片搬运号",
+            "【明前奶绿】不为谁而作的歌 翻唱",
+        );
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("不为谁而作的歌")),
+            MatchKind::Title
+        );
+    }
+
+    #[test]
+    fn title_artist_without_keyword_is_filtered_when_both_given() {
+        let track = track(SourceId::Bilibili, "切片搬运号", "【明前奶绿】其他歌");
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("不为谁而作的歌")),
+            MatchKind::None
+        );
+    }
+
+    #[test]
+    fn artist_only_does_not_require_title_keyword() {
+        let track = track(SourceId::Bilibili, "切片搬运号", "【明前奶绿】其他歌");
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", None),
+            MatchKind::Title
+        );
+    }
+
+    #[test]
+    fn netease_ignores_keyword_constraint() {
+        let track = track(SourceId::Netease, "明前奶绿", "别的歌名");
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("不为谁而作的歌")),
+            MatchKind::Author
+        );
+    }
+
+    #[test]
+    fn keyword_constraint_is_case_insensitive() {
+        let track = track(SourceId::Bilibili, "切片号", "【明前奶绿】QING TIAN");
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("qing tian")),
+            MatchKind::Title
+        );
     }
 
     #[test]

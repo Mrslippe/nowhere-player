@@ -35,7 +35,7 @@ use np_library::{
 use np_sources::{
     AudioSource, BilibiliSource, Downloader, HttpDownloader, MatchKind, NeteaseSource,
     ReqwestTransport, SourceError, SourceId, SourceRegistry, SourceTrack, StreamCache, Transport,
-    build_query, matches_artist as match_source_artist,
+    build_query, matches_artist_in_query as match_source_artist_in_query,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -206,6 +206,8 @@ pub(crate) struct SearchOptions {
     pub(crate) limit: usize,
     pub(crate) local: bool,
     pub(crate) explicit_limit: bool,
+    /// 用户是否真的给了关键词（只给 artist 时 keyword 会填 artist，但不算关键词）。
+    pub(crate) has_keyword: bool,
 }
 
 impl SearchOptions {
@@ -257,6 +259,7 @@ impl SearchOptions {
             .first()
             .map(|keyword| keyword.trim())
             .unwrap_or_default();
+        let has_keyword = !raw_keyword.is_empty();
         let keyword = if raw_keyword.is_empty() {
             artist.clone().unwrap_or_default()
         } else {
@@ -274,6 +277,7 @@ impl SearchOptions {
             limit,
             local,
             explicit_limit,
+            has_keyword,
         })
     }
 
@@ -286,6 +290,7 @@ impl SearchOptions {
             limit,
             local: false,
             explicit_limit: true,
+            has_keyword: !keyword.trim().is_empty(),
         }
     }
 
@@ -327,6 +332,15 @@ impl SearchOptions {
     /// 发给在线源的 query；构造规则集中在 `np-sources`。
     fn source_query(&self) -> String {
         build_query(&self.keyword, self.artist.as_deref())
+    }
+
+    /// 同时给关键词与 artist 时，B 站标题必须含关键词；只给 artist 时返回 None。
+    fn keyword_filter(&self) -> Option<&str> {
+        if self.artist.is_some() && self.has_keyword {
+            Some(self.keyword.as_str())
+        } else {
+            None
+        }
     }
 
     fn footer(&self, count: usize, with_source_column: bool) -> String {
@@ -388,10 +402,10 @@ impl SearchHit {
         }
     }
 
-    fn artist_match(&self, name: &str) -> MatchKind {
+    fn artist_match(&self, name: &str, keyword: Option<&str>) -> MatchKind {
         match self {
             Self::Local(track) => local_artist_match(track, name),
-            Self::Online(track) => match_source_artist(track, name),
+            Self::Online(track) => match_source_artist_in_query(track, name, keyword),
         }
     }
 }
@@ -3852,8 +3866,13 @@ pub(crate) fn run_online_search_with_options(
     };
     let online_before = online_tracks.len();
     if let Some(artist) = &options.artist {
-        online_tracks
-            .retain(|track| !matches!(match_source_artist(track, artist), MatchKind::None));
+        let keyword = options.keyword_filter();
+        online_tracks.retain(|track| {
+            !matches!(
+                match_source_artist_in_query(track, artist, keyword),
+                MatchKind::None
+            )
+        });
     }
     let online_removed = online_before.saturating_sub(online_tracks.len());
 
@@ -3863,9 +3882,10 @@ pub(crate) fn run_online_search_with_options(
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
     if let Some(artist) = &options.artist {
         // Author 排前、Title 排后；同档保持“本地在前 + 各源返回顺序”。
+        let keyword = options.keyword_filter();
         let mut ranked: Vec<(MatchKind, SearchHit)> = hits
             .into_iter()
-            .map(|hit| (hit.artist_match(artist), hit))
+            .map(|hit| (hit.artist_match(artist, keyword), hit))
             .collect();
         ranked.sort_by_key(|(kind, _)| *kind);
         hits = ranked.into_iter().map(|(_, hit)| hit).collect();
@@ -6701,6 +6721,7 @@ mod tests {
             limit: DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
+            has_keyword: true,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6750,6 +6771,7 @@ mod tests {
             limit: DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
+            has_keyword: true,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6788,6 +6810,7 @@ mod tests {
             limit: DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
+            has_keyword: true,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6834,6 +6857,7 @@ mod tests {
             limit: DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
+            has_keyword: true,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6893,6 +6917,7 @@ mod tests {
             limit,
             local: false,
             explicit_limit: false,
+            has_keyword: true,
         }
     }
 
@@ -6957,6 +6982,46 @@ mod tests {
     }
 
     #[test]
+    fn bilibili_title_must_also_contain_keyword_when_both_given() {
+        let library = FakeLibraryApi::new();
+        let mut track = online_track(SourceId::Bilibili, "BVother", "切片号");
+        track.title = "【明前奶绿】别的歌".to_owned();
+        track.artist = "切片号".to_owned();
+        let online = RecordingOnline::new(vec![track]);
+        let options = artist_options("不为谁而作的歌", "明前奶绿", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. }
+                if text.contains("过滤前有 1 条，被 --artist 过滤掉了 1 条")
+        )));
+    }
+
+    #[test]
+    fn artist_only_keeps_title_without_keyword_constraint() {
+        let library = FakeLibraryApi::new();
+        let mut track = online_track(SourceId::Bilibili, "BVother", "切片号");
+        track.title = "【明前奶绿】别的歌".to_owned();
+        track.artist = "切片号".to_owned();
+        let online = RecordingOnline::new(vec![track]);
+        let options = SearchOptions {
+            keyword: "明前奶绿".to_owned(),
+            artist: Some("明前奶绿".to_owned()),
+            source: None,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+            has_keyword: false,
+        };
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(table_of_block(&block).1.len(), 1);
+    }
+
+    #[test]
     fn netease_title_match_is_not_kept() {
         let library = FakeLibraryApi::new();
         let mut track = online_track(SourceId::Netease, "10001", "别的艺人");
@@ -6984,6 +7049,7 @@ mod tests {
             limit: DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
+            has_keyword: true,
         };
 
         run_online_capture(&options, &online, &library);
