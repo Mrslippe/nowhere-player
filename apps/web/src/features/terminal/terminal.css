@@ -270,6 +270,34 @@ html[data-theme="phosphor"]
   position: relative;
 }
 
+/*
+ * 焦点条（T-0050 B）：默认 scaleX(0)，transform-origin:left；
+ * 聚焦从左长出（220ms focus-in），失焦从右退回（160ms focus-out）。
+ * 只动 transform，不动 width；reduced-motion 时 token 归 0，最终状态仍正确。
+ */
+.np-lab__input-row::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  height: 2px;
+  border-radius: var(--np-radius-pill);
+  background: var(--accent);
+  content: "";
+  pointer-events: none;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--np-dur-focus-out) var(--np-ease-focus-out);
+}
+
+.np-lab__input-row.is-focused::after,
+.np-lab__input-row:focus-within::after {
+  transform: scaleX(1);
+  transition-duration: var(--np-dur-focus-in);
+  transition-timing-function: var(--np-ease-focus-in);
+}
+
 .np-lab__prompt {
   flex: none;
   color: var(--accent);
@@ -293,10 +321,6 @@ html[data-theme="phosphor"]
 /* 输入框本身无边框：焦点用整行底部 2px 强调线表达，避免粗外框包住整行。 */
 .np-lab__input:focus-visible {
   outline: none;
-}
-
-.np-lab__input-row:focus-within {
-  box-shadow: var(--np-shadow-focus-line);
 }
 
 .np-lab__input::placeholder {
@@ -599,10 +623,6 @@ html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row {
   border: 0;
   border-radius: var(--np-radius-control);
   box-shadow: var(--np-highlight-inset);
-}
-
-html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row:focus-within {
-  box-shadow: var(--np-highlight-inset), var(--np-shadow-focus-line);
 }
 
 html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__prompt {

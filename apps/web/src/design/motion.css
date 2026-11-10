@@ -19,6 +19,11 @@
   --np-dur-mid: 220ms;
   /* 进度条数值变化（比内容入场稍慢，避免格子跳）。 */
   --np-dur-progress: 200ms;
+  /* 输入框焦点条：聚焦从左长出 220ms；失焦从右退回 160ms。 */
+  --np-dur-focus-in: 220ms;
+  --np-dur-focus-out: 160ms;
+  --np-ease-focus-in: cubic-bezier(0.22, 1, 0.36, 1);
+  --np-ease-focus-out: cubic-bezier(0.4, 0, 1, 1);
   /* 统一缓动；与 tokens.css 的 --ease-out 同一曲线。 */
   --np-ease-out: var(--ease-out);
 }
@@ -28,5 +33,7 @@
     --np-dur-fast: 0ms;
     --np-dur-mid: 0ms;
     --np-dur-progress: 0ms;
+    --np-dur-focus-in: 0ms;
+    --np-dur-focus-out: 0ms;
   }
 }

@@ -18,6 +18,10 @@ describe("动效 token（T-0041）", () => {
       "--np-dur-fast",
       "--np-dur-mid",
       "--np-dur-progress",
+      "--np-dur-focus-in",
+      "--np-dur-focus-out",
+      "--np-ease-focus-in",
+      "--np-ease-focus-out",
       "--np-ease-out",
     ]) {
       expect(motionCss, token).toContain(`${token}:`);
@@ -29,5 +33,7 @@ describe("动效 token（T-0041）", () => {
     expect(motionCss).toMatch(/--np-dur-fast:\s*0ms/);
     expect(motionCss).toMatch(/--np-dur-mid:\s*0ms/);
     expect(motionCss).toMatch(/--np-dur-progress:\s*0ms/);
+    expect(motionCss).toMatch(/--np-dur-focus-in:\s*0ms/);
+    expect(motionCss).toMatch(/--np-dur-focus-out:\s*0ms/);
   });
 });

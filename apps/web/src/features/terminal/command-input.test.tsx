@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Completion } from "../../shared/command-bridge";
-import { CommandInput } from "./components/CommandInput";
+import { CommandInput, focusBarClass } from "./components/CommandInput";
 import {
   COMPLETION_KIND_LABELS,
   CompletionPopup,
@@ -45,6 +45,13 @@ describe("补全弹层渲染（T-0020 §6.3）", () => {
     expect(html).toContain("第 4 条");
     // 第 9 条以后被截掉。
     expect(html).not.toContain("play5");
+  });
+});
+
+describe("输入行焦点条 class（T-0050 B）", () => {
+  it("focus / blur 切换只翻 is-focused class", () => {
+    expect(focusBarClass(false)).toBe("");
+    expect(focusBarClass(true)).toBe("is-focused");
   });
 });
 

@@ -37,6 +37,11 @@ export interface CommandInputProps {
 
 const PLACEHOLDER = "输入 help 查看命令，例如 play 1 / queue";
 
+/** 焦点条状态类：CSS 用它切换 scaleX(1) / scaleX(0)。 */
+export function focusBarClass(focused: boolean): string {
+  return focused ? "is-focused" : "";
+}
+
 /**
  * 底部命令输入（T-0008 §6.6 → T-0020 补全与历史）。
  *
@@ -55,6 +60,7 @@ export function CommandInput({
   initialHistory,
 }: CommandInputProps) {
   const [value, setValue] = useState("");
+  const [focused, setFocused] = useState(false);
   const [popup, setPopup] = useState<CompletionPopupState | null>(null);
   const [caret, setCaretState] = useState(0);
   const [history, setHistory] = useState<HistoryCursor>(() =>
@@ -75,6 +81,30 @@ export function CommandInput({
       saveHistory(history.entries);
     }
   }, [history.entries, persistHistory]);
+
+  // 原生 focus/blur 直接挂 input：autoFocus 可能早于 React 合成订阅；
+  // 条在 form 内切到 ⏎ 按钮时由 CSS :focus-within 兜底，离开 form 才退回。
+  useEffect(() => {
+    const input = inputRef.current;
+    if (input === null) {
+      return;
+    }
+
+    const sync = (): void => {
+      setFocused(input === document.activeElement);
+    };
+    const onFocus = (): void => setFocused(true);
+    const onBlur = (): void => setFocused(false);
+
+    sync();
+    input.addEventListener("focus", onFocus);
+    input.addEventListener("blur", onBlur);
+
+    return () => {
+      input.removeEventListener("focus", onFocus);
+      input.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
   useEffect(
     () => () => {
@@ -244,7 +274,11 @@ export function CommandInput({
   };
 
   return (
-    <form className="np-lab__input-row" onSubmit={submit} aria-label="命令输入">
+    <form
+      className={["np-lab__input-row", focusBarClass(focused)].filter(Boolean).join(" ")}
+      onSubmit={submit}
+      aria-label="命令输入"
+    >
       <span className="np-lab__prompt" aria-hidden="true">
         ›
       </span>
