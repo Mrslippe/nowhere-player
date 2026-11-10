@@ -44,6 +44,7 @@ const STRUCTURE_TOKENS = [
   "--np-shadow-window",
   "--np-highlight-inset",
   "--np-shadow-focus-line",
+  "--np-shadow-completion-active",
   "--np-font-ui",
   "--np-font-mono",
   "--np-player-cover",

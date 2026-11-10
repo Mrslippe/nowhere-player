@@ -34,6 +34,7 @@
   --np-shadow-window: var(--shadow-window);
   --np-highlight-inset: inset 0 1px 0 var(--hi);
   --np-shadow-focus-line: inset 0 -2px 0 var(--accent);
+  --np-shadow-completion-active: inset 2px 0 0 var(--accent);
 
   --np-font-ui: var(--font-ui);
   --np-font-mono: var(--font-mono);

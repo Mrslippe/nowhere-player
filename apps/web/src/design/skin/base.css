@@ -40,7 +40,8 @@
   --np-shadow-float: var(--shadow-2);
   --np-shadow-window: var(--shadow-window); /* 浮层：只给浮层用较重投影 */
   --np-highlight-inset: inset 0 1px 0 var(--hi);
-  --np-shadow-focus-line: inset 0 -2px 0 var(--accent); /* 输入行焦点线 */
+  --np-shadow-focus-line: inset 0 -2px 0 var(--accent);
+  --np-shadow-completion-active: inset 2px 0 0 var(--accent); /* 输入行焦点线 */
 
   /* ── 字体角色：映射到 typography.css 的原始字体栈 ─── */
   --np-font-ui: var(--font-ui);

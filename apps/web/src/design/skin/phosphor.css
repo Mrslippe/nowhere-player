@@ -37,6 +37,7 @@
   --np-shadow-window: none;
   --np-highlight-inset: none;
   --np-shadow-focus-line: inset 0 -2px 0 var(--accent);
+  --np-shadow-completion-active: inset 2px 0 0 var(--accent);
 
   /*
    * UI 与终端共用等宽栈。

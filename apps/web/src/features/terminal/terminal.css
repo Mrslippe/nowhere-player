@@ -399,6 +399,8 @@ html[data-theme="phosphor"]
 
 .np-lab__completion-item[data-active="true"] {
   background: var(--bg-hover);
+  /* 左缘 2px 琥珀信号：11px 小字行里单靠 6-8 RGB 级差看不见。 */
+  box-shadow: var(--np-shadow-completion-active);
 }
 
 .np-lab__completion-text {

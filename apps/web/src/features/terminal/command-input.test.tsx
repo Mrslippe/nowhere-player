@@ -108,6 +108,7 @@ describe("焦点条形状（T-0050 B 修正）", () => {
     expect(css).toContain(".np-lab::after");
     expect(css).toContain("background: var(--np-border-window);");
     expect(css).toContain("border-bottom: var(--np-border-window-line);");
+    expect(css).toContain("box-shadow: var(--np-shadow-completion-active);");
   });
 });
 
