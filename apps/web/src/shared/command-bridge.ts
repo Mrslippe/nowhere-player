@@ -44,6 +44,11 @@ export interface CompletionItem {
   kind: CompletionKind;
   /** 一行说明。 */
   summary: string;
+  /**
+   * 命令/子命令完整用法（T-0051 G，候选第二行）。
+   * 可选：旧后端未带该字段时不影响候选；新后端字段名就是 `usage`。
+   */
+  usage?: string;
 }
 
 /**
@@ -330,6 +335,7 @@ function normalizeItem(raw: unknown): CompletionItem[] {
       // 未知类型并入“命令”；只影响标签，不影响替换。
       kind: isCompletionKind(value.kind) ? value.kind : "command",
       summary: typeof value.summary === "string" ? value.summary : "",
+      usage: typeof value.usage === "string" ? value.usage : undefined,
     },
   ];
 }

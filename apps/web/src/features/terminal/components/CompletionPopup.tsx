@@ -1,8 +1,8 @@
 /**
  * Tab 补全弹层（T-0020 §6.3）。
  *
- * 纯展示：候选、高亮由 {@link CommandInput} 决定。最多 {@link POPUP_LIMIT} 条，
- * 每行 = 候选文本 + 类型标签 + 一行说明。
+ * 纯展示：候选、高亮由 {@link CommandInput} 决定。最多 {@link POPUP_LIMIT} 条。
+ * 每条第一行 = 候选文本 + 类型标签 + 一行说明；第二行是 usage（灰字、单行省略）。
  */
 import type { Completion, CompletionItem } from "../../../shared/command-bridge";
 import { POPUP_LIMIT } from "../completion";
@@ -57,6 +57,11 @@ export function CompletionPopup({
               {COMPLETION_KIND_LABELS[item.kind]}
             </span>
             <span className="np-lab__completion-summary">{item.summary}</span>
+            {item.usage ? (
+              <span className="np-lab__completion-usage" title={item.usage}>
+                {item.usage}
+              </span>
+            ) : null}
           </div>
         );
       })}

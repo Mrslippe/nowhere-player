@@ -364,9 +364,11 @@ html[data-theme="phosphor"]
 }
 
 .np-lab__completion-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  column-gap: var(--sp-2);
+  row-gap: 1px;
   align-items: baseline;
-  gap: var(--sp-2);
   padding: 4px var(--sp-2);
   color: var(--fg);
   font-family: var(--np-font-mono);
@@ -379,7 +381,8 @@ html[data-theme="phosphor"]
 }
 
 .np-lab__completion-text {
-  flex: none;
+  grid-column: 1;
+  grid-row: 1;
   min-width: var(--np-col-source);
   font-weight: 600;
   color: var(--fg);
@@ -387,7 +390,9 @@ html[data-theme="phosphor"]
 }
 
 .np-lab__completion-kind {
-  flex: none;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
   padding: 0 var(--np-space-1);
   border: var(--np-border-control);
   border-radius: var(--np-radius-micro);
@@ -397,9 +402,25 @@ html[data-theme="phosphor"]
 }
 
 .np-lab__completion-summary {
-  flex: 1 1 auto;
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
   overflow: hidden;
   color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* usage 第二行：单行省略，保留开头；全量在 title 里。 */
+.np-lab__completion-usage {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--fs-10);
+  line-height: var(--np-density-line-dense);
+  opacity: 0.75;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

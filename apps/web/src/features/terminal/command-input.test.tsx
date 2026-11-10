@@ -28,6 +28,38 @@ describe("补全弹层渲染（T-0020 §6.3）", () => {
     expect(html).toBe("");
   });
 
+  it("有 usage 时渲染第二行；没有时不渲染空行", () => {
+    const usage = "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--local | --up <用户名> | --mid <数字 id>]";
+    const html = renderToStaticMarkup(
+      <CompletionPopup
+        completion={{
+          replaceStart: 0,
+          replaceEnd: 0,
+          items: [
+            {
+              text: "search",
+              kind: "command",
+              summary: "搜索本地库与在线音源",
+              usage,
+            },
+          ],
+        }}
+        activeIndex={0}
+      />,
+    );
+
+    const escaped = usage.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    expect(html).toContain("np-lab__completion-usage");
+    expect(html).toContain("search [关键词]");
+    expect(html).toContain(escaped);
+    expect(html).toContain(`title="${escaped}"`);
+
+    const noUsage = renderToStaticMarkup(
+      <CompletionPopup completion={completion(1)} activeIndex={0} />,
+    );
+    expect(noUsage).not.toContain("np-lab__completion-usage");
+  });
+
   it("最多渲染 5 条，并标出高亮项与类型标签", () => {
     const html = renderToStaticMarkup(
       <CompletionPopup completion={completion(12)} activeIndex={1} />,
