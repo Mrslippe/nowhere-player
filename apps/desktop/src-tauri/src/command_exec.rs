@@ -1378,10 +1378,8 @@ impl Executor<'_> {
                     });
                 }
                 ListingSource::Playlist(name) => {
-                    return Err(CmdError::new(
-                        "E_UNSUPPORTED",
-                        format!("歌单《{name}》尚未接入序号播放"),
-                    ));
+                    let playlist = self.playlist_by_name(&name)?;
+                    return self.play_playlist_item(&playlist, index);
                 }
             }
         }
@@ -1760,7 +1758,15 @@ impl Executor<'_> {
                     footer: None,
                 })
             }
-            "play" => Err(CmdError::new("E_UNSUPPORTED", "playlist play 尚未接入")),
+            "play" => {
+                let name = positional_arg(parsed, "名字")?;
+                let index = match parsed.positional.get(1) {
+                    Some(raw) => user_index(raw)?,
+                    None => 0,
+                };
+                let playlist = self.playlist_by_name(name)?;
+                self.play_playlist_item(&playlist, index)
+            }
             other => Err(CmdError::new(
                 "E_CMD_UNKNOWN",
                 format!("playlist 没有子命令：{other}"),
@@ -1923,6 +1929,49 @@ impl Executor<'_> {
                 Ok(playlist_draft(item))
             }
         }
+    }
+
+    fn play_playlist_item(&self, playlist: &Playlist, index: usize) -> Result<Outcome, CmdError> {
+        let (_, items) = self.library.playlist_get(playlist.id)?;
+        let item = items.get(index).ok_or_else(|| {
+            CmdError::new(
+                "E_CMD_ARG",
+                format!("歌单《{}》里只有 {} 首", playlist.name, items.len()),
+            )
+        })?;
+        let state = if item.kind == "local" {
+            if !Path::new(&item.path).is_file() {
+                return Err(CmdError::new("E_CMD_ARG", "文件不存在，可能已移动"));
+            }
+            self.api.play(Some(item.path.clone()))?
+        } else {
+            let source = source_from_str(&item.source)?;
+            let track = SourceTrack {
+                source,
+                source_id: item.source_id.clone(),
+                title: item.title.clone(),
+                artist: item.artist.clone(),
+                duration_ms: u64::try_from(item.duration_ms).unwrap_or(0),
+                album: (!item.album.is_empty()).then(|| item.album.clone()),
+                cover_url: None,
+            };
+            let online = self
+                .services
+                .online
+                .ok_or_else(|| CmdError::new("E_SRC_UNAVAILABLE", "在线服务未接入"))?;
+            let prepared = online.prepare(&track, &mut |_| {})?;
+            self.api
+                .play(Some(prepared.path.to_string_lossy().into_owned()))?
+        };
+        Ok(Outcome {
+            outputs: vec![text_of(vec![
+                bold("播放"),
+                plain(format!(" · {} 第 {} 首", playlist.name, index + 1)),
+                dim(format!(" · {}", item.title)),
+                dim(format!(" · 来源：{}", playlist_item_source(item))),
+            ])],
+            footer: Some(state_footer(&state)),
+        })
     }
 
     /// `library`：`add` / `list` / `stat`（`scan` 在 `run` 里提前处理）。
@@ -2762,6 +2811,18 @@ fn playlist_item_source(item: &PlaylistItem) -> String {
         "bilibili" => "B站".to_owned(),
         "netease" => "网易云".to_owned(),
         other => other.to_owned(),
+    }
+}
+
+fn source_from_str(raw: &str) -> Result<SourceId, CmdError> {
+    match raw {
+        "bilibili" => Ok(SourceId::Bilibili),
+        "netease" => Ok(SourceId::Netease),
+        "ytdlp" => Ok(SourceId::Ytdlp),
+        other => Err(CmdError::new(
+            "E_SRC_UNAVAILABLE",
+            format!("歌单条目来源未知：{other}"),
+        )),
     }
 }
 
@@ -7073,6 +7134,163 @@ mod tests {
         let add = done_with_library(&api, &library, r#"playlist add "A" 2"#);
         assert_eq!(add.status, BlockStatus::Error);
         assert!(error_fields(&add).1.contains("搜索结果只有 1 条"));
+    }
+
+    #[test]
+    fn playlist_play_defaults_to_first_item() {
+        let dir = TestDir::new("playlist-default-play");
+        let path = dir.path().join("first.flac");
+        fs::write(&path, b"fake").expect("audio");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let id = playlist_with_items(&library, "A");
+        library
+            .playlist_add(
+                id,
+                &NewPlaylistItem {
+                    kind: "local".to_owned(),
+                    path: path.to_string_lossy().into_owned(),
+                    source: String::new(),
+                    source_id: String::new(),
+                    title: "第一".to_owned(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration_ms: 1_000,
+                },
+            )
+            .expect("add");
+        let block = done_with_library(&api, &library, r#"playlist play "A""#);
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("第 1 首"));
+    }
+
+    #[test]
+    fn playlist_remove_keeps_one_based_positions_contiguous() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let id = playlist_with_items(&library, "A");
+        for title in ["一", "二", "三"] {
+            library
+                .playlist_add(
+                    id,
+                    &NewPlaylistItem {
+                        kind: "local".to_owned(),
+                        path: format!("/music/{title}.flac"),
+                        source: String::new(),
+                        source_id: String::new(),
+                        title: title.to_owned(),
+                        artist: String::new(),
+                        album: String::new(),
+                        duration_ms: 1_000,
+                    },
+                )
+                .expect("add");
+        }
+        let removed = done_with_library(&api, &library, r#"playlist remove "A" 1"#);
+        assert_eq!(removed.status, BlockStatus::Done);
+        let show = done_with_library(&api, &library, r#"playlist show "A""#);
+        let (_, rows) = table_of_block(&show);
+        assert_eq!(rows[0][0], "1");
+        assert_eq!(rows[0][1], "! 二");
+        assert_eq!(rows[1][0], "2");
+        assert_eq!(rows[1][1], "! 三");
+    }
+
+    #[test]
+    fn playlist_play_local_missing_file_is_human_error() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let id = playlist_with_items(&library, "A");
+        library
+            .playlist_add(
+                id,
+                &NewPlaylistItem {
+                    kind: "local".to_owned(),
+                    path: "/does/not/exist.flac".to_owned(),
+                    source: String::new(),
+                    source_id: String::new(),
+                    title: "不存在".to_owned(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration_ms: 1_000,
+                },
+            )
+            .expect("add");
+        let block = done_with_library(&api, &library, r#"playlist play "A""#);
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("文件不存在"));
+    }
+
+    #[test]
+    fn playlist_play_local_and_play_number_after_show() {
+        let dir = TestDir::new("playlist-local-play");
+        let path = dir.path().join("song.flac");
+        fs::write(&path, b"fake").expect("audio");
+        let path_text = path.to_string_lossy().into_owned();
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let id = playlist_with_items(&library, "A");
+        library
+            .playlist_add(
+                id,
+                &NewPlaylistItem {
+                    kind: "local".to_owned(),
+                    path: path_text.clone(),
+                    source: String::new(),
+                    source_id: String::new(),
+                    title: "本地".to_owned(),
+                    artist: "艺人".to_owned(),
+                    album: String::new(),
+                    duration_ms: 1_000,
+                },
+            )
+            .expect("add");
+        let direct = done_with_library(&api, &library, r#"playlist play "A" 1"#);
+        assert_eq!(direct.status, BlockStatus::Done);
+        assert!(text_of_block(&direct).contains("第 1 首"));
+        done_with_library(&api, &library, r#"playlist show "A""#);
+        let by_number = done_with_library(&api, &library, "play 1");
+        assert_eq!(by_number.status, BlockStatus::Done);
+        assert!(
+            api.calls()
+                .iter()
+                .filter(|call| matches!(call, Call::Play(Some(path)) if path == &path_text))
+                .count()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn playlist_play_remote_uses_prepare() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        library.remember_hits(vec![SearchHit::Online(up_track())]);
+        library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: 1,
+        });
+        done_with_library(&api, &library, r#"playlist create "远程""#);
+        done_with_library(&api, &library, r#"playlist add "远程" 1"#);
+        let cached = PathBuf::from("/cache/remote.m4a");
+        let online = FakeQueueOnline {
+            path: cached.clone(),
+        };
+        let block = done_with_playlist_online(&api, &library, &online, r#"playlist play "远程""#);
+        assert_eq!(block.status, BlockStatus::Done, "{}", text_of_block(&block));
+        assert!(api.calls().iter().any(
+            |call| matches!(call, Call::Play(Some(path)) if path == &cached.to_string_lossy())
+        ));
+        assert!(text_of_block(&block).contains("来源：B站"));
+    }
+
+    #[test]
+    fn playlist_play_out_of_range_is_human_error() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        playlist_with_items(&library, "A");
+        let block = done_with_library(&api, &library, r#"playlist play "A" 1"#);
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("只有 0 首"));
     }
 
     #[test]
