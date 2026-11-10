@@ -115,6 +115,20 @@ export function commandPrefix(input: string, caret: number): string | null {
   return input;
 }
 
+/**
+ * 实时候选是否该请求：历史导航期间一律不请求；其余仍要求命令名位置。
+ *
+ * 历史翻完后 `historyNavigating` 保持 true，直到用户再输入字符（change 里清掉），
+ * 所以不会因为 value 变化自动弹候选。
+ */
+export function shouldRequestRealtimeCompletion(
+  input: string,
+  caret: number,
+  historyNavigating: boolean,
+): boolean {
+  return !historyNavigating && commandPrefix(input, caret) !== null;
+}
+
 /** 当前高亮的候选；空列表为 `null`。 */
 export function activeItem(
   state: CompletionPopupState,

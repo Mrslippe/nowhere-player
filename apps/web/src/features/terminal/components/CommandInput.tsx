@@ -3,9 +3,9 @@ import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import type { Completion } from "../../../shared/command-bridge";
 import {
   COMPLETION_DEBOUNCE_MS,
-  commandPrefix,
   decideKey,
   openCompletion,
+  shouldRequestRealtimeCompletion,
   toCharOffset,
   toInputKey,
   type CompletionPopupState,
@@ -67,6 +67,8 @@ export function CommandInput({
   const requestRef = useRef(0);
   /** Tab 采纳后本轮渲染不因输入变化立刻清掉列表（卡要求“不关闭列表”）。 */
   const skipRealtimeRef = useRef(false);
+  /** ↑/↓ 翻历史期间保持 true；用户再输入一个字符才清掉（T-0046 A）。 */
+  const historyNavigatingRef = useRef(false);
 
   useEffect(() => {
     if (persistHistory) {
@@ -129,8 +131,16 @@ export function CommandInput({
       return;
     }
     requestRef.current += 1;
-    if (commandPrefix(value, caret) === null) {
-      setPopup(null);
+    if (
+      !shouldRequestRealtimeCompletion(
+        value,
+        caret,
+        historyNavigatingRef.current,
+      )
+    ) {
+      if (!historyNavigatingRef.current) {
+        setPopup(null);
+      }
       return;
     }
 
@@ -143,6 +153,7 @@ export function CommandInput({
   const change = (event: ChangeEvent<HTMLInputElement>): void => {
     requestRef.current += 1;
     skipRealtimeRef.current = false;
+    historyNavigatingRef.current = false;
     setPopup(null);
     setValue(event.target.value);
     setCaretState(event.target.selectionStart ?? event.target.value.length);
@@ -192,6 +203,7 @@ export function CommandInput({
 
     if (decision.historyStep !== 0) {
       event.preventDefault();
+      historyNavigatingRef.current = true;
       const moved =
         decision.historyStep < 0
           ? historyUp(history, value)
@@ -221,6 +233,7 @@ export function CommandInput({
     }
 
     requestRef.current += 1;
+    historyNavigatingRef.current = false;
     setPopup(null);
     // 每条命令执行后入栈（成功失败都算），连续重复由 pushHistory 去重。
     setHistory(createHistoryCursor(pushHistory(history.entries, input)));

@@ -9,6 +9,7 @@ import {
   commandPrefix,
   decideKey,
   fromCharOffset,
+  shouldRequestRealtimeCompletion,
   moveCompletion,
   openCompletion,
   toCharOffset,
@@ -166,6 +167,24 @@ describe("命令名位置（T-0043 §2C）", () => {
 
   it("debounce 不超过 80ms", () => {
     expect(COMPLETION_DEBOUNCE_MS).toBeLessThanOrEqual(80);
+  });
+});
+
+describe("历史导航期间不触发候选（T-0046 A）", () => {
+  it("historyNavigating=true 时即使命令名位置也不请求", () => {
+    expect(shouldRequestRealtimeCompletion("pl", 2, true)).toBe(false);
+  });
+
+  it("historyNavigating=false 时命令名位置正常请求", () => {
+    expect(shouldRequestRealtimeCompletion("pl", 2, false)).toBe(true);
+  });
+
+  it("参数位置仍然不请求", () => {
+    expect(shouldRequestRealtimeCompletion("play 1", 6, false)).toBe(false);
+  });
+
+  it("空输入不请求", () => {
+    expect(shouldRequestRealtimeCompletion("", 0, false)).toBe(false);
   });
 });
 
