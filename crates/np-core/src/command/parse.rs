@@ -59,6 +59,7 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
     // 引号开头的 `"--x"` 仍是位置参数。
     let mut words: Vec<&Token> = Vec::new();
     let mut raw_flags: Vec<(&str, Option<&str>)> = Vec::new();
+    let mut search_seen_flag = false;
     let mut index = 0;
     while index < rest.len() {
         let token = &rest[index];
@@ -68,6 +69,9 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
             token.text.strip_prefix("--")
         };
         if let Some(body) = flag_body {
+            if spec.name == "search" && !words.is_empty() {
+                search_seen_flag = true;
+            }
             let (name, value) = match body.split_once('=') {
                 Some((name, value)) => (name, Some(value)),
                 None => (body, None),
@@ -84,6 +88,10 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
                 continue;
             }
             raw_flags.push((name, value));
+            index += 1;
+            continue;
+        }
+        if spec.name == "search" && search_seen_flag {
             index += 1;
             continue;
         }
@@ -112,24 +120,39 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
     }
 
     let args = subcommand.map_or(spec.args, |subcommand| subcommand.args);
+    let joined_search = if spec.name == "search" && subcommand.is_none() && positional.len() > 1 {
+        Some(
+            positional
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    } else {
+        None
+    };
     let required = args.iter().filter(|arg| arg.required).count();
     if positional.len() < required {
         return Err(ParseError::missing_arg(args[positional.len()].name, usage));
     }
-    if positional.len() > args.len() {
+    if positional.len() > args.len() && joined_search.is_none() {
         return Err(ParseError::extra_arg(&positional[args.len()].text, usage));
     }
-    let mut values = Vec::with_capacity(positional.len());
-    for (arg, token) in args.iter().zip(positional) {
-        match arg.kind.normalize(&token.text) {
-            Some(value) => values.push(value),
-            None => {
-                return Err(ParseError::invalid_arg(
-                    arg.name,
-                    &arg.kind.describe(),
-                    &token.text,
-                    usage,
-                ));
+    let mut values = Vec::with_capacity(positional.len().min(args.len()));
+    if let Some(joined) = joined_search {
+        values.push(joined);
+    } else {
+        for (arg, token) in args.iter().zip(positional) {
+            match arg.kind.normalize(&token.text) {
+                Some(value) => values.push(value),
+                None => {
+                    return Err(ParseError::invalid_arg(
+                        arg.name,
+                        &arg.kind.describe(),
+                        &token.text,
+                        usage,
+                    ));
+                }
             }
         }
     }
@@ -742,6 +765,42 @@ mod tests {
     }
 
     #[test]
+    fn search_joins_multiple_keyword_tokens_with_one_space() {
+        let parsed = parse_ok("search 明前奶绿 文静 老公天下第一 第一次");
+        assert_eq!(parsed.positional, ["明前奶绿 文静 老公天下第一 第一次"]);
+    }
+
+    #[test]
+    fn search_joins_quoted_and_plain_tokens() {
+        let parsed = parse_ok(r#"search "a b" c"#);
+        assert_eq!(parsed.positional, ["a b c"]);
+    }
+
+    #[test]
+    fn search_stops_keywords_at_first_flag_after_a_word() {
+        let parsed = parse_ok("search a b --artist X c");
+        assert_eq!(parsed.positional, ["a b"]);
+        assert_eq!(parsed.flags.get("artist").map(String::as_str), Some("X"));
+    }
+
+    #[test]
+    fn search_accepts_no_filter_flag() {
+        let parsed = parse_ok("search 晴天 --no-filter");
+        assert!(parsed.flags.contains_key("no-filter"));
+        assert_eq!(parsed.positional, ["晴天"]);
+    }
+
+    #[test]
+    fn search_accepts_no_filter_with_artist() {
+        let parsed = parse_ok("search 晴天 --artist 周杰伦 --no-filter");
+        assert!(parsed.flags.contains_key("no-filter"));
+        assert_eq!(
+            parsed.flags.get("artist").map(String::as_str),
+            Some("周杰伦")
+        );
+    }
+
+    #[test]
     fn search_keeps_a_quoted_keyword() {
         let parsed = parse_ok(r#"search "kid a""#);
 
@@ -749,7 +808,7 @@ mod tests {
         assert_eq!(parsed.positional, ["kid a"]);
         assert_eq!(
             parsed.usage(),
-            "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--local | --up <用户名> | --mid <数字 id>]"
+            "search <关键词…> [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--no-filter] [--local | --up <用户名> | --mid <数字 id>]"
         );
     }
 

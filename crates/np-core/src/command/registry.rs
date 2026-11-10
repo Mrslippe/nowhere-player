@@ -738,7 +738,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "search",
         aliases: &[],
         summary: "搜索本地库与在线音源，结果可按序号播放",
-        usage: "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--local | --up <用户名> | --mid <数字 id>]",
+        usage: "search <关键词…> [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--no-filter] [--local | --up <用户名> | --mid <数字 id>]",
         args: &[ArgSpec {
             name: "keyword",
             kind: ArgKind::Text,
@@ -749,6 +749,11 @@ const COMMANDS: &[CommandSpec] = &[
                 name: "local",
                 takes_value: false,
                 summary: "只搜本地库",
+            },
+            FlagSpec {
+                name: "no-filter",
+                takes_value: false,
+                summary: "关闭 artist 过滤与标题关键词约束，返回源原始结果",
             },
             FlagSpec {
                 name: "artist",
