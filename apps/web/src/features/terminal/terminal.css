@@ -483,11 +483,6 @@ html[data-theme="phosphor"]
     opacity: 1;
   }
 
-  /* 50% 时间命中 .5，满足“中间帧明显半透明”的验收。 */
-  50% {
-    opacity: 0.5;
-  }
-
   to {
     opacity: 0;
   }
