@@ -185,11 +185,14 @@ pub(crate) struct ActiveListing {
     pub(crate) len: usize,
 }
 
-/// 搜索结果上限（T-0023 §6.4）。
+/// 搜索结果硬上限（T-0023 §6.4）；`--limit` 也不能超过它。
 pub(crate) const MAX_SEARCH_RESULTS: usize = 100;
 
-/// 每个在线源在 `search` 里最多取多少条；合并后再按总上限截断。
-pub(crate) const ONLINE_SEARCH_PER_SOURCE: usize = 20;
+/// 默认搜索结果总数（T-0046 C）。
+pub(crate) const DEFAULT_SEARCH_RESULTS: usize = 20;
+
+/// 默认每个在线源取多少条；两个源正好凑成默认总数 20。
+pub(crate) const ONLINE_SEARCH_PER_SOURCE: usize = 10;
 
 /// 会话上下文里的一条搜索结果：本地曲目或在线曲目。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1405,10 +1408,10 @@ impl Executor<'_> {
             return Err(CmdError::new("E_CMD_ARG", "搜索关键词不能为空"));
         }
 
-        // 多取一条用来判断是否超过上限，避免“100 条正好”被误报为截断。
-        let mut tracks = self.library.search(keyword, MAX_SEARCH_RESULTS + 1)?;
-        let truncated = tracks.len() > MAX_SEARCH_RESULTS;
-        tracks.truncate(MAX_SEARCH_RESULTS);
+        // 多取一条用来判断是否超过默认上限，避免“20 条正好”被误报为截断。
+        let mut tracks = self.library.search(keyword, DEFAULT_SEARCH_RESULTS + 1)?;
+        let truncated = tracks.len() > DEFAULT_SEARCH_RESULTS;
+        tracks.truncate(DEFAULT_SEARCH_RESULTS);
         self.library.remember_search(tracks.clone());
 
         if tracks.is_empty() {
@@ -1456,13 +1459,15 @@ impl Executor<'_> {
             },
         ];
         if truncated {
-            outputs.push(text_of(vec![dim("结果超过 100 条，只显示前 100 条")]));
+            outputs.push(text_of(vec![dim(format!(
+                "结果超过 {DEFAULT_SEARCH_RESULTS} 条，只显示前 {DEFAULT_SEARCH_RESULTS} 条"
+            ))]));
         }
 
         Ok(Outcome {
             outputs,
             footer: Some(format!(
-                "{} 条结果 · 输入 play <序号> 播放（来源：搜索结果）",
+                "共 {} 条（--limit 可调） · 输入 play <序号> 播放（来源：搜索结果）",
                 tracks.len()
             )),
         })
@@ -3441,7 +3446,7 @@ fn build_search_outcome(keyword: &str, hits: &[SearchHit], all_online_failed: bo
     Outcome {
         outputs,
         footer: Some(format!(
-            "{} 条结果 · 输入 play <序号> 播放（来源见「来源」列）",
+            "共 {} 条（每源 {ONLINE_SEARCH_PER_SOURCE}，--limit 可调） · 输入 play <序号> 播放（来源见「来源」列）",
             hits.len()
         )),
     }
@@ -3842,7 +3847,7 @@ fn maybe_start_online(
             let emit = move |block: &Block| emit_block(&emit_app, block);
             run_online_search(
                 &keyword,
-                MAX_SEARCH_RESULTS,
+                DEFAULT_SEARCH_RESULTS,
                 &*online,
                 &*library,
                 &emit,
@@ -5351,7 +5356,7 @@ mod tests {
 
         assert_eq!(
             library.calls(),
-            vec![LibraryCall::Search("kid".to_owned(), 101)]
+            vec![LibraryCall::Search("kid".to_owned(), 21)]
         );
         assert_eq!(library.session().len(), 2);
         let (_, rows) = table_of_block(&block);
@@ -5377,9 +5382,9 @@ mod tests {
     }
 
     #[test]
-    fn search_truncates_results_at_one_hundred() {
+    fn search_truncates_results_at_default_twenty() {
         let api = FakeApi::new();
-        let tracks: Vec<Track> = (0..101)
+        let tracks: Vec<Track> = (0..21)
             .map(|index| {
                 track(
                     index,
@@ -5394,9 +5399,9 @@ mod tests {
         let block = done_with_library(&api, &library, "search track");
 
         let (_, rows) = table_of_block(&block);
-        assert_eq!(rows.len(), 100);
-        assert_eq!(library.session().len(), 100);
-        assert!(text_of_block(&block).contains("只显示前 100 条"));
+        assert_eq!(rows.len(), 20);
+        assert_eq!(library.session().len(), 20);
+        assert!(text_of_block(&block).contains("只显示前 20 条"));
     }
 
     #[test]
@@ -6413,7 +6418,7 @@ mod tests {
             outcome
                 .footer
                 .as_deref()
-                .is_some_and(|footer| footer.contains("3 条结果"))
+                .is_some_and(|footer| footer.contains("共 3 条"))
         );
     }
 
