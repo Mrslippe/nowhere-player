@@ -220,7 +220,7 @@ describe("按键归属（T-0020 §11）", () => {
     expect(decision.adopt).toBeNull();
   });
 
-  it("弹层打开时 Tab 采纳第一条且不关闭列表", () => {
+  it("弹层打开时 Tab 采纳当前高亮，列表不关闭", () => {
     const popup = openCompletion(
       completion([item("a"), item("b")]),
     )!;
@@ -232,13 +232,38 @@ describe("按键归属（T-0020 §11）", () => {
     expect(decision.adopt?.value).toBe("a pl");
   });
 
-  it("Tab 采纳第一条，而不是当前高亮", () => {
+  it("Tab 采纳当前高亮 pause，而不是第一条 play", () => {
     const popup = openCompletion(
-      completion([item("play"), item("pause")], 0, 2),
+      completion([item("play"), item("pause"), item("prev")], 0, 2),
     )!;
     const moved = moveCompletion(popup, 1);
 
     const decision = decideKey("tab", "pl", moved);
+
+    expect(decision.adopt?.value).toBe("pause ");
+    expect(decision.popup?.activeIndex).toBe(1);
+  });
+
+  it("p → ↓↓ → Tab 采纳 prev", () => {
+    let popup = openCompletion(
+      completion([item("play"), item("pause"), item("prev")], 0, 2),
+    )!;
+    popup = moveCompletion(popup, 1);
+    popup = moveCompletion(popup, 1);
+
+    const decision = decideKey("tab", "p", popup);
+
+    expect(decision.adopt?.value).toBe("prev ");
+    expect(decision.popup?.activeIndex).toBe(2);
+  });
+
+  it("activeIndex 越界时回退到第一条，不崩", () => {
+    const popup = openCompletion(
+      completion([item("play"), item("pause")], 0, 1),
+    )!;
+    const stale = { ...popup, activeIndex: 99 };
+
+    const decision = decideKey("tab", "p", stale);
 
     expect(decision.adopt?.value).toBe("play ");
     expect(decision.popup?.activeIndex).toBe(0);

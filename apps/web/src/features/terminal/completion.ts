@@ -246,10 +246,15 @@ export function decideKey(
       if (popup === null) {
         return { ...NO_OP, popup: null, requestCompletion: true };
       }
-      const item = popup.completion.items[0] ?? null;
+      const count = popup.completion.items.length;
+      const activeIndex =
+        popup.activeIndex >= 0 && popup.activeIndex < count
+          ? popup.activeIndex
+          : 0;
+      const item = popup.completion.items[activeIndex] ?? null;
       return {
         ...NO_OP,
-        popup: { ...popup, activeIndex: 0 },
+        popup: { ...popup, activeIndex },
         adopt: item === null ? null : applyCompletion(input, popup.completion, item),
       };
     }
