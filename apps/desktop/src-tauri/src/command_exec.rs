@@ -1411,7 +1411,7 @@ impl Executor<'_> {
     /// 没有列表上下文时不再回退到播放队列（T-0043 统一规则）。
     fn play(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let Some(value) = parsed.positional.first() else {
-            return Ok(state_outcome("继续播放", &self.api.resume()?));
+            return Ok(self.state_outcome("继续播放", &self.api.resume()?));
         };
 
         if is_unsigned_integer(value) {
@@ -1475,7 +1475,7 @@ impl Executor<'_> {
                         ));
                     }
                     let view = self.api.queue_jump(index)?;
-                    return Ok(queue_jump_outcome(index, &view));
+                    return Ok(self.queue_jump_outcome(index, &view));
                 }
                 ListingSource::Library => {
                     let tracks = self.library.library_listing();
@@ -1515,7 +1515,59 @@ impl Executor<'_> {
             }
         }
 
-        Ok(state_outcome("播放", &self.api.play(Some(value.clone()))?))
+        Ok(self.state_outcome("播放", &self.api.play(Some(value.clone()))?))
+    }
+
+    /// 给人看的曲目名：复用库/远程会话映射；miss 回退文件名。
+    fn describe_track(&self, path: &str) -> String {
+        match self.library.track_by_path(path) {
+            Ok(Some(track)) if !track.title.trim().is_empty() => {
+                if track.artist.trim().is_empty() {
+                    track.title.trim().to_owned()
+                } else {
+                    format!("{} · {}", track.title.trim(), track.artist.trim())
+                }
+            }
+            _ => track_display(path),
+        }
+    }
+
+    fn state_outcome(&self, headline: &str, state: &PlaybackState) -> Outcome {
+        let mut spans = vec![bold(headline)];
+        if let Some(track) = state.track_id.as_deref() {
+            spans.push(dim(format!(" · {}", self.describe_track(track))));
+            let position = format_position(state.position_ms);
+            let duration = state
+                .duration_ms
+                .map_or_else(|| "--:--".to_owned(), format_position);
+            spans.push(dim(format!(" · {position} / {duration}")));
+        }
+        let footer = match state.queue_length {
+            Some(length) if length > 0 => Some(format!("队列 {length} 首")),
+            _ => None,
+        };
+
+        Outcome {
+            outputs: vec![text_of(spans)],
+            footer,
+        }
+    }
+
+    fn jump_outcome(&self, headline: &str, index: usize, view: &QueueView) -> Outcome {
+        let mut spans = vec![bold(headline), plain(format!(" · 第 {} 首", index + 1))];
+        if let Some(track) = view.tracks.get(index) {
+            spans.push(dim(format!(" · {}", self.describe_track(track))));
+        }
+        Outcome {
+            outputs: vec![text_of(spans)],
+            footer: Some(format!("队列 {} 首", view.tracks.len())),
+        }
+    }
+
+    fn queue_jump_outcome(&self, index: usize, view: &QueueView) -> Outcome {
+        let mut outcome = self.jump_outcome("播放", index, view);
+        outcome.footer = Some(format!("来源：播放队列（共 {} 首）", view.tracks.len()));
+        outcome
     }
 
     /// 播放类命令的公共收尾：一句标题 + 当前曲目 / 位置。
@@ -1524,7 +1576,7 @@ impl Executor<'_> {
         headline: &str,
         result: Result<PlaybackState, CmdError>,
     ) -> Result<Outcome, CmdError> {
-        Ok(state_outcome(headline, &result?))
+        Ok(self.state_outcome(headline, &result?))
     }
 
     /// `seek`：`mm:ss` / 纯毫秒是绝对位置，`±N`（秒）与 `±mm:ss` 相对当前位置。
@@ -1537,7 +1589,7 @@ impl Executor<'_> {
             parse_absolute_seek(raw)?
         };
 
-        Ok(state_outcome("跳转", &self.api.seek(target)?))
+        Ok(self.state_outcome("跳转", &self.api.seek(target)?))
     }
 
     /// `vol`：`±N` 先读当前音量；无论哪种写法都在调用前钳到 0–100。
@@ -1621,7 +1673,7 @@ impl Executor<'_> {
             "jump" => {
                 let index = user_index(positional_arg(parsed, "队列序号")?)?;
                 let view = self.api.queue_jump(index)?;
-                Ok(jump_outcome("跳转", index, &view))
+                Ok(self.jump_outcome("跳转", index, &view))
             }
             other => Err(CmdError::new(
                 "E_CMD_UNKNOWN",
@@ -3065,13 +3117,6 @@ fn queue_track_source(track: &Track) -> Option<String> {
     }
 }
 
-/// `play <n>` 命中队列时的输出：写明来源是播放队列。
-fn queue_jump_outcome(index: usize, view: &QueueView) -> Outcome {
-    let mut outcome = jump_outcome("播放", index, view);
-    outcome.footer = Some(format!("来源：播放队列（共 {} 首）", view.tracks.len()));
-    outcome
-}
-
 /// 播放类结果的简短尾部；`queue_length` 未知时给一句通用文案。
 fn state_footer(state: &PlaybackState) -> String {
     state.queue_length.map_or_else(
@@ -3198,43 +3243,6 @@ fn dim(text: impl Into<String>) -> Span {
 
 fn text_of(spans: Vec<Span>) -> Output {
     Output::Text { spans, tone: None }
-}
-
-/// 播放类命令的输出：标题 + 曲目名 + 位置/时长。
-fn state_outcome(headline: &str, state: &PlaybackState) -> Outcome {
-    let mut spans = vec![bold(headline)];
-
-    if let Some(track) = state.track_id.as_deref() {
-        spans.push(dim(format!(" · {}", track_display(track))));
-        let position = format_position(state.position_ms);
-        let duration = state
-            .duration_ms
-            .map_or_else(|| "--:--".to_owned(), format_position);
-        spans.push(dim(format!(" · {position} / {duration}")));
-    }
-
-    let footer = match state.queue_length {
-        Some(length) if length > 0 => Some(format!("队列 {length} 首")),
-        _ => None,
-    };
-
-    Outcome {
-        outputs: vec![text_of(spans)],
-        footer,
-    }
-}
-
-/// 队列跳转类命令的输出；序号对用户按 1 基显示。
-fn jump_outcome(headline: &str, index: usize, view: &QueueView) -> Outcome {
-    let mut spans = vec![bold(headline), plain(format!(" · 第 {} 首", index + 1))];
-    if let Some(track) = view.tracks.get(index) {
-        spans.push(dim(format!(" · {}", track_display(track))));
-    }
-
-    Outcome {
-        outputs: vec![text_of(spans)],
-        footer: Some(format!("队列 {} 首", view.tracks.len())),
-    }
 }
 
 fn mode_spans(mode: &PlaybackMode) -> Vec<Span> {
@@ -6581,6 +6589,68 @@ mod tests {
         assert_eq!(code, "E_UNSUPPORTED");
         assert_eq!(message, "没有可暂停的曲目");
         assert_eq!(hint, Some("用法：pause"));
+    }
+
+    #[test]
+    fn pause_uses_library_title_not_cache_filename() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            track_id: Some("/cache/bilibili-BV1pK411B7qx.m4a".to_owned()),
+            position_ms: 108_000,
+            duration_ms: Some(197_000),
+            queue_length: Some(2),
+            ..PlaybackState::default()
+        });
+        let mut remote = track(
+            0,
+            "【4K修复】周杰伦 - 晴天MV",
+            "周杰伦",
+            "/cache/bilibili-BV1pK411B7qx.m4a",
+            197_000,
+        );
+        remote.kind = "remote".to_owned();
+        remote.source = "bilibili".to_owned();
+        remote.source_id = "BV1pK411B7qx".to_owned();
+        let library =
+            FakeLibraryApi::new().with_track_by_path("/cache/bilibili-BV1pK411B7qx.m4a", remote);
+
+        let block = done_with_library(&api, &library, "pause");
+        let text = text_of_block(&block);
+        assert!(
+            text.contains("【4K修复】周杰伦 - 晴天MV · 周杰伦"),
+            "{text}"
+        );
+        assert!(!text.contains("bilibili-BV1pK411B7qx.m4a"), "{text}");
+    }
+
+    #[test]
+    fn play_path_and_seek_use_library_title() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_track_by_path(
+            "/music/a.flac",
+            track(1, "本地歌名", "本地艺人", "/music/a.flac", 65_000),
+        );
+
+        let play = done_with_library(&api, &library, "play /music/a.flac");
+        let text = text_of_block(&play);
+        assert!(text.contains("本地歌名 · 本地艺人"), "{text}");
+        assert!(!text.contains("a.flac"), "{text}");
+
+        let seek = done_with_library(&api, &library, "seek 1:30");
+        assert!(text_of_block(&seek).contains("本地歌名 · 本地艺人"));
+    }
+
+    #[test]
+    fn queue_jump_uses_library_title() {
+        let api = FakeApi::new().with_queue(queue_view(&["/music/q.flac"], Some(1)));
+        let library = FakeLibraryApi::new().with_track_by_path(
+            "/music/q.flac",
+            track(1, "队列歌名", "队列艺人", "/music/q.flac", 12_000),
+        );
+
+        let block = done_with_library(&api, &library, "queue jump 1");
+        let text = text_of_block(&block);
+        assert!(text.contains("队列歌名 · 队列艺人"), "{text}");
+        assert!(!text.contains("q.flac"), "{text}");
     }
 
     #[test]
