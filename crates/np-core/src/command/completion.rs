@@ -53,6 +53,8 @@ pub struct CompletionItem {
     pub kind: CompletionKind,
     /// 一行说明，可直接展示。
     pub summary: String,
+    /// 命令/子命令完整用法；枚举/动态/建议可为空串（前端不渲染空串）。
+    pub usage: String,
 }
 
 /// 一次补全结果。
@@ -135,10 +137,10 @@ enum Plan {
     Empty,
     /// 动态队列序号。
     Dynamic,
-    /// 静态候选：文本 + 说明。
+    /// 静态候选：文本 + 说明 + usage。
     Entries {
         kind: CompletionKind,
-        entries: Vec<(String, String)>,
+        entries: Vec<(String, String, String)>,
     },
 }
 
@@ -150,7 +152,13 @@ fn resolve(registry: &Registry, words: &[&str], token: &str) -> Plan {
             entries: registry
                 .specs()
                 .iter()
-                .map(|spec| (spec.name.to_owned(), spec.summary.to_owned()))
+                .map(|spec| {
+                    (
+                        spec.name.to_owned(),
+                        spec.summary.to_owned(),
+                        spec.usage.to_owned(),
+                    )
+                })
                 .collect(),
         };
     };
@@ -194,7 +202,13 @@ fn arg_plan(
             kind: CompletionKind::EnumValue,
             entries: values
                 .iter()
-                .map(|value| ((*value).to_owned(), format!("{} 的取值", arg.name)))
+                .map(|value| {
+                    (
+                        (*value).to_owned(),
+                        format!("{} 的取值", arg.name),
+                        String::new(),
+                    )
+                })
                 .collect(),
         };
     }
@@ -208,10 +222,16 @@ fn arg_plan(
     Plan::Empty
 }
 
-fn subcommand_entries(subcommands: &'static [SubcommandSpec]) -> Vec<(String, String)> {
+fn subcommand_entries(subcommands: &'static [SubcommandSpec]) -> Vec<(String, String, String)> {
     subcommands
         .iter()
-        .map(|subcommand| (subcommand.name.to_owned(), subcommand.summary.to_owned()))
+        .map(|subcommand| {
+            (
+                subcommand.name.to_owned(),
+                subcommand.summary.to_owned(),
+                subcommand.usage.to_owned(),
+            )
+        })
         .collect()
 }
 
@@ -224,18 +244,19 @@ fn find_subcommand(spec: &'static CommandSpec, name: &str) -> Option<&'static Su
 /// 前缀匹配；无命中时退回编辑距离 ≤ 2 的拼写建议（`suggestion`）。
 fn match_items(
     kind: CompletionKind,
-    entries: &[(String, String)],
+    entries: &[(String, String, String)],
     token: &str,
 ) -> Vec<CompletionItem> {
     let lower = token.to_lowercase();
     let prefix_matches: Vec<CompletionItem> = entries
         .iter()
-        .filter(|(text, _)| text.to_lowercase().starts_with(&lower))
+        .filter(|(text, _, _)| text.to_lowercase().starts_with(&lower))
         .take(MAX_ITEMS)
-        .map(|(text, summary)| CompletionItem {
+        .map(|(text, summary, usage)| CompletionItem {
             text: text.clone(),
             kind,
             summary: summary.clone(),
+            usage: usage.clone(),
         })
         .collect();
 
@@ -243,11 +264,16 @@ fn match_items(
         return prefix_matches;
     }
 
-    let mut suggestions: Vec<(usize, &str, &str)> = entries
+    let mut suggestions: Vec<(usize, &str, &str, &str)> = entries
         .iter()
-        .filter_map(|(text, summary)| {
+        .filter_map(|(text, summary, usage)| {
             let distance = edit_distance(token, text);
-            (distance > 0 && distance <= 2).then_some((distance, text.as_str(), summary.as_str()))
+            (distance > 0 && distance <= 2).then_some((
+                distance,
+                text.as_str(),
+                summary.as_str(),
+                usage.as_str(),
+            ))
         })
         .collect();
     // 同距离按文本字典序，保证结果稳定。
@@ -256,10 +282,11 @@ fn match_items(
     suggestions
         .into_iter()
         .take(MAX_ITEMS)
-        .map(|(_, text, summary)| CompletionItem {
+        .map(|(_, text, summary, usage)| CompletionItem {
             text: text.to_owned(),
             kind: CompletionKind::Suggestion,
             summary: summary.to_owned(),
+            usage: usage.to_owned(),
         })
         .collect()
 }
@@ -278,6 +305,7 @@ fn dynamic_items(queue_length: Option<usize>) -> Vec<CompletionItem> {
             text: index.to_string(),
             kind: CompletionKind::Dynamic,
             summary: format!("队列第 {index} 首"),
+            usage: String::new(),
         })
         .collect()
 }
@@ -540,14 +568,60 @@ mod tests {
                 "items": [{
                     "text": "play",
                     "kind": "command",
-                    "summary": "播放队列中的曲目或文件；不带参数时继续当前曲目"
+                    "summary": "播放队列中的曲目或文件；不带参数时继续当前曲目",
+                    "usage": "play [<序号>|<路径>]"
                 }, {
                     "text": "playlist",
                     "kind": "command",
-                    "summary": "歌单：列表、增删、显示、播放"
+                    "summary": "歌单：列表、增删、显示、播放",
+                    "usage": "playlist [list|create|rename|delete|show|add|remove|play]"
                 }]
             })
         );
+    }
+
+    #[test]
+    fn command_candidates_carry_full_usage() {
+        let completion = complete_static("pl", 2);
+        let play = completion
+            .items
+            .iter()
+            .find(|item| item.text == "play")
+            .expect("play");
+        assert_eq!(play.usage, "play [<序号>|<路径>]");
+        let playlist = completion
+            .items
+            .iter()
+            .find(|item| item.text == "playlist")
+            .expect("playlist");
+        assert_eq!(
+            playlist.usage,
+            "playlist [list|create|rename|delete|show|add|remove|play]"
+        );
+    }
+
+    #[test]
+    fn subcommand_candidates_carry_subcommand_usage() {
+        let completion = complete_static("queue ", 6);
+        let add = completion
+            .items
+            .iter()
+            .find(|item| item.text == "add")
+            .expect("add");
+        assert!(add.usage.contains("queue add"));
+    }
+
+    #[test]
+    fn enum_and_dynamic_candidates_have_empty_usage() {
+        let enum_completion = complete_static("mode repeat ", 12);
+        assert!(
+            enum_completion
+                .items
+                .iter()
+                .all(|item| item.usage.is_empty())
+        );
+        let dynamic = complete_with(registry(), "play ", 5, || Some(2));
+        assert!(dynamic.items.iter().all(|item| item.usage.is_empty()));
     }
 
     #[test]
