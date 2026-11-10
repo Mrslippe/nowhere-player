@@ -245,14 +245,18 @@ pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
 const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "add",
-        summary: "把曲目序号或文件路径加入队列",
-        usage: "queue add <index|path>",
+        summary: "把本地文件或搜索结果加入队列",
+        usage: "queue add <path> | queue add --from-search <n>",
         args: &[ArgSpec {
-            name: "index|path",
+            name: "path",
             kind: ArgKind::Text,
-            required: true,
+            required: false,
         }],
-        flags: &[],
+        flags: &[FlagSpec {
+            name: "from-search",
+            takes_value: true,
+            summary: "从最近一次搜索结果取第 n 条（1 基）",
+        }],
     },
     SubcommandSpec {
         name: "remove",

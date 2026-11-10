@@ -59,7 +59,9 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
     // 引号开头的 `"--x"` 仍是位置参数。
     let mut words: Vec<&Token> = Vec::new();
     let mut raw_flags: Vec<(&str, Option<&str>)> = Vec::new();
-    for token in rest {
+    let mut index = 0;
+    while index < rest.len() {
+        let token = &rest[index];
         let flag_body = if token.starts_quoted {
             None
         } else {
@@ -70,10 +72,23 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
                 Some((name, value)) => (name, Some(value)),
                 None => (body, None),
             };
+            // 带值标志也接受空格形式（`--limit 20`）；下一个 token 不是
+            // 新标志时当作值消费，避免它落进位置参数。
+            if value.is_none()
+                && flag_takes_value(spec, name)
+                && let Some(next) = rest.get(index + 1)
+                && !next.text.starts_with("--")
+            {
+                raw_flags.push((name, Some(next.text.as_str())));
+                index += 2;
+                continue;
+            }
             raw_flags.push((name, value));
+            index += 1;
             continue;
         }
         words.push(token);
+        index += 1;
     }
 
     let (subcommand, positional) = resolve_subcommand(spec, &words)?;
@@ -159,6 +174,17 @@ fn find_subcommand<'a>(spec: &'a CommandSpec, name: &str) -> Option<&'a Subcomma
     spec.subcommands
         .iter()
         .find(|subcommand| subcommand.name.eq_ignore_ascii_case(name))
+}
+
+fn flag_takes_value(spec: &CommandSpec, name: &str) -> bool {
+    spec.flags
+        .iter()
+        .any(|flag| flag.name == name && flag.takes_value)
+        || spec
+            .subcommands
+            .iter()
+            .flat_map(|subcommand| subcommand.flags.iter())
+            .any(|flag| flag.name == name && flag.takes_value)
 }
 
 fn find_flag<'a>(
@@ -253,7 +279,10 @@ mod tests {
         assert_eq!(parsed.spec.name, "queue");
         assert_eq!(parsed.subcommand.unwrap().name, "add");
         assert_eq!(parsed.positional, [r"C:\Music\My Music\a.flac"]);
-        assert_eq!(parsed.usage(), "queue add <index|path>");
+        assert_eq!(
+            parsed.usage(),
+            "queue add <path> | queue add --from-search <n>"
+        );
     }
 
     #[test]
@@ -399,7 +428,82 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains('b'), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("queue add <index|path>"));
+        assert_eq!(
+            error.usage.as_deref(),
+            Some("queue add <path> | queue add --from-search <n>")
+        );
+    }
+
+    #[test]
+    fn queue_add_from_search_flag_carries_number() {
+        let parsed = parse_ok("queue add --from-search 2");
+
+        assert!(parsed.positional.is_empty());
+        assert_eq!(
+            parsed.flags.get("from-search").map(String::as_str),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn queue_add_from_search_equals_form_is_accepted() {
+        let parsed = parse_ok("queue add --from-search=3");
+
+        assert!(parsed.positional.is_empty());
+        assert_eq!(
+            parsed.flags.get("from-search").map(String::as_str),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn queue_add_from_search_without_value_is_parse_error() {
+        let error = parse_err("queue add --from-search");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("缺少取值"), "{}", error.message);
+    }
+
+    #[test]
+    fn queue_add_allows_one_path_without_flag() {
+        let parsed = parse_ok("queue add /music/a.flac");
+
+        assert_eq!(parsed.positional, ["/music/a.flac"]);
+        assert!(parsed.flags.is_empty());
+    }
+
+    #[test]
+    fn queue_add_no_argument_parses_for_executor_to_reject() {
+        let parsed = parse_ok("queue add");
+
+        assert!(parsed.positional.is_empty());
+        assert!(parsed.flags.is_empty());
+    }
+
+    #[test]
+    fn queue_add_path_plus_flag_parses_for_executor_to_reject() {
+        let parsed = parse_ok("queue add a.flac --from-search 1");
+
+        assert_eq!(parsed.positional, ["a.flac"]);
+        assert_eq!(
+            parsed.flags.get("from-search").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn queue_add_rejects_two_paths() {
+        let error = parse_err("queue add a.flac b.flac");
+
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("b.flac"), "{}", error.message);
+    }
+
+    #[test]
+    fn queue_add_keeps_quoted_path_with_spaces() {
+        let parsed = parse_ok(r#"queue add "C:\Music\My Music\a.flac""#);
+
+        assert_eq!(parsed.positional, [r"C:\Music\My Music\a.flac"]);
     }
 
     #[test]
@@ -466,19 +570,23 @@ mod tests {
     }
 
     #[test]
-    fn value_flags_accept_equals_and_reject_space_form() {
+    fn value_flags_accept_equals_and_space_forms() {
         let registry = Registry::from_specs(PROBE_SPECS);
 
-        let parsed = parse_with(&registry, "probe --limit=20")
+        let equals = parse_with(&registry, "probe --limit=20")
             .unwrap()
             .expect("probe should parse");
-        assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("20"));
+        assert_eq!(equals.flags.get("limit").map(String::as_str), Some("20"));
 
-        // 本解析器只认 `--limit=20`；空格形式按缺值报错，不静默吞掉下一个 token。
-        let error = parse_with(&registry, "probe --limit 20").unwrap_err();
+        let space = parse_with(&registry, "probe --limit 20")
+            .unwrap()
+            .expect("space form should parse");
+        assert_eq!(space.flags.get("limit").map(String::as_str), Some("20"));
+        assert!(space.positional.is_empty(), "值不能落进位置参数");
+
+        let error = parse_with(&registry, "probe --limit").unwrap_err();
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("缺少取值"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("probe [--limit=N]"));
     }
 
     #[test]

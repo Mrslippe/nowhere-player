@@ -1099,7 +1099,7 @@ impl Executor<'_> {
 
         match subcommand.name {
             "list" => self.queue_list(),
-            "add" => self.add_paths(&parsed.positional),
+            "add" => self.add_paths(parsed),
             "remove" => {
                 let index = user_index(positional_arg(parsed, "队列序号")?)?;
                 let view = self.api.queue_remove(index)?;
@@ -1170,47 +1170,70 @@ impl Executor<'_> {
         })
     }
 
-    /// `queue add`：逐个加入、汇总成功数，中途失败不回滚已加入的曲目。
-    fn add_paths(&self, paths: &[String]) -> Result<Outcome, CmdError> {
-        let mut added = 0usize;
-        let mut failed = 0usize;
-        let mut first_error: Option<CmdError> = None;
-        let mut view: Option<QueueView> = None;
+    /// `queue add <path>` 收窄为真实存在的本地文件；`--from-search <n>` 从最近搜索结果入队。
+    fn add_paths(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let from_search = parsed.flags.get("from-search");
 
-        for path in paths {
-            match self.api.queue_add(vec![path.clone()]) {
-                Ok(updated) => {
-                    added += 1;
-                    view = Some(updated);
-                }
-                Err(error) => {
-                    failed += 1;
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
+        let path = if let Some(raw) = from_search {
+            if !parsed.positional.is_empty() {
+                return Err(CmdError::new(
+                    "E_CMD_ARG",
+                    "queue add 只能在 <path> 与 --from-search <n> 中二选一",
+                )
+                .with_hint("queue add <path> | queue add --from-search <n>"));
+            }
+            let index = user_index(raw)?;
+            let listing = self.library.active_listing().ok_or_else(|| {
+                CmdError::new("E_CMD_ARG", "没有可用的序号列表")
+                    .with_hint("先执行 search / queue list 等命令，再用序号")
+            })?;
+            if listing.source != ListingSource::Search {
+                return Err(CmdError::new("E_CMD_ARG", "当前序号列表不是搜索结果")
+                    .with_hint("先执行 search <关键词>，再用 queue add --from-search <n>"));
+            }
+            let hits = self.library.search_hits();
+            let Some(hit) = hits.get(index) else {
+                return Err(CmdError::new(
+                    "E_CMD_ARG",
+                    format!(
+                        "{}只有 {} 条，没有第 {} 条",
+                        listing.source.label(),
+                        listing.len.max(hits.len()),
+                        index + 1
+                    ),
+                )
+                .with_hint("先执行 search <关键词>"));
+            };
+            match hit {
+                SearchHit::Local(track) => track.path.clone(),
+                SearchHit::Online(track) => {
+                    let online = self.services.online.ok_or_else(|| {
+                        CmdError::new("E_SRC_UNAVAILABLE", "在线搜索结果入队需要在线服务")
+                    })?;
+                    // 队列只存本地路径：先把在线曲目解析/下载到缓存，再入队。
+                    let prepared = online.prepare(track, &mut |_| {})?;
+                    prepared.path.to_string_lossy().into_owned()
                 }
             }
-        }
-
-        if added == 0 {
-            return Err(
-                first_error.unwrap_or_else(|| CmdError::new("E_CMD_ARG", "没有要加入的曲目"))
-            );
-        }
-
-        let mut spans = vec![bold(format!("已加入 {added} 首"))];
-        if failed > 0 {
-            spans.push(dim(format!(" · 失败 {failed} 首")));
-        }
-        let footer = match (&first_error, view) {
-            (Some(error), _) => Some(format!("首条失败：{} {}", error.code, error.message)),
-            (None, Some(view)) => Some(format!("队列现有 {} 首", view.tracks.len())),
-            (None, None) => None,
+        } else {
+            if parsed.positional.len() != 1 {
+                return Err(
+                    CmdError::new("E_CMD_ARG", "queue add 一次只接受一个文件路径")
+                        .with_hint("queue add <path> | queue add --from-search <n>"),
+                );
+            }
+            let path = parsed.positional[0].clone();
+            if !Path::new(&path).is_file() {
+                return Err(CmdError::new("E_CMD_ARG", format!("文件不存在：{path}"))
+                    .with_hint("queue add 只接受本地文件；搜索结果用 --from-search <n>"));
+            }
+            path
         };
 
+        let view = self.api.queue_add(vec![path])?;
         Ok(Outcome {
-            outputs: vec![text_of(spans)],
-            footer,
+            outputs: vec![text_of(vec![bold("已加入 1 首")])],
+            footer: Some(format!("队列现有 {} 首", view.tracks.len())),
         })
     }
 
@@ -4680,16 +4703,173 @@ mod tests {
     }
 
     #[test]
-    fn queue_add_reports_success_count() {
+    fn queue_add_accepts_existing_file() {
+        let dir = TestDir::new("queue-add-file");
+        let path = dir.path().join("a b.flac");
+        fs::write(&path, b"fake").expect("write");
+        let input = format!("queue add \"{}\"", path.display());
         let api = FakeApi::new();
-        let block = done_block(&api, r"queue add C:\Music\a.flac");
+        let block = done_block(&api, &input);
 
         assert_eq!(
             api.calls(),
-            vec![Call::QueueAdd(vec![r"C:\Music\a.flac".to_owned()])]
+            vec![Call::QueueAdd(vec![path.to_string_lossy().into_owned()])]
         );
         assert!(text_of_block(&block).contains("已加入 1 首"));
         assert_eq!(block.footer.as_deref(), Some("队列现有 1 首"));
+    }
+
+    #[test]
+    fn queue_add_missing_path_reports_file_not_found() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "queue add 1");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert_eq!(error_fields(&block).1, "文件不存在：1");
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn queue_add_requires_a_path_or_from_search() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "queue add");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn queue_add_from_search_adds_local_hit() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![
+            track(1, "First", "Artist", "/music/first.flac", 1_000),
+            track(2, "Second", "Artist", "/music/second.flac", 1_000),
+        ]);
+        done_with_library(&api, &library, "search artist");
+        let block = done_with_library(&api, &library, "queue add --from-search 2");
+
+        assert_eq!(
+            api.calls(),
+            vec![Call::QueueAdd(vec!["/music/second.flac".to_owned()])]
+        );
+        assert!(text_of_block(&block).contains("已加入 1 首"));
+    }
+
+    #[test]
+    fn queue_add_rejects_path_and_from_search_together() {
+        let dir = TestDir::new("queue-add-both");
+        let path = dir.path().join("a.flac");
+        fs::write(&path, b"fake").expect("write");
+        let input = format!("queue add \"{}\" --from-search 1", path.display());
+        let api = FakeApi::new();
+        let block = done_block(&api, &input);
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn queue_add_from_search_out_of_range_fails() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Only",
+            "Artist",
+            "/music/only.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "search only");
+        let block = done_with_library(&api, &library, "queue add --from-search 2");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("搜索结果只有 1 条"));
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn queue_add_from_search_online_prepares_then_queues_local_path() {
+        let dir = TestDir::new("queue-add-online");
+        let cached = dir.path().join("cached.m4a");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        library.remember_hits(vec![SearchHit::Online(online_track(
+            SourceId::Bilibili,
+            "BV1xx",
+            "在线",
+        ))]);
+        library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: 1,
+        });
+        let online = FakeQueueOnline {
+            path: cached.clone(),
+        };
+        let services = Services {
+            settings: None,
+            theme: None,
+            online: Some(&online),
+        };
+
+        let block = match execute_with_services(
+            &api,
+            &library,
+            services,
+            "queue-add-online-block",
+            "queue add --from-search 1",
+            Arc::new(NoopLibraryObserver),
+        ) {
+            Execution::Blocks { done, .. } => *done,
+            _ => panic!("expected blocks"),
+        };
+
+        assert_eq!(
+            api.calls(),
+            vec![Call::QueueAdd(vec![cached.to_string_lossy().into_owned()])]
+        );
+        assert!(text_of_block(&block).contains("已加入 1 首"));
+    }
+
+    #[test]
+    fn queue_add_from_search_without_number_fails() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "queue add --from-search");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn queue_add_success_does_not_replace_active_search_listing() {
+        let api = FakeApi::new().with_queue(queue_view(&["queued.flac"], None));
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Search",
+            "Artist",
+            "/music/search.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "search song");
+        done_with_library(&api, &library, "queue add --from-search 1");
+        let block = done_with_library(&api, &library, "play 1");
+
+        assert_eq!(
+            api.calls(),
+            vec![
+                Call::QueueAdd(vec!["/music/search.flac".to_owned()]),
+                Call::Play(Some("/music/search.flac".to_owned()))
+            ]
+        );
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：搜索结果"))
+        );
     }
 
     #[test]
@@ -6093,6 +6273,31 @@ mod tests {
             _progress: &mut dyn FnMut(u64),
         ) -> Result<PreparedTrack, CmdError> {
             Err(CmdError::new("E_SRC_UNAVAILABLE", "测试未实现"))
+        }
+    }
+
+    struct FakeQueueOnline {
+        path: PathBuf,
+    }
+
+    impl OnlineApi for FakeQueueOnline {
+        fn search_all(&self, _query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
+            Ok(OnlineSearch {
+                tracks: Vec::new(),
+                all_failed: false,
+            })
+        }
+
+        fn prepare(
+            &self,
+            _track: &SourceTrack,
+            _progress: &mut dyn FnMut(u64),
+        ) -> Result<PreparedTrack, CmdError> {
+            Ok(PreparedTrack {
+                path: self.path.clone(),
+                bytes: 4,
+                cached: false,
+            })
         }
     }
 
