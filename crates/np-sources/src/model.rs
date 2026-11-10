@@ -58,6 +58,17 @@ pub struct SourceTrack {
     pub cover_url: Option<String>,
 }
 
+/// B 站用户名搜索命中的一个 UP（T-0049）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpUser {
+    /// 空间 mid。
+    pub mid: u64,
+    /// 用户名。
+    pub name: String,
+    /// 粉丝数。
+    pub fans: u64,
+}
+
 /// 可直接交给下载器的地址。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedStream {

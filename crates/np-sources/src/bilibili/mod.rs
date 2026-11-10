@@ -5,12 +5,13 @@
 
 mod dto;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::AudioSource;
 use crate::error::{Result, SourceError};
-use crate::model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack};
+use crate::model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack, UpUser};
 use crate::transport::Transport;
 use crate::wbi;
 
@@ -22,6 +23,19 @@ const PLAYURL_ENDPOINT: &str = "https://api.bilibili.com/x/player/playurl";
 const MAX_PAGE_SIZE: usize = 50;
 /// wbi key 每日更换，缓存 1 小时。
 const MIXIN_KEY_TTL: Duration = Duration::from_secs(60 * 60);
+/// 用户名 → mid 的进程内缓存（T-0049）。
+const USER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+/// `(mid, keywords)` 结果短缓存；避免连按两次命令第二次就 412。
+const ARCHIVE_CACHE_TTL: Duration = Duration::from_secs(30);
+
+type UserCache = HashMap<String, (Instant, Vec<UpUser>)>;
+type ArchiveCache = HashMap<(u64, String), (Instant, Vec<SourceTrack>)>;
+/// 空间接口只取一页；B 站默认页大小 20，这里显式要 30。
+const UP_ARCHIVE_PAGE_SIZE: usize = 30;
+
+fn rate_limit_error() -> SourceError {
+    SourceError::Unavailable("B 站限流，请稍后再试（未自动重试）".to_string())
+}
 
 /// B 站音源。
 pub struct BilibiliSource {
@@ -29,6 +43,8 @@ pub struct BilibiliSource {
     mixin_key: Mutex<Option<CachedMixinKey>>,
     /// ADR-0004 §4：搜索串行，避免并发触发风控。
     search_lock: Mutex<()>,
+    user_cache: Mutex<UserCache>,
+    archive_cache: Mutex<ArchiveCache>,
 }
 
 struct CachedMixinKey {
@@ -43,6 +59,8 @@ impl BilibiliSource {
             transport,
             mixin_key: Mutex::new(None),
             search_lock: Mutex::new(()),
+            user_cache: Mutex::new(HashMap::new()),
+            archive_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -110,6 +128,99 @@ impl BilibiliSource {
     }
 }
 
+impl BilibiliSource {
+    /// 用户名搜索（T-0049）；进程内缓存 1 小时。
+    pub fn search_users(&self, name: &str) -> Result<Vec<UpUser>> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(SourceError::Unavailable("UP 用户名不能为空".to_string()));
+        }
+        {
+            let cache = self
+                .user_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((cached_at, users)) = cache.get(name)
+                && cached_at.elapsed() < USER_CACHE_TTL
+            {
+                return Ok(users.clone());
+            }
+        }
+
+        let body = self.user_search_body(name)?;
+        let users = dto::parse_users(&body)?;
+        let mut cache = self
+            .user_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.insert(name.to_owned(), (Instant::now(), users.clone()));
+        Ok(users)
+    }
+
+    /// 列某个 UP 的投稿；一次请求，不翻页、不重试（T-0049）。
+    pub fn user_archives(
+        &self,
+        mid: u64,
+        name: &str,
+        keyword: &str,
+        limit: usize,
+    ) -> Result<Vec<SourceTrack>> {
+        let keyword = keyword.trim().to_lowercase();
+        let limit = limit.clamp(1, UP_ARCHIVE_PAGE_SIZE);
+        {
+            let cache = self
+                .archive_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((cached_at, tracks)) = cache.get(&(mid, keyword.clone()))
+                && cached_at.elapsed() < ARCHIVE_CACHE_TTL
+            {
+                return Ok(tracks.iter().take(limit).cloned().collect());
+            }
+        }
+
+        let url = format!(
+            "https://api.bilibili.com/x/series/recArchivesByKeywords?mid={mid}&keywords={}&ps={UP_ARCHIVE_PAGE_SIZE}&pn=1",
+            wbi::encode_component(&keyword)
+        );
+        // 硬约束：只发一次；412 原样上抛，绝不自动重试。
+        let body = match self.transport.get(&url) {
+            Ok(body) => body,
+            Err(SourceError::Http(412)) => return Err(rate_limit_error()),
+            Err(error) => return Err(error),
+        };
+        let tracks = dto::parse_up_archives(&body, name, UP_ARCHIVE_PAGE_SIZE)?;
+        let mut cache = self
+            .archive_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.insert((mid, keyword), (Instant::now(), tracks.clone()));
+        Ok(tracks.into_iter().take(limit).collect())
+    }
+
+    fn user_search_body(&self, name: &str) -> Result<Vec<u8>> {
+        let mixin_key = self.mixin_key()?;
+        let wts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let params = vec![
+            ("search_type".to_string(), "bili_user".to_string()),
+            ("keyword".to_string(), name.to_string()),
+            ("page".to_string(), "1".to_string()),
+            ("page_size".to_string(), "50".to_string()),
+        ];
+        let signed_query = wbi::sign(&params, &mixin_key, wts);
+        let url =
+            format!("https://api.bilibili.com/x/web-interface/wbi/search/type?{signed_query}");
+        match self.transport.get(&url) {
+            Ok(body) => Ok(body),
+            Err(SourceError::Http(412)) => Err(rate_limit_error()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl AudioSource for BilibiliSource {
     fn id(&self) -> SourceId {
         SourceId::Bilibili
@@ -139,6 +250,20 @@ impl AudioSource for BilibiliSource {
             .take(limit)
             .map(|ranked| ranked.track)
             .collect())
+    }
+
+    fn search_up_users(&self, name: &str) -> Result<Vec<UpUser>> {
+        self.search_users(name)
+    }
+
+    fn user_archives(
+        &self,
+        mid: u64,
+        name: &str,
+        keyword: &str,
+        limit: usize,
+    ) -> Result<Vec<SourceTrack>> {
+        self.user_archives(mid, name, keyword, limit)
     }
 
     fn resolve(&self, track: &SourceTrack) -> Result<ResolvedStream> {

@@ -134,12 +134,70 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
         }
     }
 
-    Ok(Some(Parsed {
+    let parsed = Parsed {
         spec,
         subcommand,
         positional: values,
         flags,
-    }))
+    };
+    validate_search_up(&parsed)?;
+    Ok(Some(parsed))
+}
+
+/// `--up` / `--mid` 的互斥在解析层也拒绝；执行层仍保留同样检查。
+fn validate_search_up(parsed: &Parsed) -> Result<(), ParseError> {
+    if parsed.spec.name != "search" {
+        return Ok(());
+    }
+    let up = parsed.flags.get("up");
+    let mid = parsed.flags.get("mid");
+    let has_up = up.is_some() || mid.is_some();
+    if up.is_some() && mid.is_some() {
+        return Err(ParseError {
+            code: crate::CommandErrorCode::Arg,
+            message: "search --up 与 --mid 互斥".to_owned(),
+            usage: Some(parsed.usage().to_owned()),
+            suggestion: None,
+        });
+    }
+    if let Some(raw) = mid {
+        let value = raw.parse::<u64>().ok().filter(|value| *value > 0);
+        if value.is_none() {
+            return Err(ParseError {
+                code: crate::CommandErrorCode::Arg,
+                message: format!("无效的 --mid：{raw}"),
+                usage: Some(parsed.usage().to_owned()),
+                suggestion: None,
+            });
+        }
+    }
+    if has_up {
+        if parsed.flags.contains_key("local") {
+            return Err(ParseError {
+                code: crate::CommandErrorCode::Arg,
+                message: "search --up/--mid 与 --local 互斥".to_owned(),
+                usage: Some(parsed.usage().to_owned()),
+                suggestion: None,
+            });
+        }
+        if parsed.flags.contains_key("artist") {
+            return Err(ParseError {
+                code: crate::CommandErrorCode::Arg,
+                message: "search --up/--mid 与 --artist 互斥".to_owned(),
+                usage: Some(parsed.usage().to_owned()),
+                suggestion: None,
+            });
+        }
+        if parsed.flags.get("source").map(String::as_str) == Some("netease") {
+            return Err(ParseError {
+                code: crate::CommandErrorCode::Arg,
+                message: "search --up/--mid 只支持 B 站".to_owned(),
+                usage: Some(parsed.usage().to_owned()),
+                suggestion: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn resolve_subcommand<'words, 'token>(
@@ -688,7 +746,7 @@ mod tests {
         assert_eq!(parsed.positional, ["kid a"]);
         assert_eq!(
             parsed.usage(),
-            "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>]"
+            "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>] [--up <用户名>|--mid <id>]"
         );
     }
 
@@ -772,6 +830,86 @@ mod tests {
             parsed.flags.get("source").map(String::as_str),
             Some("netease")
         );
+    }
+
+    #[test]
+    fn search_parses_up_name() {
+        let parsed = parse_ok("search 最长的电影 --up 明前奶绿");
+
+        assert_eq!(parsed.positional, ["最长的电影"]);
+        assert_eq!(parsed.flags.get("up").map(String::as_str), Some("明前奶绿"));
+    }
+
+    #[test]
+    fn search_parses_mid_without_keyword() {
+        let parsed = parse_ok("search --mid 2132180406");
+
+        assert!(parsed.positional.is_empty());
+        assert_eq!(
+            parsed.flags.get("mid").map(String::as_str),
+            Some("2132180406")
+        );
+    }
+
+    #[test]
+    fn search_parses_up_without_keyword() {
+        let parsed = parse_ok("search --up 明前奶绿");
+
+        assert!(parsed.positional.is_empty());
+        assert_eq!(parsed.flags.get("up").map(String::as_str), Some("明前奶绿"));
+    }
+
+    #[test]
+    fn search_parses_up_with_source_bilibili() {
+        let parsed = parse_ok("search 歌 --up 明前奶绿 --source bilibili");
+
+        assert_eq!(
+            parsed.flags.get("source").map(String::as_str),
+            Some("bilibili")
+        );
+        assert_eq!(parsed.flags.get("up").map(String::as_str), Some("明前奶绿"));
+    }
+
+    #[test]
+    fn search_rejects_up_and_artist() {
+        let error = parse_err("search 歌 --up 明前奶绿 --artist 周杰伦");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("互斥"));
+    }
+
+    #[test]
+    fn search_rejects_up_and_local() {
+        let error = parse_err("search 歌 --up 明前奶绿 --local");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("互斥"));
+    }
+
+    #[test]
+    fn search_rejects_up_and_netease_source() {
+        let error = parse_err("search 歌 --up 明前奶绿 --source netease");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("只支持 B 站"));
+    }
+
+    #[test]
+    fn search_rejects_up_and_mid() {
+        let error = parse_err("search --up 明前奶绿 --mid 2132180406");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("互斥"));
+    }
+
+    #[test]
+    fn search_rejects_invalid_mid_value() {
+        let error = parse_err("search --mid abc");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("无效的 --mid"));
+    }
+
+    #[test]
+    fn search_rejects_zero_mid() {
+        let error = parse_err("search --mid 0");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("无效的 --mid"));
     }
 
     #[test]

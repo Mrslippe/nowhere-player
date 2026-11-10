@@ -75,7 +75,7 @@ pub fn sign(params: &[(String, String)], mixin_key: &str, wts: u64) -> String {
 }
 
 /// 百分号编码：等价于 `encodeURIComponent`，空格编码为 `%20`，字母大写。
-fn encode_component(value: &str) -> String {
+pub(crate) fn encode_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for &byte in value.as_bytes() {
         match byte {

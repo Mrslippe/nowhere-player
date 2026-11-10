@@ -4,7 +4,29 @@
 //! **标题里被提到的人**。因此 B 站按“上传者或标题”匹配，并让上传者命中排前；
 //! 网易云的 `artists` 是结构化元数据，仍只按艺人字段匹配。
 
-use crate::model::{SourceId, SourceTrack};
+use crate::model::{SourceId, SourceTrack, UpUser};
+
+/// 用户名解析结果（T-0049）：选中的 UP + 精确同名候选数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedUp {
+    pub user: UpUser,
+    pub same_name: usize,
+}
+
+/// 优先精确同名，多个同名取粉丝最多；没有精确同名则取粉丝最多的候选。
+pub fn resolve_up_user(users: &[UpUser], name: &str) -> Option<ResolvedUp> {
+    let wanted = name.trim();
+    let exact_count = users.iter().filter(|user| user.name == wanted).count();
+    let chosen = users
+        .iter()
+        .filter(|user| user.name == wanted)
+        .max_by_key(|user| user.fans)
+        .or_else(|| users.iter().max_by_key(|user| user.fans))?;
+    Some(ResolvedUp {
+        user: chosen.clone(),
+        same_name: exact_count,
+    })
+}
 
 /// 一条结果对 `--artist` 的命中类型；顺序即排序优先级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,6 +124,39 @@ mod tests {
             album: None,
             cover_url: None,
         }
+    }
+
+    fn up(mid: u64, name: &str, fans: u64) -> UpUser {
+        UpUser {
+            mid,
+            name: name.to_owned(),
+            fans,
+        }
+    }
+
+    #[test]
+    fn resolve_up_prefers_exact_and_highest_fans() {
+        let users = vec![
+            up(1, "明前奶绿", 100),
+            up(2, "明前奶绿", 300),
+            up(3, "明明前奶绿", 999),
+        ];
+        let resolved = resolve_up_user(&users, "明前奶绿").expect("exact");
+        assert_eq!(resolved.user.mid, 2);
+        assert_eq!(resolved.same_name, 2);
+    }
+
+    #[test]
+    fn resolve_up_falls_back_to_highest_fans() {
+        let users = vec![up(1, "别人", 10), up(2, "另一个", 99)];
+        let resolved = resolve_up_user(&users, "明前奶绿").expect("fallback");
+        assert_eq!(resolved.user.mid, 2);
+        assert_eq!(resolved.same_name, 0);
+    }
+
+    #[test]
+    fn resolve_up_none_when_empty() {
+        assert!(resolve_up_user(&[], "明前奶绿").is_none());
     }
 
     #[test]

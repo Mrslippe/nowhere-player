@@ -45,6 +45,128 @@ pub(crate) struct RankedTrack {
 }
 
 #[derive(Debug, Deserialize)]
+struct UserEnvelope {
+    code: i64,
+    message: Option<String>,
+    data: Option<UserData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserData {
+    result: Option<Vec<UserItem>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserItem {
+    mid: Option<u64>,
+    uname: Option<String>,
+    fans: Option<u64>,
+}
+
+/// 解析 `bili_user` 搜索结果（T-0049）。
+pub(crate) fn parse_users(body: &[u8]) -> Result<Vec<crate::UpUser>> {
+    let envelope: UserEnvelope = serde_json::from_slice(body)
+        .map_err(|error| SourceError::Parse(format!("B 站用户搜索不是合法 JSON: {error}")))?;
+    if envelope.code != 0 {
+        return Err(envelope_error(envelope.code, envelope.message));
+    }
+    Ok(envelope
+        .data
+        .and_then(|data| data.result)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            let mid = item.mid.filter(|mid| *mid > 0)?;
+            let name = decode_entities(item.uname.as_deref()?).trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(crate::UpUser {
+                mid,
+                name,
+                fans: item.fans.unwrap_or(0),
+            })
+        })
+        .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchiveEnvelope {
+    code: i64,
+    message: Option<String>,
+    data: Option<ArchiveData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchiveData {
+    archives: Option<Vec<ArchiveItem>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchiveItem {
+    bvid: Option<String>,
+    title: Option<String>,
+    pic: Option<String>,
+    /// 秒；空间接口给的是数字，不是 `m:ss`。
+    duration: Option<u64>,
+}
+
+/// 解析 `recArchivesByKeywords`（T-0049）。
+///
+/// `keyword` 为空时是最近投稿；`name` 用于填充 `SourceTrack.artist`。
+pub(crate) fn parse_up_archives(body: &[u8], name: &str, limit: usize) -> Result<Vec<SourceTrack>> {
+    let envelope: ArchiveEnvelope = serde_json::from_slice(body)
+        .map_err(|error| SourceError::Parse(format!("B 站 UP 投稿响应不是合法 JSON: {error}")))?;
+    if envelope.code != 0 {
+        return Err(envelope_error(envelope.code, envelope.message));
+    }
+    let archives = envelope
+        .data
+        .and_then(|data| data.archives)
+        .unwrap_or_default();
+    let mut tracks = Vec::new();
+    for item in archives {
+        let Some(bvid) = item.bvid.filter(|bvid| is_bvid(bvid)) else {
+            continue;
+        };
+        let title = clean_title(item.title.as_deref().unwrap_or_default());
+        if title.is_empty() {
+            continue;
+        }
+        let Some(duration_ms) = item.duration.and_then(|seconds| seconds.checked_mul(1000)) else {
+            continue;
+        };
+        if duration_ms == 0 {
+            continue;
+        }
+        tracks.push(SourceTrack {
+            source: SourceId::Bilibili,
+            source_id: bvid,
+            title,
+            artist: name.trim().to_string(),
+            duration_ms,
+            album: None,
+            cover_url: normalize_cover(item.pic.as_deref().unwrap_or_default()),
+        });
+        if tracks.len() >= limit {
+            break;
+        }
+    }
+    Ok(tracks)
+}
+
+/// 统一 B 站 `code != 0`；412 给用户能看懂的限流文案。
+fn envelope_error(code: i64, message: Option<String>) -> SourceError {
+    if code == -412 {
+        return SourceError::Unavailable("B 站限流，请稍后再试（未自动重试）".to_string());
+    }
+    SourceError::Unavailable(format!(
+        "B 站返回 code={code}: {}",
+        message.unwrap_or_default()
+    ))
+}
+
+#[derive(Debug, Deserialize)]
 struct NavEnvelope {
     code: i64,
     message: Option<String>,

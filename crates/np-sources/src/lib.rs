@@ -19,13 +19,14 @@ mod transport;
 mod testing;
 
 pub use artist::{
-    MatchKind, build_query, match_artist_name, matches_artist, matches_artist_in_query,
+    MatchKind, ResolvedUp, build_query, match_artist_name, matches_artist, matches_artist_in_query,
+    resolve_up_user,
 };
 pub use bilibili::BilibiliSource;
 pub use cache::{STREAM_CACHE_MAX_BYTES, STREAM_CACHE_TARGET_BYTES, StreamCache};
 pub use download::{DownloadOutcome, Downloader, HttpDownloader};
 pub use error::{Result, SourceError};
-pub use model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack};
+pub use model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack, UpUser};
 pub use netease::NeteaseSource;
 pub use registry::{SearchMerge, SourceRegistry};
 pub use transport::{ReqwestTransport, Transport};
@@ -40,4 +41,24 @@ pub trait AudioSource: Send + Sync {
 
     /// 取可下载地址（可能在几分钟后过期）。
     fn resolve(&self, track: &SourceTrack) -> Result<ResolvedStream>;
+
+    /// 按用户名搜索 UP（T-0049）；默认不支持。
+    fn search_up_users(&self, _name: &str) -> Result<Vec<UpUser>> {
+        Err(SourceError::Unavailable(
+            "当前音源不支持 UP 检索".to_string(),
+        ))
+    }
+
+    /// 列某个 UP 的投稿；`keyword` 为空时取最近一页（T-0049）。
+    fn user_archives(
+        &self,
+        _mid: u64,
+        _name: &str,
+        _keyword: &str,
+        _limit: usize,
+    ) -> Result<Vec<SourceTrack>> {
+        Err(SourceError::Unavailable(
+            "当前音源不支持 UP 投稿检索".to_string(),
+        ))
+    }
 }

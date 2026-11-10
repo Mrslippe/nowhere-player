@@ -1,0 +1,34 @@
+{
+  "code": 0,
+  "message": "0",
+  "ttl": 1,
+  "data": {
+    "archives": [
+      {
+        "aid": 428644965,
+        "title": "『最长的电影』我们的开始，是很长的电影~",
+        "pubdate": 1658487929,
+        "ctime": 1658487929,
+        "state": 0,
+        "pic": "http://i2.hdslb.com/bfs/archive/dfa5e2192b862459a68b924aabef7dc244d5f314.jpg",
+        "duration": 236,
+        "stat": {
+          "view": 1145241
+        },
+        "bvid": "BV1rG411n7qp",
+        "ugc_pay": 0,
+        "interactive_video": false,
+        "enable_vt": 0,
+        "vt_display": "",
+        "playback_position": 0,
+        "desc": "原曲：最长的电影",
+        "upMid": 2132180406
+      }
+    ],
+    "page": {
+      "num": 1,
+      "size": 20,
+      "total": 1
+    }
+  }
+}

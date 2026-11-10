@@ -35,7 +35,7 @@ use np_library::{
 use np_sources::{
     AudioSource, BilibiliSource, Downloader, HttpDownloader, MatchKind, NeteaseSource,
     ReqwestTransport, SourceError, SourceId, SourceRegistry, SourceTrack, StreamCache, Transport,
-    build_query, matches_artist_in_query as match_source_artist_in_query,
+    build_query, matches_artist_in_query as match_source_artist_in_query, resolve_up_user,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -195,6 +195,9 @@ pub(crate) const DEFAULT_SEARCH_RESULTS: usize = 20;
 /// 默认每个在线源取多少条；两个源正好凑成默认总数 20。
 pub(crate) const ONLINE_SEARCH_PER_SOURCE: usize = 10;
 
+/// `--up` 无关键词时的最近投稿页大小（T-0049）。
+pub(crate) const UP_ARCHIVE_PAGE_SIZE: usize = 30;
+
 /// 一次 `search` 的解析结果（T-0046 D）。
 #[derive(Debug, Clone)]
 pub(crate) struct SearchOptions {
@@ -208,11 +211,38 @@ pub(crate) struct SearchOptions {
     pub(crate) explicit_limit: bool,
     /// 用户是否真的给了关键词（只给 artist 时 keyword 会填 artist，但不算关键词）。
     pub(crate) has_keyword: bool,
+    /// `--up <用户名>`；与 `mid` 互斥。
+    pub(crate) up: Option<String>,
+    /// `--mid <id>`；跳过用户名解析。
+    pub(crate) mid: Option<u64>,
 }
 
 impl SearchOptions {
     fn parse(parsed: &Parsed) -> Result<Self, CmdError> {
         let local = parsed.flags.contains_key("local");
+        let up = match parsed.flags.get("up") {
+            Some(raw) if raw.trim().is_empty() => {
+                return Err(CmdError::new("E_CMD_ARG", "--up 不能为空"));
+            }
+            Some(raw) => Some(raw.trim().to_owned()),
+            None => None,
+        };
+        let mid = match parsed.flags.get("mid") {
+            Some(raw) => {
+                let value = raw
+                    .parse::<u64>()
+                    .map_err(|_| CmdError::new("E_CMD_ARG", format!("无效的 --mid：{raw}")))?;
+                if value == 0 {
+                    return Err(CmdError::new("E_CMD_ARG", "--mid 必须大于 0"));
+                }
+                Some(value)
+            }
+            None => None,
+        };
+        if up.is_some() && mid.is_some() {
+            return Err(CmdError::new("E_CMD_ARG", "search --up 与 --mid 互斥")
+                .with_hint("--up 按用户名解析；--mid 直接指定"));
+        }
         let source_raw = parsed.flags.get("source");
         if local && source_raw.is_some() {
             return Err(
@@ -229,6 +259,24 @@ impl SearchOptions {
                     .with_hint("可用：all / bilibili / netease"));
             }
         };
+        if up.is_some() || mid.is_some() {
+            if local {
+                return Err(
+                    CmdError::new("E_CMD_ARG", "search --up/--mid 与 --local 互斥")
+                        .with_hint("UP 检索只支持 B 站在线"),
+                );
+            }
+            if parsed.flags.contains_key("artist") {
+                return Err(
+                    CmdError::new("E_CMD_ARG", "search --up/--mid 与 --artist 互斥")
+                        .with_hint("--up 已在指定人；关键词语义由空间接口处理"),
+                );
+            }
+            if source == Some(SourceId::Netease) {
+                return Err(CmdError::new("E_CMD_ARG", "search --up/--mid 只支持 B 站")
+                    .with_hint("--source 改为 all 或 bilibili"));
+            }
+        }
 
         let explicit_limit = parsed.flags.contains_key("limit");
         let limit = if let Some(raw) = parsed.flags.get("limit") {
@@ -265,9 +313,9 @@ impl SearchOptions {
         } else {
             raw_keyword.to_owned()
         };
-        if keyword.is_empty() {
+        if keyword.is_empty() && up.is_none() && mid.is_none() {
             return Err(CmdError::new("E_CMD_ARG", "搜索关键词不能为空")
-                .with_hint("search <关键词> 或 search --artist <名>"));
+                .with_hint("search <关键词>、search --artist <名> 或 search --up <用户名>"));
         }
 
         Ok(Self {
@@ -278,6 +326,8 @@ impl SearchOptions {
             local,
             explicit_limit,
             has_keyword,
+            up,
+            mid,
         })
     }
 
@@ -291,6 +341,8 @@ impl SearchOptions {
             local: false,
             explicit_limit: true,
             has_keyword: !keyword.trim().is_empty(),
+            up: None,
+            mid: None,
         }
     }
 
@@ -544,6 +596,16 @@ impl CacheUsage {
     }
 }
 
+/// 用户名解析后的 UP（T-0049）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpResolution {
+    pub(crate) mid: u64,
+    pub(crate) name: Option<String>,
+    pub(crate) fans: u64,
+    /// 精确同名候选数；>1 时输出 --mid 提示。
+    pub(crate) same_name: usize,
+}
+
 /// 命令层依赖的在线音源能力；生产实现是 [`OnlineService`]，单测用假实现。
 pub(crate) trait OnlineApi: Send + Sync {
     /// 串行搜索所有在线源；单源失败在实现内隔离。
@@ -567,6 +629,25 @@ pub(crate) trait OnlineApi: Send + Sync {
         track: &SourceTrack,
         progress: &mut dyn FnMut(u64),
     ) -> Result<PreparedTrack, CmdError>;
+    /// 用户名 → UP（仅 B 站）；默认不支持。
+    fn resolve_up(&self, _name: &str) -> Result<UpResolution, CmdError> {
+        Err(CmdError::new("E_SRC_UNAVAILABLE", "当前音源不支持 UP 检索"))
+    }
+
+    /// 列某个 UP 的投稿；默认不支持。
+    fn up_archives(
+        &self,
+        _mid: u64,
+        _name: &str,
+        _keyword: &str,
+        _limit: usize,
+    ) -> Result<Vec<SourceTrack>, CmdError> {
+        Err(CmdError::new(
+            "E_SRC_UNAVAILABLE",
+            "当前音源不支持 UP 投稿检索",
+        ))
+    }
+
     /// 已知源 id（含被禁用的），顺序稳定。
     fn known_sources(&self) -> Vec<SourceId> {
         Vec::new()
@@ -3487,6 +3568,52 @@ impl OnlineApi for OnlineService {
         self.search_enabled(query, limit, source)
     }
 
+    fn resolve_up(&self, name: &str) -> Result<UpResolution, CmdError> {
+        let runtime = self.runtime()?;
+        let source = runtime
+            .registry
+            .source(SourceId::Bilibili)
+            .ok_or_else(|| CmdError::new("E_SRC_UNAVAILABLE", "B 站音源未注册"))?;
+        let users = source.search_up_users(name).map_err(source_error_to_cmd)?;
+        let resolved = resolve_up_user(&users, name).ok_or_else(|| {
+            CmdError::new("E_SRC_UNAVAILABLE", format!("没有找到 UP：{}", name.trim()))
+        })?;
+        Ok(UpResolution {
+            mid: resolved.user.mid,
+            name: Some(resolved.user.name),
+            fans: resolved.user.fans,
+            same_name: resolved.same_name,
+        })
+    }
+
+    fn up_archives(
+        &self,
+        mid: u64,
+        name: &str,
+        keyword: &str,
+        limit: usize,
+    ) -> Result<Vec<SourceTrack>, CmdError> {
+        if !self
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&SourceId::Bilibili)
+        {
+            return Err(CmdError::new(
+                "E_SRC_UNAVAILABLE",
+                "B 站音源已禁用（source enable bilibili）",
+            ));
+        }
+        let runtime = self.runtime()?;
+        let source = runtime
+            .registry
+            .source(SourceId::Bilibili)
+            .ok_or_else(|| CmdError::new("E_SRC_UNAVAILABLE", "B 站音源未注册"))?;
+        source
+            .user_archives(mid, name, keyword, limit)
+            .map_err(source_error_to_cmd)
+    }
+
     fn prepare(
         &self,
         track: &SourceTrack,
@@ -3908,6 +4035,159 @@ pub(crate) fn run_online_search_with_options(
     ));
 }
 
+/// 先于后台线程推给前端的 `running` 块（UP 检索）。
+fn up_started_block(block_id: &str, input: &str, target: &str) -> Block {
+    Block {
+        id: block_id.to_owned(),
+        input: input.to_owned(),
+        started_at: now_millis(),
+        duration_ms: None,
+        status: BlockStatus::Running,
+        outputs: vec![text_of(vec![
+            bold("查找 UP"),
+            plain(format!(" · {target}")),
+        ])],
+        footer: Some("正在解析用户名并读取投稿…".to_owned()),
+        schema_version: SCHEMA_VERSION,
+        actions: None,
+    }
+}
+
+/// `--up` / `--mid` 的后台执行：最多两次请求（解析 + 一次空间列表）。
+pub(crate) fn run_up_search(
+    options: &SearchOptions,
+    online: &dyn OnlineApi,
+    library: &dyn LibraryApi,
+    emit: &dyn Fn(&Block),
+    template: &Block,
+    clock: &dyn Fn() -> u64,
+) {
+    let result = (|| -> Result<Outcome, CmdError> {
+        let resolution = if let Some(mid) = options.mid {
+            UpResolution {
+                mid,
+                name: None,
+                fans: 0,
+                same_name: 0,
+            }
+        } else {
+            let name = options
+                .up
+                .as_deref()
+                .ok_or_else(|| CmdError::new("E_CMD_ARG", "缺少 --up 或 --mid"))?;
+            online.resolve_up(name)?
+        };
+
+        let display_name = resolution
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("UP {}", resolution.mid));
+        let keyword = if options.has_keyword {
+            options.keyword.as_str()
+        } else {
+            ""
+        };
+        let limit = if options.has_keyword || options.explicit_limit {
+            options.limit
+        } else {
+            UP_ARCHIVE_PAGE_SIZE
+        };
+        let tracks = online.up_archives(resolution.mid, &display_name, keyword, limit)?;
+        let hits: Vec<SearchHit> = tracks.into_iter().map(SearchHit::Online).collect();
+        library.remember_hits(hits.clone());
+        library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: hits.len(),
+        });
+
+        let match_line = match &resolution.name {
+            Some(name) => format!(
+                "已匹配 UP：{name}（mid={}，粉丝 {}）",
+                resolution.mid,
+                format_fans(resolution.fans)
+            ),
+            None => format!("已指定 UP：mid={}", resolution.mid),
+        };
+        let mut outputs = vec![text_of(vec![bold(match_line)])];
+        if resolution.same_name > 1 {
+            outputs.push(hint_output(&format!(
+                "另有 {} 个同名用户；用 --mid <id> 指定",
+                resolution.same_name - 1
+            )));
+        }
+        if hits.is_empty() {
+            outputs.push(text_of(vec![
+                bold("没有找到"),
+                dim(if keyword.is_empty() {
+                    " · 该 UP 最近没有可播放投稿"
+                } else {
+                    " · 该 UP 的投稿里没有匹配关键词"
+                }),
+            ]));
+            return Ok(Outcome {
+                outputs,
+                footer: None,
+            });
+        }
+
+        let rows = hits
+            .iter()
+            .enumerate()
+            .map(|(index, hit)| {
+                vec![
+                    (index + 1).to_string(),
+                    hit.source_label().to_owned(),
+                    hit.title().to_owned(),
+                    hit.artist().to_owned(),
+                    format_hit_duration(hit.duration_ms()),
+                ]
+            })
+            .collect();
+        outputs.push(Output::Table {
+            columns: search_columns(),
+            rows,
+            selectable: true,
+        });
+        let footer = if keyword.is_empty() {
+            format!(
+                "最近 {} 条投稿 · 只显示最近 30 条，可用关键词过滤",
+                hits.len()
+            )
+        } else {
+            format!("共 {} 条 · 输入 play <序号> 播放", hits.len())
+        };
+        Ok(Outcome {
+            outputs,
+            footer: Some(footer),
+        })
+    })();
+
+    match result {
+        Ok(outcome) => emit(&finish_block(
+            template,
+            BlockStatus::Done,
+            outcome.outputs,
+            outcome.footer,
+            clock,
+        )),
+        Err(error) => emit(&finish_block(
+            template,
+            BlockStatus::Error,
+            vec![error.to_output()],
+            None,
+            clock,
+        )),
+    }
+}
+
+fn format_fans(fans: u64) -> String {
+    if fans >= 10_000 {
+        format!("{:.1} 万", fans as f64 / 10_000.0)
+    } else {
+        fans.to_string()
+    }
+}
+
 /// 后台执行 `play <在线序号>`：resolve → 下载（进度按时间节流）→ 播放本地路径。
 pub(crate) fn run_online_play(
     track: &SourceTrack,
@@ -4198,6 +4478,30 @@ fn maybe_start_online(
         if options.local {
             return None;
         }
+
+        if options.up.is_some() || options.mid.is_some() {
+            let target = options
+                .up
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("mid={}", options.mid.unwrap_or(0)));
+            let template = up_started_block(block_id, input, &target);
+            emit_block(app, &template);
+
+            let app = app.clone();
+            let online = library.online();
+            std::thread::spawn(move || {
+                let library = app.state::<LibraryHandle>();
+                let emit_app = app.clone();
+                let emit = move |block: &Block| emit_block(&emit_app, block);
+                run_up_search(&options, &*online, &*library, &emit, &template, &now_millis);
+            });
+            return Some(CmdExecReply {
+                block_id: block_id.to_owned(),
+                ok: true,
+            });
+        }
+
         let template = search_started_block(block_id, input, &options.keyword);
         emit_block(app, &template);
 
@@ -6722,6 +7026,8 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: true,
+            up: None,
+            mid: None,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6772,6 +7078,8 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: true,
+            up: None,
+            mid: None,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6811,6 +7119,8 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: true,
+            up: None,
+            mid: None,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6858,6 +7168,8 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: true,
+            up: None,
+            mid: None,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -6918,6 +7230,8 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: true,
+            up: None,
+            mid: None,
         }
     }
 
@@ -7014,6 +7328,8 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: false,
+            up: None,
+            mid: None,
         };
 
         let block = run_online_capture(&options, &online, &library);
@@ -7050,11 +7366,197 @@ mod tests {
             local: false,
             explicit_limit: false,
             has_keyword: true,
+            up: None,
+            mid: None,
         };
 
         run_online_capture(&options, &online, &library);
 
         assert_eq!(online.calls()[0].1, ONLINE_SEARCH_PER_SOURCE);
+    }
+
+    fn up_options(keyword: &str, up: Option<&str>, mid: Option<u64>) -> SearchOptions {
+        SearchOptions {
+            keyword: keyword.to_owned(),
+            artist: None,
+            source: None,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+            has_keyword: !keyword.is_empty(),
+            up: up.map(str::to_owned),
+            mid,
+        }
+    }
+
+    fn up_track() -> SourceTrack {
+        let mut track = online_track(SourceId::Bilibili, "BV1rG411n7qp", "最长的电影");
+        track.artist = "明前奶绿".to_owned();
+        track.duration_ms = 236_000;
+        track
+    }
+
+    fn run_up_capture(options: &SearchOptions, online: &FakeUpOnline) -> Block {
+        let library = FakeLibraryApi::new();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        run_up_search(
+            options,
+            online,
+            &library,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+        emitted
+            .lock()
+            .expect("emitted")
+            .last()
+            .expect("done")
+            .clone()
+    }
+
+    #[test]
+    fn up_option_conflicts_are_arg_errors() {
+        for input in [
+            "search --up 明前奶绿 --artist 周杰伦",
+            "search --up 明前奶绿 --local",
+            "search --up 明前奶绿 --source netease",
+            "search --up 明前奶绿 --mid 2132180406",
+            "search --mid abc",
+            "search --mid 0",
+        ] {
+            let error = parse(input).expect_err(input);
+            assert_eq!(error.code.as_str(), "E_CMD_ARG", "{input}");
+        }
+    }
+
+    #[test]
+    fn up_search_prints_matched_user_and_results() {
+        let online = FakeUpOnline::new(
+            Ok(UpResolution {
+                mid: 2132180406,
+                name: Some("明前奶绿".to_owned()),
+                fans: 310066,
+                same_name: 2,
+            }),
+            Ok(vec![up_track()]),
+        );
+        let options = up_options("最长的电影", Some("明前奶绿"), None);
+
+        let block = run_up_capture(&options, &online);
+
+        let text = text_of_block(&block);
+        assert!(text.contains("已匹配 UP：明前奶绿（mid=2132180406，粉丝 31.0 万）"));
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text.contains("另有 1 个同名用户")
+        )));
+        assert_eq!(table_of_block(&block).1.len(), 1);
+        assert!(block.footer.as_deref().unwrap().contains("共 1 条"));
+        assert_eq!(online.resolve_calls(), 1);
+        assert_eq!(online.archive_calls()[0].0, 2132180406);
+    }
+
+    #[test]
+    fn up_mid_skips_user_resolution() {
+        let online = FakeUpOnline::new(
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应调用")),
+            Ok(vec![up_track()]),
+        );
+        let options = up_options("", None, Some(2132180406));
+
+        let block = run_up_capture(&options, &online);
+
+        assert_eq!(online.resolve_calls(), 0);
+        assert!(text_of_block(&block).contains("已指定 UP：mid=2132180406"));
+        assert!(online.archive_calls()[0].1.starts_with("UP 2132180406"));
+        assert_eq!(online.archive_calls()[0].3, UP_ARCHIVE_PAGE_SIZE);
+    }
+
+    #[test]
+    fn up_no_keyword_requests_thirty_and_notes_recent() {
+        let online = FakeUpOnline::new(
+            Ok(UpResolution {
+                mid: 1,
+                name: Some("UP".to_owned()),
+                fans: 0,
+                same_name: 0,
+            }),
+            Ok(vec![up_track()]),
+        );
+        let options = up_options("", Some("UP"), None);
+
+        let block = run_up_capture(&options, &online);
+
+        assert_eq!(online.archive_calls()[0].3, 30);
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("只显示最近 30 条"))
+        );
+    }
+
+    #[test]
+    fn up_keyword_uses_requested_limit() {
+        let online = FakeUpOnline::new(
+            Ok(UpResolution {
+                mid: 1,
+                name: Some("UP".to_owned()),
+                fans: 0,
+                same_name: 0,
+            }),
+            Ok(vec![up_track()]),
+        );
+        let mut options = up_options("歌", Some("UP"), None);
+        options.explicit_limit = true;
+        options.limit = 5;
+
+        run_up_capture(&options, &online);
+
+        assert_eq!(online.archive_calls()[0].3, 5);
+    }
+
+    #[test]
+    fn up_rate_limit_is_human_error() {
+        let online = FakeUpOnline::new(
+            Ok(UpResolution {
+                mid: 1,
+                name: Some("UP".to_owned()),
+                fans: 0,
+                same_name: 0,
+            }),
+            Err(CmdError::new(
+                "E_SRC_UNAVAILABLE",
+                "B 站限流，请稍后再试（未自动重试）",
+            )),
+        );
+        let options = up_options("歌", Some("UP"), None);
+
+        let block = run_up_capture(&options, &online);
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("B 站限流"));
+        assert!(error_fields(&block).1.contains("未自动重试"));
+    }
+
+    #[test]
+    fn up_resolution_failure_is_error() {
+        let online = FakeUpOnline::new(
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "没有找到 UP：nope")),
+            Ok(Vec::new()),
+        );
+        let options = up_options("", Some("nope"), None);
+
+        let block = run_up_capture(&options, &online);
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("没有找到 UP"));
+        assert!(online.archive_calls().is_empty());
     }
 
     #[test]
@@ -7342,6 +7844,74 @@ mod tests {
             _progress: &mut dyn FnMut(u64),
         ) -> Result<PreparedTrack, CmdError> {
             Err(CmdError::new("E_SRC_UNAVAILABLE", "测试未实现"))
+        }
+    }
+
+    struct FakeUpOnline {
+        resolution: Result<UpResolution, CmdError>,
+        archives: Result<Vec<SourceTrack>, CmdError>,
+        resolve_calls: AtomicUsize,
+        archive_calls: Mutex<Vec<(u64, String, String, usize)>>,
+    }
+
+    impl FakeUpOnline {
+        fn new(
+            resolution: Result<UpResolution, CmdError>,
+            archives: Result<Vec<SourceTrack>, CmdError>,
+        ) -> Self {
+            Self {
+                resolution,
+                archives,
+                resolve_calls: AtomicUsize::new(0),
+                archive_calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn resolve_calls(&self) -> usize {
+            self.resolve_calls.load(Ordering::SeqCst)
+        }
+
+        fn archive_calls(&self) -> Vec<(u64, String, String, usize)> {
+            self.archive_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl OnlineApi for FakeUpOnline {
+        fn search_all(&self, _query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
+            Ok(OnlineSearch {
+                tracks: Vec::new(),
+                all_failed: false,
+            })
+        }
+
+        fn prepare(
+            &self,
+            _track: &SourceTrack,
+            _progress: &mut dyn FnMut(u64),
+        ) -> Result<PreparedTrack, CmdError> {
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "测试未实现"))
+        }
+
+        fn resolve_up(&self, _name: &str) -> Result<UpResolution, CmdError> {
+            self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            self.resolution.clone()
+        }
+
+        fn up_archives(
+            &self,
+            mid: u64,
+            name: &str,
+            keyword: &str,
+            limit: usize,
+        ) -> Result<Vec<SourceTrack>, CmdError> {
+            self.archive_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((mid, name.to_owned(), keyword.to_owned(), limit));
+            self.archives.clone()
         }
     }
 

@@ -623,7 +623,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "search",
         aliases: &[],
         summary: "搜索本地库与在线音源，结果可按序号播放",
-        usage: "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>]",
+        usage: "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>] [--up <用户名>|--mid <id>]",
         args: &[ArgSpec {
             name: "keyword",
             kind: ArgKind::Text,
@@ -649,6 +649,16 @@ const COMMANDS: &[CommandSpec] = &[
                 name: "limit",
                 takes_value: true,
                 summary: "本次结果总数（1-100，默认 20）",
+            },
+            FlagSpec {
+                name: "up",
+                takes_value: true,
+                summary: "按 B 站用户名解析 UP，并在其投稿内检索",
+            },
+            FlagSpec {
+                name: "mid",
+                takes_value: true,
+                summary: "直接指定 B 站 UP 的 mid，跳过用户名解析",
             },
         ],
         subcommands: &[],
