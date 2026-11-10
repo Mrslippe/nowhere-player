@@ -278,6 +278,35 @@ describe("按键归属（T-0020 §11）", () => {
     expect(decideKey("arrow-down", "", null).historyStep).toBe(1);
   });
 
+  it("候选开启时 ↑↓ 序列：play → pause → prev → pause", () => {
+    const popup = openCompletion(
+      completion([item("play"), item("pause"), item("prev"), item("playlist")]),
+    )!;
+    const sequence: Array<string | undefined> = [];
+    let current = popup;
+
+    for (const key of ["arrow-down", "arrow-down", "arrow-up"] as const) {
+      const decision = decideKey(key, "p", current);
+      current = decision.popup!;
+      sequence.push(activeItem(current)?.text);
+    }
+
+    expect(sequence).toEqual(["pause", "prev", "pause"]);
+  });
+
+  it("Tab 采纳命令后进入参数位：补全规则应关闭弹层", () => {
+    const popup = openCompletion(
+      completion([item("play")], 0, 1),
+    )!;
+    const adopted = decideKey("tab", "p", popup).adopt!;
+
+    expect(adopted.value).toBe("play ");
+    expect(commandPrefix(adopted.value, adopted.caret)).toBeNull();
+    expect(
+      shouldRequestRealtimeCompletion(adopted.value, adopted.caret, false),
+    ).toBe(false);
+  });
+
   it("弹层打开时 Enter 执行当前输入、不采纳候选", () => {
     const popup = openCompletion(
       completion([item("a"), item("b")], 0, 1),

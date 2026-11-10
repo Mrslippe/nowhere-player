@@ -74,7 +74,10 @@ export function CommandInput({
   const inputRef = useRef<HTMLInputElement | null>(null);
   /** 在途补全请求的代次：输入变化或新请求会作废旧结果。 */
   const requestRef = useRef(0);
-  /** Tab 采纳后本轮渲染不因输入变化立刻清掉列表（卡要求“不关闭列表”）。 */
+  /**
+   * Tab 采纳后由 adopt 显式请求一次新补全；跳过 value 变化触发的 effect，
+   * 避免同一轮发两次请求。下一次输入 change 会清掉。
+   */
   const skipRealtimeRef = useRef(false);
   /** ↑/↓ 翻历史期间保持 true；用户再输入一个字符才清掉（T-0046 A）。 */
   const historyNavigatingRef = useRef(false);
@@ -210,9 +213,12 @@ export function CommandInput({
   const adopt = (adopted: { value: string; caret: number }): void => {
     requestRef.current += 1;
     skipRealtimeRef.current = true;
+    // 旧列表是补全前的 token；先关掉，再按新输入/新光标显式算一次。
+    closePopup();
     setValue(adopted.value);
     setCaretState(adopted.caret);
     setCaret(adopted.caret);
+    requestCompletion(adopted.value, adopted.caret);
   };
 
   const keyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
