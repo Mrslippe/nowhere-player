@@ -31,6 +31,7 @@ export function TableOutput({ output }: TableOutputProps) {
       <table
         className="np-blocks-table"
         data-selectable={output.selectable ? "true" : "false"}
+        data-columns={output.columns.length}
       >
         <thead>
           <tr>

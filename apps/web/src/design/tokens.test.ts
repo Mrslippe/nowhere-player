@@ -41,6 +41,7 @@ const REQUIRED_TOKENS = [
   "--success",
   "--line",
   "--line-strong",
+  "--hi",
   "--sp-1",
   "--sp-2",
   "--sp-3",
@@ -74,6 +75,7 @@ const COLOR_TOKENS = [
   "--success",
   "--line",
   "--line-strong",
+  "--hi",
 ] as const;
 
 const THEMES = ["graphite", "amber", "ice", "phosphor"] as const;

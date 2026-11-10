@@ -23,6 +23,7 @@ describe("TableOutput", () => {
 
     expect(html).toContain("<table");
     expect(html).toContain('data-selectable="true"');
+    expect(html).toContain('data-columns="3"');
     expect(html).toContain('scope="col"');
     expect(html).toContain("曲名");
     expect(html).toContain("晴天");

@@ -1,5 +1,6 @@
 /*
- * 四套主题：graphite（默认）/ amber（暖）/ ice（冷）/ phosphor（磷光）。
+ * 四套主题：graphite（默认，D3 暖中性 + 琥珀信号）/ amber（暖）/
+ * ice（冷）/ phosphor（磷光）。
  *
  * 用法：<html data-theme="graphite">，属性缺失时沿用 tokens.css 的 :root 缺省值。
  * 主题只覆盖颜色，间距 / 圆角 / 阴影 / 动效等结构 token 不随主题变化。
@@ -8,24 +9,25 @@
 
 :root,
 [data-theme="graphite"] {
-  --bg: #0b0c0e;
-  --bg-elev: #141619;
-  --bg-hover: #1c1f24;
+  --bg: #0d0f12;
+  --bg-elev: #14171c;
+  --bg-hover: #1a1e24;
 
-  --fg: #e8eaed;
-  --fg-muted: #8b9096;
-  --fg-faint: #4a4f55;
+  --fg: #e9e4da;
+  --fg-muted: #a7a49e;
+  --fg-faint: #7d7c78;
 
-  --accent: #7c9ef5;
-  --accent-soft: rgba(124, 158, 245, 0.14);
-  --accent-fg: #0b0c0e;
+  --accent: #ffb454;
+  --accent-soft: rgba(255, 180, 84, 0.14);
+  --accent-fg: #0d0f12;
 
-  --danger: #f2707a;
-  --warn: #e8b45c;
-  --success: #7fc79a;
+  --danger: #ff8b7d;
+  --warn: #ffb454;
+  --success: #a7a49e;
 
   --line: rgba(255, 255, 255, 0.07);
   --line-strong: rgba(255, 255, 255, 0.14);
+  --hi: rgba(255, 255, 255, 0.06);
 }
 
 [data-theme="amber"] {
@@ -47,6 +49,7 @@
 
   --line: rgba(255, 222, 180, 0.08);
   --line-strong: rgba(255, 222, 180, 0.16);
+  --hi: rgba(255, 255, 255, 0.06);
 }
 
 [data-theme="ice"] {
@@ -68,6 +71,7 @@
 
   --line: rgba(190, 225, 255, 0.08);
   --line-strong: rgba(190, 225, 255, 0.16);
+  --hi: rgba(255, 255, 255, 0.06);
 }
 
 /*
@@ -94,4 +98,5 @@
 
   --line: rgba(255, 180, 84, 0.14);
   --line-strong: rgba(255, 180, 84, 0.28);
+  --hi: rgba(255, 255, 255, 0.06);
 }

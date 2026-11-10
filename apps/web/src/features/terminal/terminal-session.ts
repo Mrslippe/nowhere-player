@@ -188,7 +188,7 @@ export function createWelcomeBlock(
             bold: true,
             dim: false,
             italic: false,
-            color: "accent",
+            color: null,
           },
           {
             text: ` ${version}`,

@@ -34,9 +34,11 @@ const STRUCTURE_TOKENS = [
   "--np-border-hairline",
   "--np-border-transparent",
   "--np-border-error",
+  "--np-border-table-header",
   "--np-border-width-emphasis",
   "--np-shadow-card",
   "--np-shadow-float",
+  "--np-highlight-inset",
   "--np-shadow-focus-line",
   "--np-font-ui",
   "--np-font-mono",
@@ -57,6 +59,14 @@ const plainCss = readSkinFile("plain.css");
 const phosphorCss = readSkinFile("phosphor.css");
 const themesCss = fs.readFileSync(
   path.join(SRC_DIR, "design", "themes.css"),
+  "utf8",
+);
+const tokensCss = fs.readFileSync(
+  path.join(SRC_DIR, "design", "tokens.css"),
+  "utf8",
+);
+const typographyCss = fs.readFileSync(
+  path.join(SRC_DIR, "design", "typography.css"),
   "utf8",
 );
 
@@ -208,6 +218,68 @@ describe("结构层（skin）", () => {
     expect(contrastRatio(muted as string, bg as string)).toBeGreaterThanOrEqual(
       4.5,
     );
+  });
+
+  it("D3 字阶与字体分工集中在 typography.css", () => {
+    for (const token of ["--fs-10", "--fs-11", "--fs-13", "--fs-15"]) {
+      expect(typographyCss, token).toContain(`${token}:`);
+    }
+    for (const token of ["--lh-title", "--lh-body", "--lh-meta", "--lh-micro"]) {
+      expect(typographyCss, token).toContain(`${token}:`);
+    }
+
+    expect(typographyCss).toContain('"Segoe UI"');
+    expect(typographyCss).toContain('"Microsoft YaHei"');
+    expect(typographyCss).toContain('"Cascadia Code"');
+    expect(typographyCss).toContain("Consolas");
+  });
+
+  it("组件 CSS 没有字面量字号，全部走 token", () => {
+    for (const file of COMPONENT_CSS) {
+      const css = fs.readFileSync(file, "utf8");
+      const relative = file.slice(SRC_DIR.length + 1);
+      const offenders = valuesOf(css, "font-size").filter(
+        (value) => !value.startsWith("var(--"),
+      );
+
+      expect(offenders, `${relative} font-size`).toEqual([]);
+    }
+  });
+
+  it("D3 列宽与间距 token 是 8 的倍数（行高 28 单独例外）", () => {
+    for (const token of [
+      "--np-space-1",
+      "--np-space-2",
+      "--np-space-3",
+      "--np-space-4",
+      "--np-col-index",
+      "--np-col-source",
+      "--np-col-artist",
+      "--np-col-duration",
+    ]) {
+      const value = valueOf(tokensCss, token);
+      expect(value, token).toBeDefined();
+      const px = Number.parseInt(value as string, 10);
+      expect(px % 8, token).toBe(0);
+    }
+
+    expect(valueOf(tokensCss, "--np-row-height")).toBe("28px");
+    expect(valueOf(tokensCss, "--np-table-header-line")).toBe("2px");
+  });
+
+  it("D3 默认主题的正文/次级/弱文字对比度达标", () => {
+    const block = ruleBlock(themesCss, '[data-theme="graphite"]');
+    const bg = valueOf(block, "--bg") as string;
+    const fg = valueOf(block, "--fg") as string;
+    const muted = valueOf(block, "--fg-muted") as string;
+    const faint = valueOf(block, "--fg-faint") as string;
+    const accent = valueOf(block, "--accent") as string;
+
+    expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(12);
+    expect(contrastRatio(muted, bg)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(faint, bg)).toBeGreaterThanOrEqual(4.5);
+    // 琥珀若用于文字也必须过 4.5（当前只做信号，但先守住）。
+    expect(contrastRatio(accent, bg)).toBeGreaterThanOrEqual(4.5);
   });
 
   it("组件 CSS 的圆角/阴影/字体只引用结构变量", () => {

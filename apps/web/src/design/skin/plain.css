@@ -21,12 +21,14 @@
   --np-border-hairline: 1px solid var(--line);
   --np-border-transparent: 1px solid transparent;
   --np-border-error: 2px solid var(--danger);
+  --np-border-table-header: var(--np-table-header-line) solid var(--line-strong);
   --np-border-width-emphasis: 2px;
   /* 滚动条滑块内缩：2px 透明边 + background-clip，让滑块比 10px 轨道窄。 */
   --np-border-thumb: 2px solid transparent;
 
   --np-shadow-card: var(--shadow-1);
-  --np-shadow-float: var(--shadow-1);
+  --np-shadow-float: var(--shadow-2);
+  --np-highlight-inset: inset 0 1px 0 var(--hi);
   --np-shadow-focus-line: inset 0 -2px 0 var(--accent);
 
   --np-font-ui: var(--font-ui);

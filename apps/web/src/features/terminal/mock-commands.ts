@@ -119,13 +119,13 @@ function searchResult(query: string): MockResult {
     durationMs: 9,
     outputs: [
       table(
-        ["#", "曲名", "艺人", "时长", "可播"],
+        ["#", "来源", "标题", "艺人", "时长"],
         matches.map((track) => [
           String(track.number),
+          "本地",
           track.title,
           track.artist,
           track.duration,
-          "✓",
         ]),
       ),
     ],
@@ -165,7 +165,7 @@ function playResult(index: number): MockResult {
         tone: null,
         spans: [
           span("正在播放 ", { dim: true }),
-          span(track.title, { bold: true, color: "accent" }),
+          span(track.title, { bold: true }),
           span(` — ${track.artist} · ${track.duration}`, { dim: true, color: "muted" }),
         ],
       },
@@ -254,7 +254,7 @@ function versionResult(): MockResult {
     durationMs: 1,
     outputs: [
       textOutput([
-        span("Nowhere Player", { bold: true, color: "accent" }),
+        span("Nowhere Player", { bold: true }),
         span(` ${APP_VERSION}`),
       ]),
     ],

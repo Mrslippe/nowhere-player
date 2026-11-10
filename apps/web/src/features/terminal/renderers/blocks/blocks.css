@@ -8,19 +8,20 @@
 .np-blocks {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: var(--np-space-2);
   min-width: 0;
   color: var(--fg);
-  font-family: var(--np-font-mono);
+  font-family: var(--np-font-ui);
   font-size: var(--fs-13);
-  line-height: var(--np-density-line);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-body);
 }
 
 /* ── 块骨架 ─────────────────────────────────────────── */
 .np-blocks-item {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--np-space-1);
   min-width: 0;
   animation: np-block-in var(--np-dur-mid) var(--np-ease-out) both;
 }
@@ -28,15 +29,17 @@
 .np-blocks-item__input {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--np-space-1);
   min-width: 0;
-  padding-bottom: var(--sp-1);
-  border-bottom: var(--np-border-hairline);
+  min-height: var(--np-row-height);
 }
 
 .np-blocks-item__prompt {
   flex: none;
   color: var(--accent);
+  font-size: var(--fs-15);
+  font-weight: 600;
+  line-height: var(--lh-title);
   user-select: none;
 }
 
@@ -44,6 +47,10 @@
   flex: 1 1 auto;
   min-width: 0;
   color: var(--fg);
+  font-size: var(--fs-15);
+  font-weight: 600;
+  line-height: var(--lh-title);
+  letter-spacing: -0.004em;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -52,12 +59,13 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--np-space-1);
   margin-left: auto;
   color: var(--fg-muted);
-  font-size: var(--fs-10);
+  font-family: var(--np-font-mono);
+  font-size: var(--fs-11);
   font-variant-numeric: tabular-nums;
-  line-height: var(--np-density-line-dense);
+  line-height: var(--lh-meta);
 }
 
 .np-blocks-item__status-dot {
@@ -90,14 +98,16 @@
 .np-blocks-item__outputs {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--np-space-1);
   min-width: 0;
 }
 
 .np-blocks-item__footer {
   margin: 0;
   color: var(--fg-muted);
-  font-size: var(--fs-12);
+  font-family: var(--np-font-ui);
+  font-size: var(--fs-11);
+  line-height: var(--lh-meta);
 }
 
 /* ── text ───────────────────────────────────────────── */
@@ -144,7 +154,7 @@
   font-style: italic;
 }
 
-/* ── table ──────────────────────────────────────────── */
+/* ── table（D3 表格规则） ────────────────────────────── */
 .np-blocks-table-wrap {
   max-width: 100%;
   overflow-x: auto;
@@ -152,32 +162,79 @@
 
 .np-blocks-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.np-blocks-table th,
+.np-blocks-table td {
+  height: var(--np-row-height);
+  padding: 0 var(--np-space-1);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .np-blocks-table th {
-  padding: var(--sp-1) var(--sp-2);
-  border-bottom: var(--np-border-hairline);
+  border-bottom: var(--np-border-table-header);
   color: var(--fg-muted);
-  font-weight: 500;
-  text-align: left;
-  white-space: nowrap;
+  font-family: var(--np-font-ui);
+  font-size: var(--fs-11);
+  font-weight: 400;
+  line-height: var(--lh-meta);
 }
 
 .np-blocks-table td {
-  padding: var(--sp-1) var(--sp-2);
   border-bottom: var(--np-border-hairline);
-  white-space: nowrap;
+  border-bottom-color: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font-size: var(--fs-13);
+  line-height: var(--lh-body);
 }
 
+/* 序号 / 时长：等宽、右对齐；表头同列也右对齐。 */
 .np-blocks-table th:first-child,
-.np-blocks-table td:first-child {
-  padding-left: 0;
-}
-
+.np-blocks-table td:first-child,
 .np-blocks-table th:last-child,
 .np-blocks-table td:last-child {
-  padding-right: 0;
+  font-family: var(--np-font-mono);
+  font-size: var(--fs-11);
+  text-align: right;
+}
+
+/* 5 列搜索结果：序号 48 / 来源 72 / 标题 1fr / 艺人 120 / 时长 72。 */
+.np-blocks-table[data-columns="5"] th:nth-child(1),
+.np-blocks-table[data-columns="5"] td:nth-child(1) { width: var(--np-col-index); }
+.np-blocks-table[data-columns="5"] th:nth-child(2),
+.np-blocks-table[data-columns="5"] td:nth-child(2) { width: var(--np-col-source); }
+.np-blocks-table[data-columns="5"] th:nth-child(4),
+.np-blocks-table[data-columns="5"] td:nth-child(4) { width: var(--np-col-artist); }
+.np-blocks-table[data-columns="5"] th:nth-child(5),
+.np-blocks-table[data-columns="5"] td:nth-child(5) { width: var(--np-col-duration); }
+
+/* 4 列库列表：序号 48 / 标题 1fr / 艺人 120 / 时长 72。 */
+.np-blocks-table[data-columns="4"] th:nth-child(1),
+.np-blocks-table[data-columns="4"] td:nth-child(1) { width: var(--np-col-index); }
+.np-blocks-table[data-columns="4"] th:nth-child(3),
+.np-blocks-table[data-columns="4"] td:nth-child(3) { width: var(--np-col-artist); }
+.np-blocks-table[data-columns="4"] th:nth-child(4),
+.np-blocks-table[data-columns="4"] td:nth-child(4) { width: var(--np-col-duration); }
+
+/* 3 列队列：序号 48 / 曲目 1fr / 当前 72。 */
+.np-blocks-table[data-columns="3"] th:nth-child(1),
+.np-blocks-table[data-columns="3"] td:nth-child(1) { width: var(--np-col-index); }
+.np-blocks-table[data-columns="3"] th:nth-child(3),
+.np-blocks-table[data-columns="3"] td:nth-child(3) { width: var(--np-col-duration); }
+
+/* 来源/艺人是元信息，降到 11px；标题保持 13px 正文。 */
+.np-blocks-table[data-columns="5"] td:nth-child(2),
+.np-blocks-table[data-columns="5"] td:nth-child(4),
+.np-blocks-table[data-columns="4"] td:nth-child(3) {
+  color: var(--fg-muted);
+  font-size: var(--fs-11);
 }
 
 .np-blocks-table tbody tr:last-child td {
@@ -196,7 +253,7 @@
 .np-blocks-progress {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--np-space-1);
   min-width: 0;
 }
 
@@ -216,7 +273,8 @@
 .np-blocks-progress__value {
   flex: none;
   color: var(--fg-muted);
-  font-size: var(--fs-12);
+  font-family: var(--np-font-mono);
+  font-size: var(--fs-11);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -225,8 +283,8 @@
 .np-blocks-error {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-1) 0 var(--sp-1) var(--sp-3);
+  gap: var(--np-space-1);
+  padding: var(--np-space-1) 0 var(--np-space-1) var(--np-space-2);
   border-left: var(--np-border-error);
   animation: np-error-border var(--np-dur-fast) var(--np-ease-out);
 }
@@ -235,12 +293,13 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--sp-2);
+  gap: var(--np-space-1);
 }
 
 .np-blocks-error__code {
   color: var(--fg-muted);
-  font-size: var(--fs-12);
+  font-family: var(--np-font-mono);
+  font-size: var(--fs-11);
   font-variant-numeric: tabular-nums;
 }
 
@@ -251,25 +310,30 @@
 .np-blocks-error__hint {
   margin: 0;
   color: var(--fg-muted);
-  font-size: var(--fs-12);
+  font-size: var(--fs-11);
+  line-height: var(--lh-meta);
 }
 
 .np-blocks-error__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-2);
-  margin-top: var(--sp-1);
+  gap: var(--np-space-1);
+  margin-top: var(--np-space-1);
 }
 
 /* ── hint ───────────────────────────────────────────── */
 .np-blocks-hint {
   margin: 0;
   color: var(--fg-muted);
-  font-size: var(--fs-12);
+  font-size: var(--fs-11);
+  line-height: var(--lh-meta);
 }
 
 .np-blocks-hint__suggestion {
-  color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* ── media ──────────────────────────────────────────── */

@@ -74,18 +74,18 @@ describe("runMockCommand", () => {
     });
   });
 
-  it("search 晴天 过滤出结果并带可播性标记", () => {
+  it("search 晴天 过滤出结果并带来源列", () => {
     const block = runMockCommand("search 晴天");
     const table = block.outputs[0];
 
     expect(table).toMatchObject({
       type: "table",
-      columns: ["#", "曲名", "艺人", "时长", "可播"],
+      columns: ["#", "来源", "标题", "艺人", "时长"],
     });
     if (table.type !== "table") {
       throw new Error("search 应产出 table");
     }
-    expect(table.rows).toEqual([["1", "晴天", "周杰伦", "4:29", "✓"]]);
+    expect(table.rows).toEqual([["1", "本地", "晴天", "周杰伦", "4:29"]]);
     expect(block.footer).toContain("1 条结果");
   });
 

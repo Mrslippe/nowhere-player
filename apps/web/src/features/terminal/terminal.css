@@ -6,6 +6,7 @@
  */
 
 .np-lab {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -34,19 +35,22 @@
 }
 
 .np-lab__brand {
-  margin-right: var(--sp-2);
+  margin-right: var(--np-space-1);
   color: var(--fg);
-  font-family: var(--np-font-mono);
-  font-size: var(--fs-12);
+  font-family: var(--np-font-ui);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  letter-spacing: -0.004em;
   white-space: nowrap;
 }
 
 /* 标题栏里区分产品名与窗口身份；不抢主标题的字重。 */
 .np-lab__brand-suffix {
-  margin-left: var(--sp-2);
+  margin-left: var(--np-space-1);
   color: var(--fg-muted);
-  font-size: var(--fs-10);
-  letter-spacing: 0.08em;
+  font-size: var(--fs-11);
+  font-weight: 400;
+  letter-spacing: 0.04em;
 }
 
 /* 顶栏状态：本地库曲目数（T-0041）；用 4px 点和真实计数，不做装饰。 */
@@ -54,11 +58,10 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: var(--sp-1);
-  margin-right: var(--sp-1);
+  gap: var(--np-space-1);
   color: var(--fg-muted);
   font-family: var(--np-font-mono);
-  font-size: var(--fs-10);
+  font-size: var(--fs-11);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -93,7 +96,7 @@
   background: transparent;
   color: var(--fg-muted);
   font-family: var(--np-font-ui);
-  font-size: var(--fs-12);
+  font-size: var(--fs-11);
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
@@ -190,7 +193,7 @@ html[data-theme="phosphor"]
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
-  background: var(--bg);
+  background: var(--bg-elev);
 }
 
 .np-lab__pane {
@@ -214,7 +217,7 @@ html[data-theme="phosphor"]
   padding: 0 var(--sp-3);
   border-bottom: var(--np-border-hairline);
   color: var(--fg-muted);
-  font-size: var(--fs-10);
+  font-size: var(--fs-11);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
@@ -269,7 +272,7 @@ html[data-theme="phosphor"]
 
 .np-lab__prompt {
   flex: none;
-  color: var(--fg-muted);
+  color: var(--accent);
   font-family: var(--np-font-mono);
   font-size: var(--fs-13);
   user-select: none;
@@ -324,7 +327,7 @@ html[data-theme="phosphor"]
   padding: 4px var(--sp-2);
   color: var(--fg);
   font-family: var(--np-font-mono);
-  font-size: var(--fs-12);
+  font-size: var(--fs-11);
   cursor: default;
 }
 
@@ -334,15 +337,15 @@ html[data-theme="phosphor"]
 
 .np-lab__completion-text {
   flex: none;
-  min-width: 72px;
+  min-width: var(--np-col-source);
   font-weight: 600;
-  color: var(--accent);
+  color: var(--fg);
   white-space: nowrap;
 }
 
 .np-lab__completion-kind {
   flex: none;
-  padding: 0 4px;
+  padding: 0 var(--np-space-1);
   border: var(--np-border-control);
   border-radius: var(--np-radius-micro);
   color: var(--fg-muted);
@@ -368,7 +371,7 @@ html[data-theme="phosphor"]
   background: transparent;
   color: var(--fg-muted);
   font-family: var(--np-font-mono);
-  font-size: var(--fs-12);
+  font-size: var(--fs-11);
   line-height: 1;
   cursor: pointer;
   transition:
@@ -547,4 +550,127 @@ html[data-theme="phosphor"]
   .np-score__score {
     transition: none;
   }
+}
+
+/* phosphor 保留全出血终端结构：舞台回到 base，不做 plain 的卡片底。 */
+html[data-skin="phosphor"] .np-lab__stage {
+  background: var(--bg);
+}
+
+/* ── D3 产品外壳（T-0045 阶段 1，仅 plain） ───────────
+ * 只作用于默认产品视图；?lab=1 保留 34px 顶栏 + 评分面板的实验台布局。
+ * 顶栏浮在正文上，毛玻璃后面能看到滚动内容；输入框是第三级浮层。
+ */
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__topbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 10;
+  height: 48px;
+  padding: 0 var(--np-space-2);
+  background: color-mix(in srgb, var(--bg-elev) 84%, transparent);
+  border-bottom: var(--np-border-hairline);
+  box-shadow: var(--np-highlight-inset);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__stage {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--bg-elev);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__scroll {
+  padding: 64px var(--np-space-3) 88px;
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row {
+  position: absolute;
+  right: var(--np-space-2);
+  bottom: var(--np-space-2);
+  left: var(--np-space-2);
+  z-index: 12;
+  height: 48px;
+  padding: 0 var(--np-space-2);
+  background: var(--bg-hover);
+  border: 0;
+  border-radius: var(--np-radius-inner);
+  box-shadow: var(--np-highlight-inset), var(--np-shadow-float);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row:focus-within {
+  box-shadow:
+    var(--np-highlight-inset),
+    var(--np-shadow-float),
+    var(--np-shadow-focus-line);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__prompt {
+  color: var(--accent);
+  font-family: var(--np-font-ui);
+  font-size: var(--fs-15);
+  font-weight: 600;
+  line-height: 1;
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input {
+  color: var(--fg);
+  font-family: var(--np-font-ui);
+  font-size: var(--fs-13);
+  font-weight: 400;
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input::placeholder {
+  color: var(--fg-faint);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__completion {
+  right: var(--np-space-1);
+  left: var(--np-space-1);
+  bottom: calc(100% + var(--np-space-1));
+  background: var(--bg-hover);
+  border-color: var(--line);
+  box-shadow: var(--np-highlight-inset), var(--np-shadow-float);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__completion-item {
+  padding: var(--np-space-1) var(--np-space-2);
+}
+
+/* 底部状态条：plain 产品外壳的 base 层；phosphor 保持全出血结构，不渲染。 */
+.np-lab__statusbar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--np-space-2);
+  background: var(--bg);
+  border-top: var(--np-border-hairline);
+  color: var(--fg-muted);
+  font-family: var(--np-font-ui);
+  font-size: var(--fs-10);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-micro);
+  white-space: nowrap;
+}
+
+html[data-skin="phosphor"] .np-lab__statusbar {
+  display: none;
+}
+
+/* 底部状态条占 32px 后，输入浮层抬到它上方 40px。 */
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row {
+  bottom: 40px;
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__scroll {
+  padding-bottom: 104px;
 }

@@ -376,6 +376,17 @@ export function TerminalLab({
         persistHistory={persist}
       />
 
+      {!lab ? (
+        <div className="np-lab__statusbar" aria-label="终端状态">
+          <span>↑↓ 历史　Tab 补全　Enter 执行</span>
+          <span>
+            {library.state === "ready"
+              ? `本地 ${library.tracks ?? 0} 首`
+              : "本地库未连接"}
+          </span>
+        </div>
+      ) : null}
+
       {lab ? (
         <ScorePanel
           scores={scores}
