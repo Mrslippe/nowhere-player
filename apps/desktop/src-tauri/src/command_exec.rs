@@ -111,6 +111,16 @@ pub(crate) trait LibraryApi {
     fn track_by_path(&self, _path: &str) -> Result<Option<Track>, CmdError> {
         Ok(None)
     }
+    /// 批量按路径查元数据；默认逐条走 `track_by_path`，生产实现只开一次库。
+    fn tracks_by_paths(&self, paths: &[String]) -> Result<HashMap<String, Track>, CmdError> {
+        let mut tracks = HashMap::new();
+        for path in paths {
+            if let Some(track) = self.track_by_path(path)? {
+                tracks.insert(path.clone(), track);
+            }
+        }
+        Ok(tracks)
+    }
     /// 最近一次渲染带序号表格的命令写入（T-0043）。
     fn set_active_listing(&self, _listing: ActiveListing) {}
     /// 当前序号上下文；没有渲染过列表时为 `None`。
@@ -1130,23 +1140,68 @@ impl Executor<'_> {
         }
     }
 
-    /// `queue list`：序号（1 基）/ 曲目 / 是否当前。
+    /// `queue list`：元数据来自一次批量查库 + 远程会话映射；查不到回退文件名 + —。
     fn queue_list(&self) -> Result<Outcome, CmdError> {
         let view = self.api.queue_list()?;
-        let rows = view
-            .tracks
-            .iter()
+        let metadata = self.library.tracks_by_paths(&view.tracks)?;
+        let mut rows = Vec::with_capacity(view.tracks.len());
+        let mut has_source = false;
+
+        for path in &view.tracks {
+            let filename = track_display(path);
+            let Some(track) = metadata.get(path) else {
+                rows.push(QueueRow {
+                    title: filename,
+                    artist: "—".to_owned(),
+                    duration: "—".to_owned(),
+                    source: None,
+                });
+                continue;
+            };
+
+            let title = if track.title.trim().is_empty() {
+                filename
+            } else {
+                track.title.clone()
+            };
+            let artist = if track.artist.trim().is_empty() {
+                "—".to_owned()
+            } else {
+                track.artist.clone()
+            };
+            let duration = if track.duration_ms > 0 {
+                format_track_duration(track.duration_ms)
+            } else {
+                "—".to_owned()
+            };
+            let source = queue_track_source(track);
+            has_source |= source.is_some();
+            rows.push(QueueRow {
+                title,
+                artist,
+                duration,
+                source,
+            });
+        }
+
+        let mut columns = vec![
+            "序号".to_owned(),
+            "标题".to_owned(),
+            "艺人".to_owned(),
+            "时长".to_owned(),
+        ];
+        if has_source {
+            columns.push("来源".to_owned());
+        }
+        let table_rows = rows
+            .into_iter()
             .enumerate()
-            .map(|(index, track)| {
-                vec![
-                    (index + 1).to_string(),
-                    track_display(track),
-                    if view.index == Some(index) {
-                        "▶".to_owned()
-                    } else {
-                        String::new()
-                    },
-                ]
+            .map(|(index, row)| {
+                let mut cells = vec![(index + 1).to_string(), row.title, row.artist, row.duration];
+                if has_source {
+                    cells.push(row.source.unwrap_or_else(|| "—".to_owned()));
+                }
+                cells
             })
             .collect();
 
@@ -1162,8 +1217,8 @@ impl Executor<'_> {
 
         Ok(Outcome {
             outputs: vec![Output::Table {
-                columns: vec!["序号".to_owned(), "曲目".to_owned(), "当前".to_owned()],
-                rows,
+                columns,
+                rows: table_rows,
                 selectable: true,
             }],
             footer: Some(footer),
@@ -2011,6 +2066,23 @@ fn format_relative_time(timestamp_ms: i64) -> String {
     }
 }
 
+struct QueueRow {
+    title: String,
+    artist: String,
+    duration: String,
+    source: Option<String>,
+}
+
+/// 队列行可显示的来源；本地库的 `local` 不单独占一列。
+fn queue_track_source(track: &Track) -> Option<String> {
+    match track.source.as_str() {
+        "" | "local" => None,
+        "bilibili" => Some("B站".to_owned()),
+        "netease" => Some("网易云".to_owned()),
+        other => Some(other.to_owned()),
+    }
+}
+
 /// `play <n>` 命中队列时的输出：写明来源是播放队列。
 fn queue_jump_outcome(index: usize, view: &QueueView) -> Outcome {
     let mut outcome = jump_outcome("播放", index, view);
@@ -2698,6 +2770,28 @@ impl LibraryApi for LibraryHandle {
 
     fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
         LibraryHandle::track_by_path(self, path)
+    }
+
+    fn tracks_by_paths(&self, paths: &[String]) -> Result<HashMap<String, Track>, CmdError> {
+        // 一次 open，循环查库；未命中的再查在线会话映射。
+        let mut tracks = self.with_db(|db| {
+            let mut found = HashMap::new();
+            for path in paths {
+                if let Some(track) = db.track_by_path(path)? {
+                    found.insert(path.clone(), track);
+                }
+            }
+            Ok(found)
+        })?;
+        for path in paths {
+            if tracks.contains_key(path) {
+                continue;
+            }
+            if let Some(track) = self.online.track_by_path(Path::new(path)) {
+                tracks.insert(path.clone(), track);
+            }
+        }
+        Ok(tracks)
     }
 }
 
@@ -4683,27 +4777,80 @@ mod tests {
     }
 
     #[test]
-    fn queue_list_renders_rows_and_current_marker() {
-        let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], Some(1)));
-        let block = done_block(&api, "queue list");
+    fn queue_list_shows_local_metadata_in_four_columns() {
+        let api =
+            FakeApi::new().with_queue(queue_view(&["/music/a.flac", "/music/b.flac"], Some(1)));
+        let library = FakeLibraryApi::new()
+            .with_track_by_path(
+                "/music/a.flac",
+                track(1, "第一首", "甲", "/music/a.flac", 65_000),
+            )
+            .with_track_by_path(
+                "/music/b.flac",
+                track(2, "第二首", "乙", "/music/b.flac", 125_000),
+            );
+        let block = done_with_library(&api, &library, "queue list");
 
-        let table = block
-            .outputs
-            .iter()
-            .find_map(|output| match output {
-                Output::Table { columns, rows, .. } => Some((columns, rows)),
-                _ => None,
-            })
-            .expect("queue list must render a table");
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns, ["序号", "标题", "艺人", "时长"]);
+        assert_eq!(rows[0], ["1", "第一首", "甲", "01:05"]);
+        assert_eq!(rows[1], ["2", "第二首", "乙", "02:05"]);
+    }
 
-        assert_eq!(
-            table.0,
-            &vec!["序号".to_owned(), "曲目".to_owned(), "当前".to_owned()]
-        );
-        assert_eq!(table.1.len(), 3);
-        assert_eq!(table.1[0][0], "1");
-        assert_eq!(table.1[1][2], "▶");
-        assert_eq!(table.1[0][2], "");
+    #[test]
+    fn queue_list_shows_remote_source_column() {
+        let api = FakeApi::new().with_queue(queue_view(&["/cache/bili.m4a"], Some(0)));
+        let mut remote = track(0, "远程歌", "上传者", "/cache/bili.m4a", 200_000);
+        remote.kind = "remote".to_owned();
+        remote.source = "bilibili".to_owned();
+        let library = FakeLibraryApi::new().with_track_by_path("/cache/bili.m4a", remote);
+        let block = done_with_library(&api, &library, "queue list");
+
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns, ["序号", "标题", "艺人", "时长", "来源"]);
+        assert_eq!(rows[0], ["1", "远程歌", "上传者", "03:20", "B站"]);
+    }
+
+    #[test]
+    fn queue_list_falls_back_to_filename_and_dashes() {
+        let api = FakeApi::new().with_queue(queue_view(&["/music/missing.flac"], None));
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "queue list");
+
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns.len(), 4);
+        assert_eq!(rows[0], ["1", "missing.flac", "—", "—"]);
+    }
+
+    #[test]
+    fn queue_list_mixed_queue_uses_source_column_with_local_dash() {
+        let api = FakeApi::new().with_queue(queue_view(&["/music/a.flac", "/cache/net.m4a"], None));
+        let mut remote = track(0, "云歌", "云艺人", "/cache/net.m4a", 90_000);
+        remote.kind = "remote".to_owned();
+        remote.source = "netease".to_owned();
+        let library = FakeLibraryApi::new()
+            .with_track_by_path(
+                "/music/a.flac",
+                track(1, "本地歌", "本地艺人", "/music/a.flac", 60_000),
+            )
+            .with_track_by_path("/cache/net.m4a", remote);
+        let block = done_with_library(&api, &library, "queue list");
+
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns.last().copied(), Some("来源"));
+        assert_eq!(rows[0][4], "—");
+        assert_eq!(rows[1][4], "网易云");
+    }
+
+    #[test]
+    fn queue_list_empty_still_has_metadata_columns() {
+        let api = FakeApi::new().with_queue(queue_view(&[], None));
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "queue list");
+
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns.len(), 4);
+        assert!(rows.is_empty());
     }
 
     #[test]
