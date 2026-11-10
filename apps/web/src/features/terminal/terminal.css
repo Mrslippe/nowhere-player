@@ -478,6 +478,25 @@ html[data-theme="phosphor"]
   }
 }
 
+@keyframes np-completion-exit {
+  from {
+    opacity: 1;
+  }
+
+  /* 50% 时间命中 .5，满足“中间帧明显半透明”的验收。 */
+  50% {
+    opacity: 0.5;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.np-lab__completion[data-closing="true"] {
+  animation: np-completion-exit var(--np-dur-fast) var(--np-ease-accelerate) both;
+}
+
 .np-lab__input-row[data-completion-motion="enter"] .np-lab__completion {
   animation: np-completion-enter var(--np-dur-base) var(--np-ease-decelerate);
 }
@@ -676,8 +695,10 @@ html[data-theme="phosphor"]
     transition: none;
   }
 
-  .np-lab__completion {
+  .np-lab__completion,
+  .np-lab__completion[data-closing="true"] {
     animation: none;
+    opacity: 0;
   }
 
   .np-lab__completion-item {

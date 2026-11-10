@@ -3,6 +3,7 @@ import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import type { Completion } from "../../../shared/command-bridge";
 import {
   COMPLETION_DEBOUNCE_MS,
+  COMPLETION_EXIT_MS,
   completionMotion,
   decideKey,
   openCompletion,
@@ -65,6 +66,7 @@ export function CommandInput({
   const [popup, setPopup] = useState<CompletionPopupState | null>(null);
   const [popupMotion, setPopupMotion] = useState<"none" | "enter" | "update">("none");
   const [popupRevision, setPopupRevision] = useState(0);
+  const [popupClosing, setPopupClosing] = useState(false);
   const [caret, setCaretState] = useState(0);
   const [history, setHistory] = useState<HistoryCursor>(() =>
     createHistoryCursor(
@@ -83,6 +85,8 @@ export function CommandInput({
   const historyNavigatingRef = useRef(false);
   /** 当前弹层内容，用于判断可见→可见时是否真的变了（T-0051 E）。 */
   const popupRef = useRef<CompletionPopupState | null>(null);
+  /** exit 的卸载兜底定时器。 */
+  const closeTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (persistHistory) {
@@ -118,6 +122,9 @@ export function CommandInput({
     () => () => {
       // 卸载后在途补全不得再 setState。
       requestRef.current += 1;
+      if (closeTimerRef.current !== null) {
+        globalThis.clearTimeout(closeTimerRef.current);
+      }
     },
     [],
   );
@@ -135,10 +142,41 @@ export function CommandInput({
     }, 0);
   };
 
+  const cancelClose = (): void => {
+    if (closeTimerRef.current !== null) {
+      globalThis.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setPopupClosing(false);
+  };
+
   const closePopup = (): void => {
+    // 已经在 exit 中：保留现有计时器，避免重复重启/卡住。
+    if (popupRef.current === null) {
+      return;
+    }
     popupRef.current = null;
     setPopupMotion("none");
-    setPopup(null);
+
+    const reduced =
+      typeof globalThis.matchMedia === "function" &&
+      globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      if (closeTimerRef.current !== null) {
+        globalThis.clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      setPopupClosing(false);
+      setPopup(null);
+      return;
+    }
+
+    setPopupClosing(true);
+    closeTimerRef.current = globalThis.setTimeout(() => {
+      closeTimerRef.current = null;
+      setPopupClosing(false);
+      setPopup(null);
+    }, COMPLETION_EXIT_MS);
   };
 
   const requestCompletion = (input: string, caret: number): void => {
@@ -156,6 +194,14 @@ export function CommandInput({
           return;
         }
         const next = openCompletion(completion);
+        if (next === null) {
+          if (popupRef.current !== null) {
+            closePopup();
+          }
+          return;
+        }
+        // 新候选覆盖正在退场的旧列表：取消 pending 卸载，避免节点被定时器清掉。
+        cancelClose();
         const motion = completionMotion(popupRef.current, next);
         popupRef.current = next;
         setPopup(next);
@@ -235,7 +281,7 @@ export function CommandInput({
     const decision = decideKey(
       key,
       value,
-      popup,
+      popupClosing ? null : popup,
       historyNavigatingRef.current,
     );
 
@@ -338,6 +384,7 @@ export function CommandInput({
           key={popupRevision}
           completion={popup.completion}
           activeIndex={popup.activeIndex}
+          closing={popupClosing}
         />
       )}
       <button

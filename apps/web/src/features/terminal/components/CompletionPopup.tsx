@@ -20,11 +20,14 @@ export interface CompletionPopupProps {
   completion: Completion;
   /** 当前高亮下标（相对可见列表）。 */
   activeIndex: number;
+  /** exit 期间保留节点，让 120ms 的 opacity 退场可见。 */
+  closing?: boolean;
 }
 
 export function CompletionPopup({
   completion,
   activeIndex,
+  closing = false,
 }: CompletionPopupProps) {
   const items = completion.items.slice(0, POPUP_LIMIT);
 
@@ -39,6 +42,7 @@ export function CompletionPopup({
       aria-label="命令补全"
       data-testid="completion-popup"
       data-count={items.length}
+      data-closing={closing ? "true" : undefined}
     >
       {items.map((item, index) => {
         const active = index === activeIndex;

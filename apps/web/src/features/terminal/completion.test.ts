@@ -5,6 +5,7 @@ import {
   activeItem,
   applyCompletion,
   COMPLETION_DEBOUNCE_MS,
+  COMPLETION_EXIT_MS,
   charLength,
   commandPrefix,
   completionMotion,
@@ -166,8 +167,9 @@ describe("命令名位置（T-0043 §2C）", () => {
     expect(commandPrefix("中", 1)).toBe("中");
   });
 
-  it("debounce 不超过 80ms", () => {
+  it("debounce 不超过 80ms；exit 卸载兜底 120ms", () => {
     expect(COMPLETION_DEBOUNCE_MS).toBeLessThanOrEqual(80);
+    expect(COMPLETION_EXIT_MS).toBe(120);
   });
 });
 

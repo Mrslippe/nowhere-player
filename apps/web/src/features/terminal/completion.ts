@@ -16,6 +16,9 @@ export const POPUP_LIMIT = 5;
 /** 输入变化后等待多久再请求候选；卡要求 ≤80ms。 */
 export const COMPLETION_DEBOUNCE_MS = 80;
 
+/** 候选弹层 exit 的卸载兜底（CSS 用 --np-dur-fast）。 */
+export const COMPLETION_EXIT_MS = 120;
+
 /** 打开的补全弹层：候选与当前高亮下标（相对可见列表）。 */
 export interface CompletionPopupState {
   completion: Completion;
