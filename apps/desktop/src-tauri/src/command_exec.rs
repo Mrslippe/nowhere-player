@@ -240,11 +240,14 @@ pub(crate) struct SearchOptions {
     pub(crate) up: Option<String>,
     /// `--mid <id>`；跳过用户名解析。
     pub(crate) mid: Option<u64>,
+    /// `--no-filter`：关闭 artist 过滤与标题关键词约束。
+    pub(crate) no_filter: bool,
 }
 
 impl SearchOptions {
     fn parse(parsed: &Parsed) -> Result<Self, CmdError> {
         let local = parsed.flags.contains_key("local");
+        let no_filter = parsed.flags.contains_key("no-filter");
         let up = match parsed.flags.get("up") {
             Some(raw) if raw.trim().is_empty() => {
                 return Err(CmdError::new("E_CMD_ARG", "--up 不能为空"));
@@ -353,6 +356,7 @@ impl SearchOptions {
             has_keyword,
             up,
             mid,
+            no_filter,
         })
     }
 
@@ -368,6 +372,7 @@ impl SearchOptions {
             has_keyword: !keyword.trim().is_empty(),
             up: None,
             mid: None,
+            no_filter: false,
         }
     }
 
@@ -4622,6 +4627,35 @@ pub(crate) fn run_online_search(
     run_online_search_with_options(&options, online, library, emit, template, clock);
 }
 
+/// 把某通道的结果过滤、去重后并入累积列表。
+fn absorb_online_tracks(
+    options: &SearchOptions,
+    tracks: Vec<SourceTrack>,
+    seen: &mut HashSet<(String, String)>,
+    out: &mut Vec<SourceTrack>,
+) -> (usize, usize) {
+    let mut fetched = 0;
+    let mut removed = 0;
+    for track in tracks {
+        fetched += 1;
+        if !options.no_filter
+            && let Some(artist) = options.artist.as_deref()
+            && matches!(
+                match_source_artist_in_query(&track, artist, options.keyword_filter()),
+                MatchKind::None
+            )
+        {
+            removed += 1;
+            continue;
+        }
+        let key = (track.source.as_str().to_owned(), track.source_id.clone());
+        if seen.insert(key) {
+            out.push(track);
+        }
+    }
+    (fetched, removed)
+}
+
 pub(crate) fn run_online_search_with_options(
     options: &SearchOptions,
     online: &dyn OnlineApi,
@@ -4649,39 +4683,193 @@ pub(crate) fn run_online_search_with_options(
         Vec::new()
     };
     let local_before = local.len();
-    if let Some(artist) = &options.artist {
+    if let Some(artist) = &options.artist
+        && !options.no_filter
+    {
         local.retain(|track| !matches!(local_artist_match(track, artist), MatchKind::None));
     }
     let local_removed = local_before.saturating_sub(local.len());
     // 默认视图给本地留 10 条上限，剩余名额给在线；显式 --limit 不压本地。
     local.truncate(options.local_cap());
 
-    let (mut online_tracks, all_failed) = match online.search_all_for(
-        &options.source_query(),
-        options.candidate_pool(),
-        options.source,
-    ) {
-        Ok(result) => (result.tracks, result.all_failed),
-        // 在线客户端初始化失败也不能吞掉本地结果。
-        Err(_) => (Vec::new(), true),
-    };
-    let online_before = online_tracks.len();
-    if let Some(artist) = &options.artist {
-        let keyword = options.keyword_filter();
-        online_tracks.retain(|track| {
-            !matches!(
-                match_source_artist_in_query(track, artist, keyword),
-                MatchKind::None
-            )
-        });
+    let started = clock();
+    let mut online_tracks: Vec<SourceTrack> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut online_before = 0usize;
+    let mut online_removed = 0usize;
+    let mut all_failed;
+    let mut notices: Vec<String> = Vec::new();
+
+    // 只有「关键词 + --artist」才走 B/C/D 召回；只给 artist 保持旧行为。
+    let recall_channels = options.has_keyword && options.artist.is_some();
+    if !recall_channels {
+        let result = online.search_all_for(
+            &options.source_query(),
+            options.candidate_pool(),
+            options.source,
+        );
+        match result {
+            Ok(result) => {
+                all_failed = result.all_failed;
+                let (fetched, removed) =
+                    absorb_online_tracks(options, result.tracks, &mut seen, &mut online_tracks);
+                online_before += fetched;
+                online_removed += removed;
+            }
+            Err(_) => all_failed = true,
+        }
+    } else {
+        let artist = options
+            .artist
+            .as_deref()
+            .expect("recall channels require artist");
+        let bili_allowed = options.source != Some(SourceId::Netease);
+
+        // A：纯关键词，总是发。
+        match online.search_all_for(&options.keyword, options.candidate_pool(), options.source) {
+            Ok(result) => {
+                all_failed = result.all_failed;
+                let (fetched, removed) =
+                    absorb_online_tracks(options, result.tracks, &mut seen, &mut online_tracks);
+                online_before += fetched;
+                online_removed += removed;
+            }
+            Err(_) => all_failed = true,
+        }
+
+        let over_deadline = || clock().saturating_sub(started) > 2_500;
+
+        if bili_allowed && local.len() + online_tracks.len() < options.limit {
+            // B：艺人 + 关键词。
+            if over_deadline() {
+                notices.push("召回超过 2.5s，已停止后续通道".to_owned());
+            } else {
+                let query = build_query(&options.keyword, Some(artist));
+                match online.search_all_for(
+                    &query,
+                    options.candidate_pool(),
+                    Some(SourceId::Bilibili),
+                ) {
+                    Ok(result) => {
+                        if result.all_failed {
+                            all_failed = true;
+                        }
+                        let (fetched, removed) = absorb_online_tracks(
+                            options,
+                            result.tracks,
+                            &mut seen,
+                            &mut online_tracks,
+                        );
+                        online_before += fetched;
+                        online_removed += removed;
+                    }
+                    Err(_) => all_failed = true,
+                }
+            }
+        }
+
+        let mut d_resolution_failed = false;
+        let mut d_blocked = false;
+        let mut d_deadline = false;
+        if bili_allowed && local.len() + online_tracks.len() < options.limit {
+            // D：UP 空间检索；只解析一次、只发一次，412 不重试。
+            if over_deadline() {
+                notices.push("召回超过 2.5s，已停止后续空间检索".to_owned());
+                d_deadline = true;
+            } else {
+                match online.resolve_up(artist) {
+                    Ok(resolution) if resolution.same_name == 1 => {
+                        let name = resolution.name.as_deref().unwrap_or(artist);
+                        let remaining = options
+                            .limit
+                            .saturating_sub(local.len() + online_tracks.len())
+                            .max(1);
+                        if over_deadline() {
+                            notices.push("召回超过 2.5s，已停止空间检索".to_owned());
+                            d_deadline = true;
+                        } else {
+                            match online.up_archives(
+                                resolution.mid,
+                                name,
+                                &options.keyword,
+                                remaining,
+                            ) {
+                                Ok(tracks) => {
+                                    let (fetched, removed) = absorb_online_tracks(
+                                        options,
+                                        tracks,
+                                        &mut seen,
+                                        &mut online_tracks,
+                                    );
+                                    online_before += fetched;
+                                    online_removed += removed;
+                                }
+                                Err(error) => {
+                                    d_blocked = true;
+                                    notices.push(error.message);
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        d_resolution_failed = true;
+                        notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
+                    }
+                    Err(error) => {
+                        d_resolution_failed = true;
+                        if error.message.contains("限流") || error.message.contains("412") {
+                            d_blocked = true;
+                            notices.push(error.message);
+                        } else {
+                            notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
+                        }
+                    }
+                }
+            }
+        }
+
+        // C 是 D 解析失败时的退路；D 已解析出唯一 mid 就不再发 C。
+        if bili_allowed
+            && local.len() + online_tracks.len() < options.limit
+            && d_resolution_failed
+            && !d_blocked
+            && !d_deadline
+        {
+            // C：仅艺人；标题仍要满足关键词约束。
+            if over_deadline() {
+                notices.push("召回超过 2.5s，已停止后续通道".to_owned());
+            } else {
+                match online.search_all_for(
+                    artist,
+                    options.candidate_pool(),
+                    Some(SourceId::Bilibili),
+                ) {
+                    Ok(result) => {
+                        if result.all_failed {
+                            all_failed = true;
+                        }
+                        let (fetched, removed) = absorb_online_tracks(
+                            options,
+                            result.tracks,
+                            &mut seen,
+                            &mut online_tracks,
+                        );
+                        online_before += fetched;
+                        online_removed += removed;
+                    }
+                    Err(_) => all_failed = true,
+                }
+            }
+        }
     }
-    let online_removed = online_before.saturating_sub(online_tracks.len());
 
     let before_artist = local_before.saturating_add(online_before);
     let removed = local_removed.saturating_add(online_removed);
     let mut hits: Vec<SearchHit> = local.into_iter().map(SearchHit::Local).collect();
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
-    if let Some(artist) = &options.artist {
+    if let Some(artist) = &options.artist
+        && !options.no_filter
+    {
         // Author 排前、Title 排后；同档保持“本地在前 + 各源返回顺序”。
         let keyword = options.keyword_filter();
         let mut ranked: Vec<(MatchKind, SearchHit)> = hits
@@ -4699,7 +4887,10 @@ pub(crate) fn run_online_search_with_options(
         len: hits.len(),
     });
 
-    let outcome = build_search_outcome_for(options, &hits, all_failed, before_artist, removed);
+    let mut outcome = build_search_outcome_for(options, &hits, all_failed, before_artist, removed);
+    for notice in notices {
+        outcome.outputs.push(hint_output(&notice));
+    }
     emit(&finish_block(
         template,
         BlockStatus::Done,
@@ -8393,6 +8584,7 @@ mod tests {
             has_keyword: true,
             up: None,
             mid: None,
+            no_filter: false,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -8445,6 +8637,7 @@ mod tests {
             has_keyword: true,
             up: None,
             mid: None,
+            no_filter: false,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -8486,6 +8679,7 @@ mod tests {
             has_keyword: true,
             up: None,
             mid: None,
+            no_filter: false,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -8507,7 +8701,7 @@ mod tests {
         assert!(done.outputs.iter().any(|output| matches!(
             output,
             Output::Hint { text, .. }
-                if text.contains("过滤前有 1 条，被 --artist 过滤掉了 1 条")
+                if text.contains("过滤前有 3 条，被 --artist 过滤掉了 3 条")
         )));
         assert_eq!(
             library.active_listing(),
@@ -8516,6 +8710,264 @@ mod tests {
                 len: 0,
             })
         );
+    }
+
+    fn resolved_up(name: &str, mid: u64, same_name: usize) -> UpResolution {
+        UpResolution {
+            mid,
+            name: Some(name.to_owned()),
+            fans: 100,
+            same_name,
+        }
+    }
+
+    #[test]
+    fn recall_a_enough_stops_before_b_and_d() {
+        let library = FakeLibraryApi::new();
+        let tracks: Vec<SourceTrack> = (0..20)
+            .map(|index| {
+                let mut track = online_track(SourceId::Bilibili, &format!("BV{index}"), "晴天");
+                track.artist = "周杰伦".to_owned();
+                track
+            })
+            .collect();
+        let online = ChannelOnline::new(
+            HashMap::from([("晴天".to_owned(), tracks)]),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应解析")),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应取空间")),
+        );
+        let options = artist_options("晴天", "周杰伦", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(table_of_block(&block).1.len(), 20);
+        assert_eq!(online.calls(), vec![("晴天".to_owned(), None)]);
+        assert_eq!(online.resolve_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(online.archive_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn recall_d_before_c_and_space_hit_without_artist_name_in_title() {
+        let library = FakeLibraryApi::new();
+        let online = ChannelOnline::new(
+            HashMap::from([
+                ("花骨朵".to_owned(), Vec::new()),
+                ("缪尔Miru 花骨朵".to_owned(), Vec::new()),
+            ]),
+            Ok(resolved_up("缪尔Miru", 42, 1)),
+            Ok(vec![{
+                let mut track = online_track(SourceId::Bilibili, "BVlow", "花骨朵");
+                track.artist = "缪尔Miru".to_owned();
+                track
+            }]),
+        );
+        let options = artist_options("花骨朵", "缪尔Miru", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][2], "花骨朵");
+        assert_eq!(rows[0][3], "缪尔Miru");
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
+        assert_eq!(online.resolve_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(online.archive_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn recall_c_is_fallback_when_d_cannot_resolve_and_reports_it() {
+        let library = FakeLibraryApi::new();
+        let mut c_track = online_track(SourceId::Bilibili, "BVc", "花骨朵");
+        c_track.artist = "缪尔Miru".to_owned();
+        let online = ChannelOnline::new(
+            HashMap::from([("缪尔Miru".to_owned(), vec![c_track])]),
+            Ok(resolved_up("缪尔Miru", 0, 0)),
+            Ok(Vec::new()),
+        );
+        let options = artist_options("花骨朵", "缪尔Miru", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+                ("缪尔Miru".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. }
+                if text == "未能解析到该艺人对应的 UP，已退回普通搜索"
+        )));
+        assert_eq!(table_of_block(&block).1.len(), 1);
+    }
+
+    #[test]
+    fn recall_d_412_reports_and_skips_c() {
+        let library = FakeLibraryApi::new();
+        let online = ChannelOnline::new(
+            HashMap::new(),
+            Err(CmdError::new(
+                "E_SRC_UNAVAILABLE",
+                "B 站限流，请稍后再试（未自动重试）",
+            )),
+            Ok(vec![online_track(SourceId::Bilibili, "BVx", "花骨朵")]),
+        );
+        let options = artist_options("花骨朵", "缪尔Miru", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
+        assert_eq!(online.resolve_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(online.archive_calls.load(Ordering::SeqCst), 0);
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text.contains("B 站限流")
+        )));
+    }
+
+    #[test]
+    fn recall_d_archives_412_reports_and_skips_c() {
+        let library = FakeLibraryApi::new();
+        let online = ChannelOnline::new(
+            HashMap::new(),
+            Ok(resolved_up("缪尔Miru", 42, 1)),
+            Err(CmdError::new(
+                "E_SRC_UNAVAILABLE",
+                "B 站限流，请稍后再试（未自动重试）",
+            )),
+        );
+        let options = artist_options("花骨朵", "缪尔Miru", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(online.archive_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text.contains("B 站限流")
+        )));
+    }
+
+    #[test]
+    fn recall_stops_after_2_5s_and_reports() {
+        let library = FakeLibraryApi::new();
+        let online = ChannelOnline::new(
+            HashMap::new(),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应解析")),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应取空间")),
+        );
+        let options = artist_options("花骨朵", "缪尔Miru", DEFAULT_SEARCH_RESULTS);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let clock_calls = Arc::clone(&calls);
+        let clock = move || {
+            if clock_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                0
+            } else {
+                3_000
+            }
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        run_online_search_with_options(
+            &options,
+            &online,
+            &library,
+            &emit,
+            &running_template(),
+            &clock,
+        );
+
+        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        assert!(done.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text.contains("超过 2.5s")
+        )));
+    }
+
+    #[test]
+    fn recall_dedupes_same_source_id_across_channels() {
+        let library = FakeLibraryApi::new();
+        let mut track = online_track(SourceId::Bilibili, "BVsame", "晴天");
+        track.artist = "周杰伦".to_owned();
+        let online = ChannelOnline::new(
+            HashMap::from([
+                ("晴天".to_owned(), vec![track.clone()]),
+                ("周杰伦 晴天".to_owned(), vec![track.clone()]),
+                ("周杰伦".to_owned(), vec![track]),
+            ]),
+            Ok(resolved_up("周杰伦", 0, 0)),
+            Ok(Vec::new()),
+        );
+        let options = artist_options("晴天", "周杰伦", DEFAULT_SEARCH_RESULTS);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(table_of_block(&block).1.len(), 1);
+    }
+
+    #[test]
+    fn multi_keyword_filter_requires_each_word_not_contiguous_phrase() {
+        let library = FakeLibraryApi::new();
+        let mut track = online_track(SourceId::Bilibili, "BVmulti", "第一次 唱 文静");
+        track.artist = "明前奶绿".to_owned();
+        let online = ChannelOnline::new(
+            HashMap::from([("文静 第一次".to_owned(), vec![track])]),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应解析")),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应取空间")),
+        );
+        let options = artist_options("文静 第一次", "明前奶绿", 1);
+
+        let block = run_online_capture(&options, &online, &library);
+
+        assert_eq!(table_of_block(&block).1.len(), 1);
+        assert_eq!(online.calls(), vec![("文静 第一次".to_owned(), None)]);
+    }
+
+    #[test]
+    fn no_filter_keeps_source_raw_results() {
+        let library = FakeLibraryApi::new();
+        let mut raw = online_track(SourceId::Bilibili, "BVraw", "完全无关");
+        raw.artist = "别人".to_owned();
+        let online = ChannelOnline::new(
+            HashMap::from([("晴天".to_owned(), vec![raw])]),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应解析")),
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "不应取空间")),
+        );
+        let mut options = artist_options("晴天", "周杰伦", 1);
+        options.no_filter = true;
+
+        let block = run_online_capture(&options, &online, &library);
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][2], "完全无关");
+        assert_eq!(online.calls(), vec![("晴天".to_owned(), None)]);
     }
 
     #[test]
@@ -8535,6 +8987,7 @@ mod tests {
             has_keyword: true,
             up: None,
             mid: None,
+            no_filter: false,
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emit = {
@@ -8562,7 +9015,7 @@ mod tests {
 
     fn run_online_capture(
         options: &SearchOptions,
-        online: &RecordingOnline,
+        online: &dyn OnlineApi,
         library: &FakeLibraryApi,
     ) -> Block {
         let emitted = Arc::new(Mutex::new(Vec::new()));
@@ -8597,6 +9050,7 @@ mod tests {
             has_keyword: true,
             up: None,
             mid: None,
+            no_filter: false,
         }
     }
 
@@ -8610,7 +9064,14 @@ mod tests {
 
         let block = run_online_capture(&options, &online, &library);
 
-        assert_eq!(online.calls(), vec![("周杰伦 晴天".to_owned(), 50, None)]);
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("晴天".to_owned(), 50, None),
+                ("周杰伦 晴天".to_owned(), 50, Some(SourceId::Bilibili)),
+                ("周杰伦".to_owned(), 50, Some(SourceId::Bilibili)),
+            ]
+        );
         assert_eq!(table_of_block(&block).1.len(), 1);
     }
 
@@ -8674,7 +9135,7 @@ mod tests {
         assert!(block.outputs.iter().any(|output| matches!(
             output,
             Output::Hint { text, .. }
-                if text.contains("过滤前有 1 条，被 --artist 过滤掉了 1 条")
+                if text.contains("过滤前有 3 条，被 --artist 过滤掉了 3 条")
         )));
     }
 
@@ -8695,6 +9156,7 @@ mod tests {
             has_keyword: false,
             up: None,
             mid: None,
+            no_filter: false,
         };
 
         let block = run_online_capture(&options, &online, &library);
@@ -8733,6 +9195,7 @@ mod tests {
             has_keyword: true,
             up: None,
             mid: None,
+            no_filter: false,
         };
 
         run_online_capture(&options, &online, &library);
@@ -8751,6 +9214,7 @@ mod tests {
             has_keyword: !keyword.is_empty(),
             up: up.map(str::to_owned),
             mid,
+            no_filter: false,
         }
     }
 
@@ -9276,6 +9740,85 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push((mid, name.to_owned(), keyword.to_owned(), limit));
+            self.archives.clone()
+        }
+    }
+
+    struct ChannelOnline {
+        by_query: HashMap<String, Vec<SourceTrack>>,
+        resolution: Result<UpResolution, CmdError>,
+        archives: Result<Vec<SourceTrack>, CmdError>,
+        calls: Mutex<Vec<(String, Option<SourceId>)>>,
+        resolve_calls: AtomicUsize,
+        archive_calls: AtomicUsize,
+    }
+
+    impl ChannelOnline {
+        fn new(
+            by_query: HashMap<String, Vec<SourceTrack>>,
+            resolution: Result<UpResolution, CmdError>,
+            archives: Result<Vec<SourceTrack>, CmdError>,
+        ) -> Self {
+            Self {
+                by_query,
+                resolution,
+                archives,
+                calls: Mutex::new(Vec::new()),
+                resolve_calls: AtomicUsize::new(0),
+                archive_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, Option<SourceId>)> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl OnlineApi for ChannelOnline {
+        fn search_all(&self, query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
+            self.search_all_for(query, _limit, None)
+        }
+
+        fn search_all_for(
+            &self,
+            query: &str,
+            _limit: usize,
+            source: Option<SourceId>,
+        ) -> Result<OnlineSearch, CmdError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((query.to_owned(), source));
+            Ok(OnlineSearch {
+                tracks: self.by_query.get(query).cloned().unwrap_or_default(),
+                all_failed: false,
+            })
+        }
+
+        fn prepare(
+            &self,
+            _track: &SourceTrack,
+            _progress: &mut dyn FnMut(u64),
+        ) -> Result<PreparedTrack, CmdError> {
+            Err(CmdError::new("E_SRC_UNAVAILABLE", "测试未实现"))
+        }
+
+        fn resolve_up(&self, _name: &str) -> Result<UpResolution, CmdError> {
+            self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            self.resolution.clone()
+        }
+
+        fn up_archives(
+            &self,
+            _mid: u64,
+            _name: &str,
+            _keyword: &str,
+            _limit: usize,
+        ) -> Result<Vec<SourceTrack>, CmdError> {
+            self.archive_calls.fetch_add(1, Ordering::SeqCst);
             self.archives.clone()
         }
     }
