@@ -122,8 +122,8 @@
   white-space: nowrap;
   cursor: pointer;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    background-color var(--np-dur-instant) var(--np-ease-standard),
+    color var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-lab__chip:hover:not([aria-pressed="true"]) {
@@ -174,8 +174,8 @@ html[data-theme="phosphor"]
   color: var(--fg-muted);
   cursor: pointer;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    background-color var(--np-dur-instant) var(--np-ease-standard),
+    color var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-lab__window-btn svg {
@@ -314,8 +314,8 @@ html[data-theme="phosphor"]
 
 /*
  * 下层焦点卡（T-0050 B 正确形状）：同宽、同圆角、向下偏移 2px。
- * 默认用 clip-path 完全裁掉；聚焦从左往右揭示（220ms），
- * 失焦从右往左退回（160ms）。不做 scaleX，圆角不会拉伸。
+ * 默认用 clip-path 完全裁掉；聚焦从左往右揭示（switch/base），
+ * 失焦从右往左退回（exit/fast）。不做 scaleX，圆角不会拉伸。
  */
 .np-lab__input-row::after {
   position: absolute;
@@ -328,14 +328,14 @@ html[data-theme="phosphor"]
   clip-path: inset(0 100% 0 0);
   content: "";
   pointer-events: none;
-  transition: clip-path var(--np-dur-focus-out) var(--np-ease-focus-out);
+  transition: clip-path var(--np-dur-fast) var(--np-ease-accelerate);
 }
 
 .np-lab__input-row.is-focused::after,
 .np-lab__input-row:focus-within::after {
   clip-path: inset(0 0 0 0);
-  transition-duration: var(--np-dur-focus-in);
-  transition-timing-function: var(--np-ease-focus-in);
+  transition-duration: var(--np-dur-base);
+  transition-timing-function: var(--np-ease-decelerate);
 }
 
 .np-lab__prompt {
@@ -395,6 +395,9 @@ html[data-theme="phosphor"]
   font-family: var(--np-font-mono);
   font-size: var(--fs-11);
   cursor: default;
+  transition:
+    background-color var(--np-dur-fast) var(--np-ease-standard),
+    box-shadow var(--np-dur-fast) var(--np-ease-standard);
 }
 
 .np-lab__completion-item[data-active="true"] {
@@ -450,7 +453,7 @@ html[data-theme="phosphor"]
 
 /*
  * 候选动效（T-0051 E）：首次出现淡入 + 上移 4px；连续输入但内容变了
- * 用更轻的淡入 + 2px，不重播入场。120ms 走 --np-dur-fast。
+ * 用更轻的淡入 + 4px，不重播入场；时长走 enter/base。
  * 内容没变时 CommandInput 不改变 key/data-motion，所以不会重新触发。
  */
 @keyframes np-completion-enter {
@@ -476,11 +479,11 @@ html[data-theme="phosphor"]
 }
 
 .np-lab__input-row[data-completion-motion="enter"] .np-lab__completion {
-  animation: np-completion-enter var(--np-dur-fast) var(--np-ease-out);
+  animation: np-completion-enter var(--np-dur-base) var(--np-ease-decelerate);
 }
 
 .np-lab__input-row[data-completion-motion="update"] .np-lab__completion {
-  animation: np-completion-update var(--np-dur-fast) var(--np-ease-out);
+  animation: np-completion-update var(--np-dur-base) var(--np-ease-decelerate);
 }
 
 .np-lab__run {
@@ -497,8 +500,8 @@ html[data-theme="phosphor"]
   line-height: 1;
   cursor: pointer;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    background-color var(--np-dur-instant) var(--np-ease-standard),
+    color var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-lab__run:hover:not(:disabled) {
@@ -644,8 +647,8 @@ html[data-theme="phosphor"]
   line-height: 1;
   cursor: pointer;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    background-color var(--np-dur-instant) var(--np-ease-standard),
+    color var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-score__score:hover {
@@ -675,6 +678,19 @@ html[data-theme="phosphor"]
 
   .np-lab__completion {
     animation: none;
+  }
+
+  .np-lab__completion-item {
+    transition: none;
+  }
+
+  .np-lab__input-row::after {
+    transition: none;
+  }
+
+  .np-lab__input-row.is-focused::after,
+  .np-lab__input-row:focus-within::after {
+    clip-path: inset(0 0 0 0);
   }
 }
 

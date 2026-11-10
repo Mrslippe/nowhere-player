@@ -138,7 +138,7 @@
   box-shadow: var(--np-shadow-float);
 }
 
-/* ── 控制键：默认隐藏，卡片 hover 后 120ms 淡入 ──────── */
+/* ── 控制键：默认隐藏，卡片 hover 后 feedback/instant 淡入 ── */
 .np-player-card__controls {
   position: absolute;
   /*
@@ -166,8 +166,8 @@
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity var(--np-dur-fast) var(--np-ease-out),
-    visibility 0s linear var(--np-dur-fast);
+    opacity var(--np-dur-instant) var(--np-ease-standard),
+    visibility 0s linear var(--np-dur-instant);
 }
 
 .np-player-card:hover .np-player-card__controls,
@@ -176,7 +176,7 @@
   visibility: visible;
   pointer-events: auto;
   transition:
-    opacity var(--np-dur-fast) var(--np-ease-out),
+    opacity var(--np-dur-instant) var(--np-ease-standard),
     visibility 0s linear 0s;
 }
 
@@ -311,8 +311,8 @@
   white-space: nowrap;
   pointer-events: none;
   opacity: 1;
-  transition: opacity var(--np-dur-fast) var(--np-ease-out);
-  animation: np-volume-in var(--np-dur-fast) var(--np-ease-out);
+  transition: opacity var(--np-dur-fast) var(--np-ease-accelerate);
+  animation: np-volume-in var(--np-dur-base) var(--np-ease-decelerate);
 }
 
 .np-player-card__volume[data-fading="true"] {
@@ -482,8 +482,10 @@
  * 3px 轨道 + 9px 琥珀圆播放头；28 段碎块彻底移除。
  */
 .np-player-card__progress {
+  position: relative;
   width: 100%;
   height: 3px;
+  container-type: inline-size;
   overflow: visible;
   border-radius: var(--np-radius-pill);
   background: color-mix(in srgb, var(--fg) 20%, transparent);
@@ -496,7 +498,7 @@
 .np-player-card__progress::after {
   position: absolute;
   top: 50%;
-  left: calc(var(--np-progress) * 100%);
+  left: 0;
   width: 9px;
   height: 9px;
   border-radius: var(--np-radius-circle);
@@ -505,8 +507,10 @@
   outline-offset: 0;
   content: "";
   pointer-events: none;
-  transform: translate(-50%, -50%);
-  transition: left var(--np-dur-progress) var(--np-ease-out);
+  transform:
+    translateX(calc(var(--np-progress) * 100cqw))
+    translate(-50%, -50%);
+  transition: transform var(--np-dur-base) var(--np-ease-linear);
 }
 
 .np-player-card[data-state="idle"] .np-player-card__progress::after,
@@ -652,28 +656,28 @@
 
 /* ── T-0041 动效：切歌 / 播放暂停 / 音量 ─────────────── */
 /*
- * 切歌：封面、标题、艺人共用同一条 220ms 淡入（13.1/13.2），不做缩放。
+ * 切歌：封面、标题、艺人共用同一条 switch/slow 淡入（13.1/13.2），不做缩放。
  * data-track-anim 在 1/2 间交替，让同名内容变化也能重启动画。
  */
 .np-player-card[data-track-anim="1"] .np-player-card__cover,
 .np-player-card[data-track-anim="1"] .np-player-card__title,
 .np-player-card[data-track-anim="1"] .np-player-card__subtitle {
-  animation: np-track-fade-a var(--np-dur-mid) var(--np-ease-out) both;
+  animation: np-track-fade-a var(--np-dur-slow) var(--np-ease-standard) both;
 }
 
 .np-player-card[data-track-anim="2"] .np-player-card__cover,
 .np-player-card[data-track-anim="2"] .np-player-card__title,
 .np-player-card[data-track-anim="2"] .np-player-card__subtitle {
-  animation: np-track-fade-b var(--np-dur-mid) var(--np-ease-out) both;
+  animation: np-track-fade-b var(--np-dur-slow) var(--np-ease-standard) both;
 }
 
-/* 播放/暂停：图标交换，120ms 内 opacity + blur + scale（8.2）。 */
+/* 播放/暂停：图标交换，select/instant 的 opacity + blur + scale（8.2）。 */
 .np-player-card__play.is-play .np-icon {
-  animation: np-play-icon-a var(--np-dur-fast) var(--np-ease-out);
+  animation: np-play-icon-a var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-player-card__play.is-pause .np-icon {
-  animation: np-play-icon-b var(--np-dur-fast) var(--np-ease-out);
+  animation: np-play-icon-b var(--np-dur-instant) var(--np-ease-standard);
 }
 
 @keyframes np-track-fade-a {

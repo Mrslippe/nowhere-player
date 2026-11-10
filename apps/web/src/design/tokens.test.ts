@@ -55,10 +55,6 @@ const REQUIRED_TOKENS = [
   "--shadow-1",
   "--shadow-2",
   "--shadow-window",
-  "--dur-fast",
-  "--dur-base",
-  "--dur-slow",
-  "--ease-out",
 ] as const;
 
 const COLOR_TOKENS = [

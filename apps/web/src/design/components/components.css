@@ -18,10 +18,10 @@
   cursor: pointer;
   user-select: none;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    filter var(--dur-fast) var(--ease-out);
+    background-color var(--np-dur-instant) var(--np-ease-standard),
+    border-color var(--np-dur-instant) var(--np-ease-standard),
+    color var(--np-dur-instant) var(--np-ease-standard),
+    filter var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-btn[data-size="sm"] {
@@ -107,8 +107,8 @@
   color: var(--fg-muted);
   cursor: pointer;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    background-color var(--np-dur-instant) var(--np-ease-standard),
+    color var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-icon-btn[data-size="sm"] {
@@ -174,12 +174,12 @@
   background: var(--accent);
   transform-origin: left center;
   transform: scaleX(var(--np-progress, 0));
-  transition: transform var(--np-dur-progress) var(--np-ease-out);
+  transition: transform var(--np-dur-base) var(--np-ease-linear);
 }
 
 .np-progress[data-indeterminate="true"] .np-progress__indicator {
   transform: scaleX(0.3);
-  animation: np-progress-indeterminate 1.2s var(--ease-out) infinite;
+  animation: np-progress-indeterminate 1.2s var(--np-ease-linear) infinite;
 }
 
 @keyframes np-progress-indeterminate {

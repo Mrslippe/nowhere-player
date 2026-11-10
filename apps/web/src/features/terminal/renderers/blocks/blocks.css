@@ -23,7 +23,7 @@
   flex-direction: column;
   gap: var(--np-space-1);
   min-width: 0;
-  animation: np-block-in var(--np-dur-mid) var(--np-ease-out) both;
+  animation: np-block-in var(--np-dur-base) var(--np-ease-decelerate) both;
 }
 
 .np-blocks-item__input {
@@ -75,7 +75,7 @@
   height: 4px;
   border-radius: var(--np-radius-circle);
   background: var(--fg-faint);
-  transition: background-color var(--np-dur-fast) var(--np-ease-out);
+  transition: background-color var(--np-dur-fast) var(--np-ease-standard);
 }
 
 .np-blocks-item[data-status="running"] .np-blocks-item__status-dot,
@@ -240,7 +240,7 @@
 }
 
 .np-blocks-table[data-selectable="true"] tbody tr {
-  transition: background-color var(--dur-fast) var(--ease-out);
+  transition: background-color var(--np-dur-instant) var(--np-ease-standard);
 }
 
 .np-blocks-table[data-selectable="true"] tbody tr:hover {
@@ -287,7 +287,7 @@
   border-left: var(--np-border-error-card);
   border-radius: var(--np-radius-control);
   background: var(--bg-hover);
-  animation: np-error-border var(--np-dur-fast) var(--np-ease-out);
+  animation: np-error-border var(--np-dur-base) var(--np-ease-decelerate);
 }
 
 .np-blocks-error__head {
@@ -392,7 +392,7 @@
 
 /* ── 动效 ───────────────────────────────────────────── */
 /*
- * 新块统一入场：6px 上移 + 淡入，220ms。motion-ref 13.2 的 20-30px
+ * 新块统一入场：4px 上移 + 淡入，enter/base。motion-ref 13.2 的 20-30px
  * 是网页卡片语境；22px 行高的终端块取 6px，避免“飞入”。不做逐条延迟。
  */
 @keyframes np-block-in {

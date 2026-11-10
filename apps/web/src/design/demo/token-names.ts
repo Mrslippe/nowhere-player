@@ -43,10 +43,14 @@ export const RADIUS_TOKENS = [
 export const SHADOW_TOKENS = ["--shadow-1", "--shadow-2"] as const;
 
 export const MOTION_TOKENS = [
-  "--dur-fast",
-  "--dur-base",
-  "--dur-slow",
-  "--ease-out",
+  "--np-dur-instant",
+  "--np-dur-fast",
+  "--np-dur-base",
+  "--np-dur-slow",
+  "--np-ease-standard",
+  "--np-ease-decelerate",
+  "--np-ease-accelerate",
+  "--np-ease-linear",
 ] as const;
 
 export const ALL_TOKENS = [

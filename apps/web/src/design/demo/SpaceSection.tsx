@@ -56,7 +56,7 @@ export function SpaceSection({ snapshot }: { snapshot: DesignSnapshot | null }) 
         ))}
       </div>
 
-      <h3 className="demo__subtitle">动效 --dur-* / --ease-out</h3>
+      <h3 className="demo__subtitle">动效 --np-dur-* / --np-ease-*</h3>
       <div className="motion-list">
         {MOTION_TOKENS.map((token) => (
           <div className="motion-row" key={token}>
