@@ -1357,6 +1357,11 @@ impl Executor<'_> {
         self.library.remember_search(tracks.clone());
 
         if tracks.is_empty() {
+            // 空搜索也是一张（零行）Search 表：清掉旧上下文，避免 play 播到上一次结果。
+            self.library.set_active_listing(ActiveListing {
+                source: ListingSource::Search,
+                len: 0,
+            });
             return Ok(Outcome {
                 outputs: vec![text_of(vec![
                     bold("没有找到"),
@@ -2009,7 +2014,7 @@ fn format_relative_time(timestamp_ms: i64) -> String {
 /// `play <n>` 命中队列时的输出：写明来源是播放队列。
 fn queue_jump_outcome(index: usize, view: &QueueView) -> Outcome {
     let mut outcome = jump_outcome("播放", index, view);
-    outcome.footer = Some(format!("来源：播放队列 · 队列 {} 首", view.tracks.len()));
+    outcome.footer = Some(format!("来源：播放队列（共 {} 首）", view.tracks.len()));
     outcome
 }
 
@@ -3433,12 +3438,11 @@ pub(crate) fn run_online_search(
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
     hits.truncate(limit);
     library.remember_hits(hits.clone());
-    if !hits.is_empty() {
-        library.set_active_listing(ActiveListing {
-            source: ListingSource::Search,
-            len: hits.len(),
-        });
-    }
+    // 即使 0 条，也把上下文切成“空的 Search”，不保留上一张旧表。
+    library.set_active_listing(ActiveListing {
+        source: ListingSource::Search,
+        len: hits.len(),
+    });
 
     let outcome = build_search_outcome(keyword, &hits, all_failed);
     emit(&finish_block(
@@ -5267,6 +5271,30 @@ mod tests {
     }
 
     #[test]
+    fn empty_local_search_clears_old_context_to_zero() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: 1,
+        });
+
+        let empty = done_with_library(&api, &library, "search nothing");
+        assert_eq!(empty.status, BlockStatus::Done);
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Search,
+                len: 0,
+            })
+        );
+
+        let play = done_with_library(&api, &library, "play 1");
+        assert_eq!(play.status, BlockStatus::Error);
+        assert!(error_fields(&play).1.contains("搜索结果只有 0 条"));
+    }
+
+    #[test]
     fn search_requires_a_keyword() {
         let api = FakeApi::new();
         let library = FakeLibraryApi::new();
@@ -6019,6 +6047,39 @@ mod tests {
             dir,
             OnlineService::from_parts(registry, cache, transport, covers_dir, cover_store),
         )
+    }
+
+    #[test]
+    fn run_online_search_empty_hits_sets_empty_search_listing() {
+        let library = FakeLibraryApi::new();
+        let online = FakeOnline {
+            tracks: Vec::new(),
+            all_failed: false,
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+        let template = running_template();
+
+        run_online_search(
+            "nothing",
+            MAX_SEARCH_RESULTS,
+            &online,
+            &library,
+            &emit,
+            &template,
+            &|| 2_000,
+        );
+
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Search,
+                len: 0,
+            })
+        );
     }
 
     #[test]
