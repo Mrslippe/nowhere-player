@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 use crate::error::Result;
 use crate::metadata::ParsedTrack;
@@ -443,6 +443,294 @@ fn get_or_create_album(
         params![title, album_artist_id, year, cover_key],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+/// 一个歌单（不含条目）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 歌单列表行（含条目数）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistSummary {
+    pub id: i64,
+    pub name: String,
+    pub item_count: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 歌单条目；元数据是冗余快照，源不可用时仍可显示。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistItem {
+    pub id: i64,
+    pub playlist_id: i64,
+    pub position: i64,
+    pub kind: String,
+    pub path: String,
+    pub source: String,
+    pub source_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: i64,
+    pub added_at: i64,
+}
+
+/// 新增条目的输入（position / id 由仓储分配）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPlaylistItem {
+    pub kind: String,
+    pub path: String,
+    pub source: String,
+    pub source_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: i64,
+}
+
+/// 歌单名校验并 trim。
+pub fn validate_playlist_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 48 {
+        return Err(crate::LibraryError::Playlist(
+            "歌单名长度必须是 1-48 个字符".to_string(),
+        ));
+    }
+    if !name.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || ('\u{4e00}'..='\u{9fa5}').contains(&ch)
+            || ch == ' '
+            || ch == '-'
+            || ch == '_'
+    }) {
+        return Err(crate::LibraryError::Playlist(
+            "歌单名只能包含中文、字母、数字、空格、- 和 _".to_string(),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn unique_playlist_error(error: rusqlite::Error, name: &str) -> crate::LibraryError {
+    if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation) {
+        crate::LibraryError::Playlist(format!("歌单已存在：{name}"))
+    } else {
+        crate::LibraryError::Sqlite(error)
+    }
+}
+
+pub(crate) fn create_playlist(conn: &Connection, name: &str, now: i64) -> Result<i64> {
+    let name = validate_playlist_name(name)?;
+    conn.execute(
+        "INSERT INTO playlists (name, created_at, updated_at) VALUES (?1, ?2, ?2)",
+        params![name, now],
+    )
+    .map_err(|error| unique_playlist_error(error, &name))?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub(crate) fn rename_playlist(conn: &Connection, id: i64, name: &str, now: i64) -> Result<()> {
+    let name = validate_playlist_name(name)?;
+    let changed = conn
+        .execute(
+            "UPDATE playlists SET name = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, name, now],
+        )
+        .map_err(|error| unique_playlist_error(error, &name))?;
+    if changed == 0 {
+        return Err(crate::LibraryError::Playlist("歌单不存在".to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_playlist(conn: &Connection, id: i64) -> Result<()> {
+    let changed = conn.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
+    if changed == 0 {
+        return Err(crate::LibraryError::Playlist("歌单不存在".to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn list_playlists(conn: &Connection) -> Result<Vec<PlaylistSummary>> {
+    let mut statement = conn.prepare(
+        "SELECT p.id, p.name, p.created_at, p.updated_at, COUNT(i.id)
+         FROM playlists p
+         LEFT JOIN playlist_items i ON i.playlist_id = p.id
+         GROUP BY p.id
+         ORDER BY p.name COLLATE NOCASE",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(PlaylistSummary {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+            item_count: row.get::<_, i64>(4)?.max(0) as u64,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::LibraryError::from)
+}
+
+pub(crate) fn playlist_by_name(conn: &Connection, name: &str) -> Result<Option<Playlist>> {
+    let name = validate_playlist_name(name)?;
+    conn.query_row(
+        "SELECT id, name, created_at, updated_at FROM playlists WHERE name = ?1 COLLATE NOCASE",
+        [name],
+        |row| {
+            Ok(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(crate::LibraryError::from)
+}
+
+pub(crate) fn playlist_by_id(conn: &Connection, id: i64) -> Result<Playlist> {
+    conn.query_row(
+        "SELECT id, name, created_at, updated_at FROM playlists WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| crate::LibraryError::Playlist("歌单不存在".to_string()))
+}
+
+pub(crate) fn get_playlist(conn: &Connection, id: i64) -> Result<(Playlist, Vec<PlaylistItem>)> {
+    let playlist = playlist_by_id(conn, id)?;
+    let mut statement = conn.prepare(
+        "SELECT id, playlist_id, position, kind, path, source, source_id, title, artist,
+                album, duration_ms, added_at
+         FROM playlist_items WHERE playlist_id = ?1 ORDER BY position",
+    )?;
+    let rows = statement.query_map([id], map_playlist_item)?;
+    let items = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::LibraryError::from)?;
+    Ok((playlist, items))
+}
+
+pub(crate) fn add_playlist_item(
+    conn: &Connection,
+    playlist_id: i64,
+    item: &NewPlaylistItem,
+    now: i64,
+) -> Result<PlaylistItem> {
+    playlist_by_id(conn, playlist_id)?;
+    let position: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_items WHERE playlist_id = ?1",
+        [playlist_id],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO playlist_items (
+             playlist_id, position, kind, path, source, source_id, title, artist, album,
+             duration_ms, added_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            playlist_id,
+            position,
+            item.kind,
+            item.path,
+            item.source,
+            item.source_id,
+            item.title,
+            item.artist,
+            item.album,
+            item.duration_ms,
+            now,
+        ],
+    )?;
+    conn.execute(
+        "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+        params![playlist_id, now],
+    )?;
+    let id = conn.last_insert_rowid();
+    Ok(PlaylistItem {
+        id,
+        playlist_id,
+        position,
+        kind: item.kind.clone(),
+        path: item.path.clone(),
+        source: item.source.clone(),
+        source_id: item.source_id.clone(),
+        title: item.title.clone(),
+        artist: item.artist.clone(),
+        album: item.album.clone(),
+        duration_ms: item.duration_ms,
+        added_at: now,
+    })
+}
+
+pub(crate) fn remove_playlist_item(
+    conn: &Connection,
+    playlist_id: i64,
+    position: i64,
+    now: i64,
+) -> Result<()> {
+    playlist_by_id(conn, playlist_id)?;
+    let changed = conn.execute(
+        "DELETE FROM playlist_items WHERE playlist_id = ?1 AND position = ?2",
+        params![playlist_id, position],
+    )?;
+    if changed == 0 {
+        return Err(crate::LibraryError::Playlist(format!(
+            "歌单里没有第 {} 首",
+            position + 1
+        )));
+    }
+    // 先挪到负数，避免 shift 时与未移动的行撞 UNIQUE(playlist_id, position)。
+    conn.execute(
+        "UPDATE playlist_items SET position = -position
+         WHERE playlist_id = ?1 AND position > ?2",
+        params![playlist_id, position],
+    )?;
+    conn.execute(
+        "UPDATE playlist_items SET position = -position - 1
+         WHERE playlist_id = ?1 AND position < 0",
+        [playlist_id],
+    )?;
+    conn.execute(
+        "UPDATE playlists SET updated_at = ?2 WHERE id = ?1",
+        params![playlist_id, now],
+    )?;
+    Ok(())
+}
+
+fn map_playlist_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaylistItem> {
+    Ok(PlaylistItem {
+        id: row.get(0)?,
+        playlist_id: row.get(1)?,
+        position: row.get(2)?,
+        kind: row.get(3)?,
+        path: row.get(4)?,
+        source: row.get(5)?,
+        source_id: row.get(6)?,
+        title: row.get(7)?,
+        artist: row.get(8)?,
+        album: row.get(9)?,
+        duration_ms: row.get(10)?,
+        added_at: row.get(11)?,
+    })
 }
 
 #[cfg(test)]

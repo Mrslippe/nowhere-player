@@ -114,6 +114,50 @@ impl Database {
         repo::list_recent(&self.conn, limit)
     }
 
+    /// 新建歌单；重名或非法名称返回 `LibraryError::Playlist`。
+    pub fn create_playlist(&self, name: &str) -> Result<i64> {
+        repo::create_playlist(&self.conn, name, now_ms())
+    }
+
+    /// 重命名歌单。
+    pub fn rename_playlist(&self, id: i64, name: &str) -> Result<()> {
+        repo::rename_playlist(&self.conn, id, name, now_ms())
+    }
+
+    /// 删除歌单（连同条目）。
+    pub fn delete_playlist(&self, id: i64) -> Result<()> {
+        repo::delete_playlist(&self.conn, id)
+    }
+
+    /// 全部歌单（含条目数）。
+    pub fn list_playlists(&self) -> Result<Vec<repo::PlaylistSummary>> {
+        repo::list_playlists(&self.conn)
+    }
+
+    /// 按名字查歌单（不区分大小写）。
+    pub fn playlist_by_name(&self, name: &str) -> Result<Option<repo::Playlist>> {
+        repo::playlist_by_name(&self.conn, name)
+    }
+
+    /// 按 id 取歌单与条目。
+    pub fn get_playlist(&self, id: i64) -> Result<(repo::Playlist, Vec<repo::PlaylistItem>)> {
+        repo::get_playlist(&self.conn, id)
+    }
+
+    /// 追加条目；position 由仓储分配。
+    pub fn add_playlist_item(
+        &self,
+        id: i64,
+        item: &repo::NewPlaylistItem,
+    ) -> Result<repo::PlaylistItem> {
+        repo::add_playlist_item(&self.conn, id, item, now_ms())
+    }
+
+    /// 删除指定 position 的条目并重排后续 position。
+    pub fn remove_playlist_item(&self, id: i64, position: i64) -> Result<()> {
+        repo::remove_playlist_item(&self.conn, id, position, now_ms())
+    }
+
     /// 一张专辑的曲目，按 `disc_no, track_no` 排序。
     pub fn tracks_by_album(&self, album_id: i64) -> Result<Vec<Track>> {
         repo::tracks_by_album(&self.conn, album_id)

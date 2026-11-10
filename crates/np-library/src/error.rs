@@ -25,6 +25,10 @@ pub enum LibraryError {
     /// 后台线程异常终止。
     #[error("扫描线程异常终止")]
     WorkerPanicked,
+
+    /// 歌单业务错误（重名、校验、不存在等）。
+    #[error("{0}")]
+    Playlist(String),
 }
 
 /// crate 内部使用的 `Result` 别名。

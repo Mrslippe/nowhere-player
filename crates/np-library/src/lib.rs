@@ -13,6 +13,8 @@ mod schema;
 pub use covers::{CoverCacheUsage, cover_cache_usage, store_cover};
 pub use db::Database;
 pub use error::{LibraryError, Result};
-pub use repo::{Stats, Track};
+pub use repo::{
+    NewPlaylistItem, Playlist, PlaylistItem, PlaylistSummary, Stats, Track, validate_playlist_name,
+};
 pub use scan::{NoopObserver, ScanObserver, ScanReport, Scanner};
 pub use schema::SCHEMA_VERSION;
