@@ -360,6 +360,148 @@ const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[
     },
 ];
 
+const THEME_SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
+        name: "list",
+        summary: "列出内置与用户主题",
+        usage: "theme list",
+        args: &[],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "set",
+        summary: "切换主题并立即生效",
+        usage: "theme set <id>",
+        args: &[ArgSpec {
+            name: "id",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "export",
+        summary: "把内置主题导出成可编辑的 JSON",
+        usage: "theme export <id>",
+        args: &[ArgSpec {
+            name: "id",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+];
+
+const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
+        name: "list",
+        summary: "列出全部设置",
+        usage: "config list",
+        args: &[],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "get",
+        summary: "读取一个设置项",
+        usage: "config get <key>",
+        args: &[ArgSpec {
+            name: "key",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "set",
+        summary: "写入一个设置项",
+        usage: "config set <key> <value>",
+        args: &[
+            ArgSpec {
+                name: "key",
+                kind: ArgKind::Text,
+                required: true,
+            },
+            ArgSpec {
+                name: "value",
+                kind: ArgKind::Text,
+                required: true,
+            },
+        ],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "unset",
+        summary: "删除一个设置项",
+        usage: "config unset <key>",
+        args: &[ArgSpec {
+            name: "key",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "reset",
+        summary: "清空设置，恢复默认",
+        usage: "config reset",
+        args: &[],
+        flags: &[],
+    },
+];
+
+const SOURCE_SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
+        name: "list",
+        summary: "列出在线音源与启用状态",
+        usage: "source list",
+        args: &[],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "enable",
+        summary: "启用一个在线音源",
+        usage: "source enable <id>",
+        args: &[ArgSpec {
+            name: "id",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "disable",
+        summary: "禁用一个在线音源",
+        usage: "source disable <id>",
+        args: &[ArgSpec {
+            name: "id",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+];
+
+const CACHE_SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
+        name: "stat",
+        summary: "统计 streams / covers 缓存",
+        usage: "cache stat",
+        args: &[],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "clear",
+        summary: "清空指定缓存",
+        usage: "cache clear [streams|covers|all]",
+        args: &[ArgSpec {
+            name: "target",
+            kind: ArgKind::Enum(&["streams", "covers", "all"]),
+            required: false,
+        }],
+        flags: &[],
+    },
+];
+
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "play",
@@ -490,6 +632,46 @@ const COMMANDS: &[CommandSpec] = &[
         }],
         subcommands: &[],
         default_subcommand: None,
+    },
+    CommandSpec {
+        name: "theme",
+        aliases: &[],
+        summary: "主题：列出、切换、导出",
+        usage: "theme [list|set|export]",
+        args: &[],
+        flags: &[],
+        subcommands: THEME_SUBCOMMANDS,
+        default_subcommand: Some("list"),
+    },
+    CommandSpec {
+        name: "config",
+        aliases: &[],
+        summary: "设置：列出、读取、写入、删除、重置",
+        usage: "config [list|get|set|unset|reset]",
+        args: &[],
+        flags: &[],
+        subcommands: CONFIG_SUBCOMMANDS,
+        default_subcommand: Some("list"),
+    },
+    CommandSpec {
+        name: "source",
+        aliases: &[],
+        summary: "在线音源：列出、启用、禁用",
+        usage: "source [list|enable|disable]",
+        args: &[],
+        flags: &[],
+        subcommands: SOURCE_SUBCOMMANDS,
+        default_subcommand: Some("list"),
+    },
+    CommandSpec {
+        name: "cache",
+        aliases: &[],
+        summary: "缓存：统计、清理",
+        usage: "cache [stat|clear]",
+        args: &[],
+        flags: &[],
+        subcommands: CACHE_SUBCOMMANDS,
+        default_subcommand: Some("stat"),
     },
     CommandSpec {
         name: "help",

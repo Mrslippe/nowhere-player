@@ -607,4 +607,55 @@ mod tests {
         assert_eq!(error.code, crate::CommandErrorCode::Arg);
         assert!(error.message.contains("不接受取值"));
     }
+
+    #[test]
+    fn parses_theme_family() {
+        let list = parse_ok("theme");
+        assert_eq!(list.spec.name, "theme");
+        assert_eq!(list.subcommand.map(|sub| sub.name), Some("list"));
+
+        let set = parse_ok("theme set ice");
+        assert_eq!(set.subcommand.map(|sub| sub.name), Some("set"));
+        assert_eq!(set.positional, ["ice"]);
+
+        let export = parse_ok("theme export amber");
+        assert_eq!(export.subcommand.map(|sub| sub.name), Some("export"));
+    }
+
+    #[test]
+    fn parses_config_family() {
+        let set = parse_ok("config set playback.crossfadeMs 300");
+        assert_eq!(set.spec.name, "config");
+        assert_eq!(set.subcommand.map(|sub| sub.name), Some("set"));
+        assert_eq!(set.positional, ["playback.crossfadeMs", "300"]);
+
+        let reset = parse_ok("config reset");
+        assert_eq!(reset.subcommand.map(|sub| sub.name), Some("reset"));
+    }
+
+    #[test]
+    fn parses_source_and_cache_families() {
+        let disable = parse_ok("source disable bilibili");
+        assert_eq!(disable.spec.name, "source");
+        assert_eq!(disable.subcommand.map(|sub| sub.name), Some("disable"));
+        assert_eq!(disable.positional, ["bilibili"]);
+
+        let stat = parse_ok("cache");
+        assert_eq!(stat.subcommand.map(|sub| sub.name), Some("stat"));
+        let clear = parse_ok("cache clear");
+        assert_eq!(clear.subcommand.map(|sub| sub.name), Some("clear"));
+        assert!(clear.positional.is_empty());
+        let all = parse_ok("cache clear all");
+        assert_eq!(all.positional, ["all"]);
+    }
+
+    #[test]
+    fn cache_clear_rejects_unknown_target() {
+        let error = parse_err("cache clear nope");
+        assert_eq!(error.code, crate::CommandErrorCode::Arg);
+        assert_eq!(
+            error.usage.as_deref(),
+            Some("cache clear [streams|covers|all]")
+        );
+    }
 }
