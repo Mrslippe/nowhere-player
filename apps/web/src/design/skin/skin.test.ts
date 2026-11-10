@@ -37,6 +37,8 @@ const STRUCTURE_TOKENS = [
   "--np-border-error-card",
   "--np-border-table-header",
   "--np-border-width-emphasis",
+  "--np-border-window",
+  "--np-border-window-line",
   "--np-shadow-card",
   "--np-shadow-float",
   "--np-shadow-window",

@@ -32,6 +32,8 @@
   --np-border-width-emphasis: 2px; /* Kbd 底部厚边 */
   /* 滚动条滑块内缩：2px 透明边 + background-clip，让滑块比 10px 轨道窄。 */
   --np-border-thumb: 2px solid transparent;
+  --np-border-window: var(--border-window);
+  --np-border-window-line: 1px solid var(--border-window-line);
 
   /* ── 阴影 ─────────────────────────────────────────── */
   --np-shadow-card: var(--shadow-1);

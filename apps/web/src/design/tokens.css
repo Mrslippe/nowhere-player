@@ -32,6 +32,19 @@
   --line: rgba(255, 255, 255, 0.07);
   --line-strong: rgba(255, 255, 255, 0.14);
   --hi: rgba(255, 255, 255, 0.06);
+  /* T-0052：窗口边缘高光（1px 渐变环）。plain 亮一些，phosphor 更弱。 */
+  --border-window: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0.04)
+  );
+  --border-window-phosphor: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.06),
+    rgba(255, 255, 255, 0.02)
+  );
+  --border-window-line: rgba(255, 255, 255, 0.08);
+  --border-window-line-phosphor: rgba(255, 255, 255, 0.055);
 
   /* ── 间距：4pt 网格 ───────────────────────────────── */
   --sp-1: 4px;
