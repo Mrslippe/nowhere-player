@@ -329,7 +329,7 @@ mod tests {
     fn prefix_filters_command_names() {
         let completion = complete_static("pl", 2);
 
-        assert_eq!(texts(&completion), ["play"]);
+        assert_eq!(texts(&completion), ["play", "playlist"]);
         assert_eq!(completion.replace_start, 0);
         assert_eq!(completion.replace_end, 2);
         assert_eq!(completion.items[0].kind, CompletionKind::Command);
@@ -340,7 +340,7 @@ mod tests {
     fn prefix_match_is_case_insensitive_and_returns_canonical_name() {
         let completion = complete_static("PL", 2);
 
-        assert_eq!(texts(&completion), ["play"]);
+        assert_eq!(texts(&completion), ["play", "playlist"]);
     }
 
     #[test]
@@ -499,7 +499,7 @@ mod tests {
     fn cursor_past_the_end_is_clamped() {
         let completion = complete_static("pl", 99);
 
-        assert_eq!(texts(&completion), ["play"]);
+        assert_eq!(texts(&completion), ["play", "playlist"]);
         assert_eq!((completion.replace_start, completion.replace_end), (0, 2));
     }
 
@@ -541,6 +541,10 @@ mod tests {
                     "text": "play",
                     "kind": "command",
                     "summary": "播放队列中的曲目或文件；不带参数时继续当前曲目"
+                }, {
+                    "text": "playlist",
+                    "kind": "command",
+                    "summary": "歌单：列表、增删、显示、播放"
                 }]
             })
         );

@@ -947,6 +947,80 @@ mod tests {
     }
 
     #[test]
+    fn playlist_defaults_to_list() {
+        let parsed = parse_ok("playlist");
+        assert_eq!(parsed.spec.name, "playlist");
+        assert_eq!(parsed.subcommand.map(|sub| sub.name), Some("list"));
+    }
+
+    #[test]
+    fn playlist_create_keeps_quoted_chinese_name() {
+        let parsed = parse_ok(r#"playlist create "周杰伦 情歌""#);
+        assert_eq!(parsed.subcommand.map(|sub| sub.name), Some("create"));
+        assert_eq!(parsed.positional, ["周杰伦 情歌"]);
+    }
+
+    #[test]
+    fn playlist_create_rejects_unquoted_spaces() {
+        let error = parse_err("playlist create 周杰伦 情歌");
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert_eq!(error.usage.as_deref(), Some(r#"playlist create "<名字>""#));
+    }
+
+    #[test]
+    fn playlist_rename_takes_two_quoted_names() {
+        let parsed = parse_ok(r#"playlist rename "旧 名" "新 名""#);
+        assert_eq!(parsed.positional, ["旧 名", "新 名"]);
+    }
+
+    #[test]
+    fn playlist_show_takes_name() {
+        let parsed = parse_ok(r#"playlist show "周杰伦""#);
+        assert_eq!(parsed.subcommand.map(|sub| sub.name), Some("show"));
+        assert_eq!(parsed.positional, ["周杰伦"]);
+    }
+
+    #[test]
+    fn playlist_add_takes_name_and_integer() {
+        let parsed = parse_ok(r#"playlist add "周杰伦" 2"#);
+        assert_eq!(parsed.positional, ["周杰伦", "2"]);
+    }
+
+    #[test]
+    fn playlist_add_rejects_non_integer() {
+        let error = parse_err(r#"playlist add "周杰伦" x"#);
+        assert_eq!(error.code, CommandErrorCode::Arg);
+        assert!(error.message.contains("整数"), "{}", error.message);
+    }
+
+    #[test]
+    fn playlist_remove_takes_name_and_integer() {
+        let parsed = parse_ok(r#"playlist remove "周杰伦" 1"#);
+        assert_eq!(parsed.positional, ["周杰伦", "1"]);
+    }
+
+    #[test]
+    fn playlist_play_defaults_to_first() {
+        let parsed = parse_ok(r#"playlist play "周杰伦""#);
+        assert_eq!(parsed.positional, ["周杰伦"]);
+    }
+
+    #[test]
+    fn playlist_play_accepts_optional_index() {
+        let parsed = parse_ok(r#"playlist play "周杰伦" 3"#);
+        assert_eq!(parsed.positional, ["周杰伦", "3"]);
+    }
+
+    #[test]
+    fn playlist_delete_and_list_parse() {
+        assert_eq!(parse_ok(r#"playlist delete "A""#).positional, ["A"]);
+        assert_eq!(
+            parse_ok("playlist list").subcommand.map(|sub| sub.name),
+            Some("list")
+        );
+    }
+
+    #[test]
     fn parses_theme_family() {
         let list = parse_ok("theme");
         assert_eq!(list.spec.name, "theme");

@@ -506,6 +506,121 @@ const CACHE_SUBCOMMANDS: &[SubcommandSpec] = &[
     },
 ];
 
+const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
+        name: "list",
+        summary: "列出歌单",
+        usage: "playlist list",
+        args: &[],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "create",
+        summary: "新建歌单",
+        usage: "playlist create \"<名字>\"",
+        args: &[ArgSpec {
+            name: "名字",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "rename",
+        summary: "重命名歌单",
+        usage: "playlist rename \"<旧名>\" \"<新名>\"",
+        args: &[
+            ArgSpec {
+                name: "旧名",
+                kind: ArgKind::Text,
+                required: true,
+            },
+            ArgSpec {
+                name: "新名",
+                kind: ArgKind::Text,
+                required: true,
+            },
+        ],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "delete",
+        summary: "删除歌单",
+        usage: "playlist delete \"<名字>\"",
+        args: &[ArgSpec {
+            name: "名字",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "show",
+        summary: "显示歌单条目",
+        usage: "playlist show \"<名字>\"",
+        args: &[ArgSpec {
+            name: "名字",
+            kind: ArgKind::Text,
+            required: true,
+        }],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "add",
+        summary: "把当前列表第 n 条加入歌单",
+        usage: "playlist add \"<名字>\" <序号>",
+        args: &[
+            ArgSpec {
+                name: "名字",
+                kind: ArgKind::Text,
+                required: true,
+            },
+            ArgSpec {
+                name: "序号",
+                kind: ArgKind::Integer,
+                required: true,
+            },
+        ],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "remove",
+        summary: "删除歌单内第 n 首",
+        usage: "playlist remove \"<名字>\" <序号>",
+        args: &[
+            ArgSpec {
+                name: "名字",
+                kind: ArgKind::Text,
+                required: true,
+            },
+            ArgSpec {
+                name: "序号",
+                kind: ArgKind::Integer,
+                required: true,
+            },
+        ],
+        flags: &[],
+    },
+    SubcommandSpec {
+        name: "play",
+        summary: "播放歌单第 n 首",
+        usage: "playlist play \"<名字>\" [序号]",
+        args: &[
+            ArgSpec {
+                name: "名字",
+                kind: ArgKind::Text,
+                required: true,
+            },
+            ArgSpec {
+                name: "序号",
+                kind: ArgKind::Integer,
+                required: false,
+            },
+        ],
+        flags: &[],
+    },
+];
+
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "play",
@@ -703,6 +818,16 @@ const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         subcommands: CACHE_SUBCOMMANDS,
         default_subcommand: Some("stat"),
+    },
+    CommandSpec {
+        name: "playlist",
+        aliases: &[],
+        summary: "歌单：列表、增删、显示、播放",
+        usage: "playlist [list|create|rename|delete|show|add|remove|play]",
+        args: &[],
+        flags: &[],
+        subcommands: PLAYLIST_SUBCOMMANDS,
+        default_subcommand: Some("list"),
     },
     CommandSpec {
         name: "help",

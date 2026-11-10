@@ -29,8 +29,8 @@ use np_core::{
     validate_setting,
 };
 use np_library::{
-    CoverCacheUsage, Database, LibraryError, ScanObserver, ScanReport, Scanner, Stats, Track,
-    cover_cache_usage,
+    CoverCacheUsage, Database, LibraryError, NewPlaylistItem, Playlist, PlaylistItem,
+    PlaylistSummary, ScanObserver, ScanReport, Scanner, Stats, Track, cover_cache_usage,
 };
 use np_sources::{
     AudioSource, BilibiliSource, Downloader, HttpDownloader, MatchKind, NeteaseSource,
@@ -133,6 +133,31 @@ pub(crate) trait LibraryApi {
     /// 最近一次 `library list` 的曲目。
     fn library_listing(&self) -> Vec<Track> {
         Vec::new()
+    }
+
+    fn playlist_create(&self, _name: &str) -> Result<i64, CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_rename(&self, _id: i64, _name: &str) -> Result<(), CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_delete(&self, _id: i64) -> Result<(), CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_list(&self) -> Result<Vec<PlaylistSummary>, CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_by_name(&self, _name: &str) -> Result<Option<Playlist>, CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_get(&self, _id: i64) -> Result<(Playlist, Vec<PlaylistItem>), CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_add(&self, _id: i64, _item: &NewPlaylistItem) -> Result<PlaylistItem, CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
+    }
+    fn playlist_remove(&self, _id: i64, _position: i64) -> Result<(), CmdError> {
+        Err(CmdError::new("E_CMD_ARG", "歌单功能不可用"))
     }
 }
 
@@ -765,6 +790,7 @@ fn library_error(error: LibraryError) -> CmdError {
         LibraryError::Io(_) => "E_LIB_IO",
         LibraryError::Tag { .. } => "E_LIB_TAG",
         LibraryError::WorkerPanicked => "E_LIB_SCAN",
+        LibraryError::Playlist(_) => "E_CMD_ARG",
     };
     CmdError::new(code, error.to_string())
 }
@@ -1232,6 +1258,7 @@ impl Executor<'_> {
             "queue" => self.queue(parsed),
             "mode" => self.mode(parsed),
             "library" => self.library(parsed),
+            "playlist" => self.playlist(parsed),
             "search" => self.search(parsed),
             "theme" => self.theme(parsed),
             "config" => self.config(parsed),
@@ -1629,6 +1656,273 @@ impl Executor<'_> {
             outputs: vec![text_of(vec![bold("已加入 1 首")])],
             footer: Some(format!("队列现有 {} 首", view.tracks.len())),
         })
+    }
+
+    /// `playlist`：8 个子命令；所有名字按 COLLATE NOCASE 解析。
+    fn playlist(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let subcommand = parsed
+            .subcommand
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "playlist 缺少子命令"))?;
+        match subcommand.name {
+            "list" => {
+                let playlists = self.library.playlist_list()?;
+                if playlists.is_empty() {
+                    return Ok(Outcome {
+                        outputs: vec![text_of(vec![
+                            bold("还没有歌单"),
+                            dim(" · playlist create \"名字\" 新建"),
+                        ])],
+                        footer: None,
+                    });
+                }
+                let rows = playlists
+                    .iter()
+                    .map(|playlist| vec![playlist.name.clone(), playlist.item_count.to_string()])
+                    .collect();
+                Ok(Outcome {
+                    outputs: vec![Output::Table {
+                        columns: vec!["歌单".to_owned(), "条目".to_owned()],
+                        rows,
+                        selectable: false,
+                    }],
+                    footer: Some("playlist show \"名字\" 查看条目".to_owned()),
+                })
+            }
+            "create" => {
+                let name = positional_arg(parsed, "名字")?;
+                self.library.playlist_create(name)?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已创建歌单"),
+                        plain(format!(" · {name}")),
+                    ])],
+                    footer: Some("playlist add \"名字\" <序号> 加入当前列表条目".to_owned()),
+                })
+            }
+            "rename" => {
+                let old = positional_arg(parsed, "旧名")?;
+                let new = parsed
+                    .positional
+                    .get(1)
+                    .map(String::as_str)
+                    .ok_or_else(|| {
+                        CmdError::new("E_CMD_ARG", "缺少参数：新名")
+                            .with_hint("名字含空格时用引号：playlist rename \"旧名\" \"新名\"")
+                    })?;
+                let playlist = self.playlist_by_name(old)?;
+                self.library.playlist_rename(playlist.id, new)?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已重命名"),
+                        plain(format!(" · {old} → {new}")),
+                    ])],
+                    footer: None,
+                })
+            }
+            "delete" => {
+                let name = positional_arg(parsed, "名字")?;
+                let playlist = self.playlist_by_name(name)?;
+                self.library.playlist_delete(playlist.id)?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已删除歌单"),
+                        plain(format!(" · {name}")),
+                    ])],
+                    footer: None,
+                })
+            }
+            "show" => self.playlist_show(positional_arg(parsed, "名字")?),
+            "add" => {
+                let name = positional_arg(parsed, "名字")?;
+                let raw_index = parsed
+                    .positional
+                    .get(1)
+                    .map(String::as_str)
+                    .ok_or_else(|| CmdError::new("E_CMD_ARG", "缺少参数：序号"))?;
+                self.playlist_add(name, user_index(raw_index)?)
+            }
+            "remove" => {
+                let name = positional_arg(parsed, "名字")?;
+                let raw_index = parsed
+                    .positional
+                    .get(1)
+                    .map(String::as_str)
+                    .ok_or_else(|| CmdError::new("E_CMD_ARG", "缺少参数：序号"))?;
+                let index = user_index(raw_index)?;
+                let playlist = self.playlist_by_name(name)?;
+                self.library
+                    .playlist_remove(playlist.id, i64::try_from(index).unwrap_or(i64::MAX))?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已从歌单移除"),
+                        plain(format!(" · {name} 第 {} 首", index + 1)),
+                    ])],
+                    footer: None,
+                })
+            }
+            "play" => Err(CmdError::new("E_UNSUPPORTED", "playlist play 尚未接入")),
+            other => Err(CmdError::new(
+                "E_CMD_UNKNOWN",
+                format!("playlist 没有子命令：{other}"),
+            )),
+        }
+    }
+
+    fn playlist_by_name(&self, name: &str) -> Result<Playlist, CmdError> {
+        self.library.playlist_by_name(name)?.ok_or_else(|| {
+            CmdError::new("E_CMD_ARG", format!("歌单不存在：{name}"))
+                .with_hint("名字含空格时用引号：playlist show \"名字\"")
+        })
+    }
+
+    fn playlist_show(&self, name: &str) -> Result<Outcome, CmdError> {
+        let playlist = self.playlist_by_name(name)?;
+        let (_, items) = self.library.playlist_get(playlist.id)?;
+        self.library.set_active_listing(ActiveListing {
+            source: ListingSource::Playlist(playlist.name.clone()),
+            len: items.len(),
+        });
+        if items.is_empty() {
+            return Ok(Outcome {
+                outputs: vec![text_of(vec![
+                    bold(format!("歌单：{}", playlist.name)),
+                    dim(" · 0 首"),
+                ])],
+                footer: Some("playlist add \"名字\" <序号> 加入条目".to_owned()),
+            });
+        }
+        let rows = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let missing = item.kind == "local" && !Path::new(&item.path).is_file();
+                let title = if missing {
+                    format!("! {}", item.title)
+                } else {
+                    item.title.clone()
+                };
+                vec![
+                    (index + 1).to_string(),
+                    title,
+                    item.artist.clone(),
+                    if item.duration_ms > 0 {
+                        format_track_duration(item.duration_ms)
+                    } else {
+                        "—".to_owned()
+                    },
+                    playlist_item_source(item),
+                ]
+            })
+            .collect();
+        Ok(Outcome {
+            outputs: vec![
+                text_of(vec![
+                    bold(format!("歌单：{}", playlist.name)),
+                    dim(format!(" · {} 首", items.len())),
+                ]),
+                Output::Table {
+                    columns: vec![
+                        "序号".to_owned(),
+                        "标题".to_owned(),
+                        "艺人".to_owned(),
+                        "时长".to_owned(),
+                        "来源".to_owned(),
+                    ],
+                    rows,
+                    selectable: true,
+                },
+            ],
+            footer: Some("输入 play <序号> 播放".to_owned()),
+        })
+    }
+
+    fn playlist_add(&self, name: &str, index: usize) -> Result<Outcome, CmdError> {
+        let playlist = self.playlist_by_name(name)?;
+        let listing = self.library.active_listing().ok_or_else(|| {
+            CmdError::new("E_CMD_ARG", "当前没有可用的列表")
+                .with_hint("先 search 或 library list，再用 playlist add")
+        })?;
+        if index >= listing.len {
+            return Err(CmdError::new(
+                "E_CMD_ARG",
+                format!(
+                    "{}只有 {} 条，没有第 {} 条",
+                    listing.source.label(),
+                    listing.len,
+                    index + 1
+                ),
+            ));
+        }
+        let draft = self.listing_draft(&listing, index)?;
+        let added = self.library.playlist_add(playlist.id, &draft)?;
+        Ok(Outcome {
+            outputs: vec![text_of(vec![
+                bold("已加入歌单"),
+                plain(format!(" · {} 第 {} 首", playlist.name, added.position + 1)),
+                dim(format!(" · {}", added.title)),
+            ])],
+            footer: None,
+        })
+    }
+
+    fn listing_draft(
+        &self,
+        listing: &ActiveListing,
+        index: usize,
+    ) -> Result<NewPlaylistItem, CmdError> {
+        match &listing.source {
+            ListingSource::Search => {
+                let hits = self.library.search_hits();
+                let hit = hits.get(index).ok_or_else(|| {
+                    CmdError::new("E_CMD_ARG", format!("搜索结果只有 {} 条", hits.len()))
+                })?;
+                Ok(match hit {
+                    SearchHit::Local(track) => local_draft(track),
+                    SearchHit::Online(track) => remote_draft(track),
+                })
+            }
+            ListingSource::Queue => {
+                let view = self.api.queue_list()?;
+                let path = view.tracks.get(index).ok_or_else(|| {
+                    CmdError::new(
+                        "E_CMD_ARG",
+                        format!("播放队列只有 {} 首", view.tracks.len()),
+                    )
+                })?;
+                let metadata = self.library.tracks_by_paths(std::slice::from_ref(path))?;
+                Ok(match metadata.get(path) {
+                    Some(track) => local_draft(track),
+                    None => NewPlaylistItem {
+                        kind: "local".to_owned(),
+                        path: path.clone(),
+                        source: String::new(),
+                        source_id: String::new(),
+                        title: track_display(path),
+                        artist: "—".to_owned(),
+                        album: String::new(),
+                        duration_ms: 0,
+                    },
+                })
+            }
+            ListingSource::Library => {
+                let tracks = self.library.library_listing();
+                let track = tracks.get(index).ok_or_else(|| {
+                    CmdError::new("E_CMD_ARG", format!("媒体库只有 {} 条", tracks.len()))
+                })?;
+                Ok(local_draft(track))
+            }
+            ListingSource::Playlist(name) => {
+                let playlist = self.playlist_by_name(name)?;
+                let (_, items) = self.library.playlist_get(playlist.id)?;
+                let item = items.get(index).ok_or_else(|| {
+                    CmdError::new(
+                        "E_CMD_ARG",
+                        format!("歌单《{name}》只有 {} 首", items.len()),
+                    )
+                })?;
+                Ok(playlist_draft(item))
+            }
+        }
     }
 
     /// `library`：`add` / `list` / `stat`（`scan` 在 `run` 里提前处理）。
@@ -2421,6 +2715,56 @@ struct QueueRow {
     source: Option<String>,
 }
 
+fn local_draft(track: &Track) -> NewPlaylistItem {
+    NewPlaylistItem {
+        kind: "local".to_owned(),
+        path: track.path.clone(),
+        source: String::new(),
+        source_id: String::new(),
+        title: track.title.clone(),
+        artist: track.artist.clone(),
+        album: track.album.clone(),
+        duration_ms: track.duration_ms,
+    }
+}
+
+fn remote_draft(track: &SourceTrack) -> NewPlaylistItem {
+    NewPlaylistItem {
+        kind: "remote".to_owned(),
+        path: String::new(),
+        source: track.source.as_str().to_owned(),
+        source_id: track.source_id.clone(),
+        title: track.title.clone(),
+        artist: track.artist.clone(),
+        album: track.album.clone().unwrap_or_default(),
+        duration_ms: i64::try_from(track.duration_ms).unwrap_or(i64::MAX),
+    }
+}
+
+fn playlist_draft(item: &PlaylistItem) -> NewPlaylistItem {
+    NewPlaylistItem {
+        kind: item.kind.clone(),
+        path: item.path.clone(),
+        source: item.source.clone(),
+        source_id: item.source_id.clone(),
+        title: item.title.clone(),
+        artist: item.artist.clone(),
+        album: item.album.clone(),
+        duration_ms: item.duration_ms,
+    }
+}
+
+fn playlist_item_source(item: &PlaylistItem) -> String {
+    if item.kind == "local" {
+        return "本地".to_owned();
+    }
+    match item.source.as_str() {
+        "bilibili" => "B站".to_owned(),
+        "netease" => "网易云".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 /// 队列行可显示的来源；本地库的 `local` 不单独占一列。
 fn queue_track_source(track: &Track) -> Option<String> {
     match track.source.as_str() {
@@ -3116,6 +3460,38 @@ impl LibraryApi for LibraryHandle {
             .lock()
             .map(|tracks| tracks.clone())
             .unwrap_or_default()
+    }
+
+    fn playlist_create(&self, name: &str) -> Result<i64, CmdError> {
+        self.with_db(|db| db.create_playlist(name))
+    }
+
+    fn playlist_rename(&self, id: i64, name: &str) -> Result<(), CmdError> {
+        self.with_db(|db| db.rename_playlist(id, name))
+    }
+
+    fn playlist_delete(&self, id: i64) -> Result<(), CmdError> {
+        self.with_db(|db| db.delete_playlist(id))
+    }
+
+    fn playlist_list(&self) -> Result<Vec<PlaylistSummary>, CmdError> {
+        self.with_db(Database::list_playlists)
+    }
+
+    fn playlist_by_name(&self, name: &str) -> Result<Option<Playlist>, CmdError> {
+        self.with_db(|db| db.playlist_by_name(name))
+    }
+
+    fn playlist_get(&self, id: i64) -> Result<(Playlist, Vec<PlaylistItem>), CmdError> {
+        self.with_db(|db| db.get_playlist(id))
+    }
+
+    fn playlist_add(&self, id: i64, item: &NewPlaylistItem) -> Result<PlaylistItem, CmdError> {
+        self.with_db(|db| db.add_playlist_item(id, item))
+    }
+
+    fn playlist_remove(&self, id: i64, position: i64) -> Result<(), CmdError> {
+        self.with_db(|db| db.remove_playlist_item(id, position))
     }
 
     fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
@@ -4935,6 +5311,10 @@ mod tests {
         active_listing: Option<ActiveListing>,
         library_listing: Vec<Track>,
         tracks_by_path: std::collections::HashMap<String, Track>,
+        playlists: Vec<Playlist>,
+        playlist_items: HashMap<i64, Vec<PlaylistItem>>,
+        next_playlist_id: i64,
+        next_item_id: i64,
         calls: Vec<LibraryCall>,
     }
 
@@ -4957,6 +5337,10 @@ mod tests {
                     active_listing: None,
                     library_listing: Vec::new(),
                     tracks_by_path: std::collections::HashMap::new(),
+                    playlists: Vec::new(),
+                    playlist_items: HashMap::new(),
+                    next_playlist_id: 1,
+                    next_item_id: 1,
                     calls: Vec::new(),
                 }),
             }
@@ -5136,6 +5520,145 @@ mod tests {
                 .tracks_by_path
                 .get(path)
                 .cloned())
+        }
+
+        fn playlist_create(&self, name: &str) -> Result<i64, CmdError> {
+            let name = np_library::validate_playlist_name(name)
+                .map_err(|error| CmdError::new("E_CMD_ARG", error.to_string()))?;
+            let mut state = self.state.lock().expect("state mutex");
+            if state
+                .playlists
+                .iter()
+                .any(|playlist| playlist.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(CmdError::new("E_CMD_ARG", format!("歌单已存在：{name}")));
+            }
+            let id = state.next_playlist_id;
+            state.next_playlist_id += 1;
+            state.playlists.push(Playlist {
+                id,
+                name,
+                created_at: 0,
+                updated_at: 0,
+            });
+            state.playlist_items.insert(id, Vec::new());
+            Ok(id)
+        }
+
+        fn playlist_rename(&self, id: i64, name: &str) -> Result<(), CmdError> {
+            let name = np_library::validate_playlist_name(name)
+                .map_err(|error| CmdError::new("E_CMD_ARG", error.to_string()))?;
+            let mut state = self.state.lock().expect("state mutex");
+            if state
+                .playlists
+                .iter()
+                .any(|playlist| playlist.id != id && playlist.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(CmdError::new("E_CMD_ARG", format!("歌单已存在：{name}")));
+            }
+            let playlist = state
+                .playlists
+                .iter_mut()
+                .find(|playlist| playlist.id == id)
+                .ok_or_else(|| CmdError::new("E_CMD_ARG", "歌单不存在"))?;
+            playlist.name = name;
+            Ok(())
+        }
+
+        fn playlist_delete(&self, id: i64) -> Result<(), CmdError> {
+            let mut state = self.state.lock().expect("state mutex");
+            let before = state.playlists.len();
+            state.playlists.retain(|playlist| playlist.id != id);
+            if state.playlists.len() == before {
+                return Err(CmdError::new("E_CMD_ARG", "歌单不存在"));
+            }
+            state.playlist_items.remove(&id);
+            Ok(())
+        }
+
+        fn playlist_list(&self) -> Result<Vec<PlaylistSummary>, CmdError> {
+            let state = self.state.lock().expect("state mutex");
+            Ok(state
+                .playlists
+                .iter()
+                .map(|playlist| PlaylistSummary {
+                    id: playlist.id,
+                    name: playlist.name.clone(),
+                    item_count: state
+                        .playlist_items
+                        .get(&playlist.id)
+                        .map_or(0, |items| items.len() as u64),
+                    created_at: playlist.created_at,
+                    updated_at: playlist.updated_at,
+                })
+                .collect())
+        }
+
+        fn playlist_by_name(&self, name: &str) -> Result<Option<Playlist>, CmdError> {
+            let state = self.state.lock().expect("state mutex");
+            Ok(state
+                .playlists
+                .iter()
+                .find(|playlist| playlist.name.eq_ignore_ascii_case(name))
+                .cloned())
+        }
+
+        fn playlist_get(&self, id: i64) -> Result<(Playlist, Vec<PlaylistItem>), CmdError> {
+            let state = self.state.lock().expect("state mutex");
+            let playlist = state
+                .playlists
+                .iter()
+                .find(|playlist| playlist.id == id)
+                .cloned()
+                .ok_or_else(|| CmdError::new("E_CMD_ARG", "歌单不存在"))?;
+            let items = state.playlist_items.get(&id).cloned().unwrap_or_default();
+            Ok((playlist, items))
+        }
+
+        fn playlist_add(&self, id: i64, item: &NewPlaylistItem) -> Result<PlaylistItem, CmdError> {
+            let mut state = self.state.lock().expect("state mutex");
+            if !state.playlists.iter().any(|playlist| playlist.id == id) {
+                return Err(CmdError::new("E_CMD_ARG", "歌单不存在"));
+            }
+            let item_id = state.next_item_id;
+            state.next_item_id += 1;
+            let items = state.playlist_items.entry(id).or_default();
+            let position = items.len() as i64;
+            let added = PlaylistItem {
+                id: item_id,
+                playlist_id: id,
+                position,
+                kind: item.kind.clone(),
+                path: item.path.clone(),
+                source: item.source.clone(),
+                source_id: item.source_id.clone(),
+                title: item.title.clone(),
+                artist: item.artist.clone(),
+                album: item.album.clone(),
+                duration_ms: item.duration_ms,
+                added_at: 0,
+            };
+            items.push(added.clone());
+            Ok(added)
+        }
+
+        fn playlist_remove(&self, id: i64, position: i64) -> Result<(), CmdError> {
+            let mut state = self.state.lock().expect("state mutex");
+            let items = state
+                .playlist_items
+                .get_mut(&id)
+                .ok_or_else(|| CmdError::new("E_CMD_ARG", "歌单不存在"))?;
+            if position < 0 || position as usize >= items.len() {
+                return Err(CmdError::new(
+                    "E_CMD_ARG",
+                    format!("歌单里没有第 {} 首", position + 1),
+                ));
+            }
+            items.remove(position as usize);
+            for (index, item) in items.iter_mut().enumerate() {
+                item.position = index as i64;
+            }
+            Ok(())
         }
     }
 
@@ -5840,6 +6363,30 @@ mod tests {
 
     // ---- 媒体库命令（T-0023） ----
 
+    fn done_with_playlist_online(
+        api: &FakeApi,
+        library: &FakeLibraryApi,
+        online: &dyn OnlineApi,
+        input: &str,
+    ) -> Block {
+        let services = Services {
+            settings: None,
+            theme: None,
+            online: Some(online),
+        };
+        match execute_with_services(
+            api,
+            library,
+            services,
+            "block-playlist-online",
+            input,
+            Arc::new(NoopLibraryObserver),
+        ) {
+            Execution::Blocks { done, .. } => *done,
+            _ => panic!("expected a finished block for {input}"),
+        }
+    }
+
     fn done_with_library(api: &FakeApi, library: &FakeLibraryApi, input: &str) -> Block {
         match execute_with_library(
             api,
@@ -6413,6 +6960,134 @@ mod tests {
         assert!(!api.calls().contains(&Call::QueueJump(1)));
     }
 
+    fn playlist_with_items(library: &FakeLibraryApi, name: &str) -> i64 {
+        library.playlist_create(name).expect("create playlist")
+    }
+
+    #[test]
+    fn playlist_create_list_and_show_set_active_playlist() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let created = done_with_library(&api, &library, r#"playlist create "周杰伦 情歌""#);
+        assert_eq!(created.status, BlockStatus::Done);
+
+        let list = done_with_library(&api, &library, "playlist list");
+        assert!(
+            table_of_block(&list)
+                .1
+                .iter()
+                .any(|row| row[0] == "周杰伦 情歌")
+        );
+
+        let show = done_with_library(&api, &library, r#"playlist show "周杰伦 情歌""#);
+        assert_eq!(show.status, BlockStatus::Done, "{}", text_of_block(&show));
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Playlist("周杰伦 情歌".to_owned()),
+                len: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn playlist_add_from_search_and_show_lists_remote_metadata() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        library.remember_hits(vec![SearchHit::Online(up_track())]);
+        library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: 1,
+        });
+        done_with_library(&api, &library, r#"playlist create "远程""#);
+        let add = done_with_library(&api, &library, r#"playlist add "远程" 1"#);
+        assert_eq!(add.status, BlockStatus::Done, "{}", text_of_block(&add));
+
+        let show = done_with_library(&api, &library, r#"playlist show "远程""#);
+        let (_, rows) = table_of_block(&show);
+        assert_eq!(rows[0][1], "最长的电影");
+        assert_eq!(rows[0][2], "明前奶绿");
+        assert_eq!(rows[0][4], "B站");
+    }
+
+    #[test]
+    fn playlist_add_without_active_listing_teaches_user() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        let block = done_with_library(&api, &library, r#"playlist add "A" 1"#);
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("当前没有可用的列表"));
+        assert!(error_fields(&block).2.unwrap().contains("search"));
+    }
+
+    #[test]
+    fn playlist_rename_and_delete_commands() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, r#"playlist create "旧""#);
+        let rename = done_with_library(&api, &library, r#"playlist rename "旧" "新""#);
+        assert_eq!(
+            rename.status,
+            BlockStatus::Done,
+            "{}",
+            text_of_block(&rename)
+        );
+        let show = done_with_library(&api, &library, r#"playlist show "新""#);
+        assert_eq!(show.status, BlockStatus::Done);
+        let delete = done_with_library(&api, &library, r#"playlist delete "新""#);
+        assert_eq!(delete.status, BlockStatus::Done);
+        assert!(library.playlist_list().expect("list").is_empty());
+    }
+
+    #[test]
+    fn playlist_add_from_library_listing() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_list_tracks(vec![track(
+            1,
+            "库里的歌",
+            "艺人",
+            "/music/lib.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "library list");
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        let add = done_with_library(&api, &library, r#"playlist add "A" 1"#);
+        assert_eq!(add.status, BlockStatus::Done, "{}", text_of_block(&add));
+        let show = done_with_library(&api, &library, r#"playlist show "A""#);
+        assert_eq!(table_of_block(&show).1[0][1], "! 库里的歌");
+    }
+
+    #[test]
+    fn playlist_add_out_of_range_is_human_error() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "一",
+            "艺人",
+            "/music/one.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "search 歌");
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        let add = done_with_library(&api, &library, r#"playlist add "A" 2"#);
+        assert_eq!(add.status, BlockStatus::Error);
+        assert!(error_fields(&add).1.contains("搜索结果只有 1 条"));
+    }
+
+    #[test]
+    fn playlist_unknown_name_and_duplicate_name_errors() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        let duplicate = done_with_library(&api, &library, r#"playlist create "a""#);
+        assert_eq!(duplicate.status, BlockStatus::Error);
+        assert!(error_fields(&duplicate).1.contains("已存在"));
+        let missing = done_with_library(&api, &library, r#"playlist show "没有""#);
+        assert_eq!(missing.status, BlockStatus::Error);
+        assert!(error_fields(&missing).1.contains("不存在"));
+    }
+
     #[test]
     fn library_alias_runs_the_same_subcommand() {
         let api = FakeApi::new();
@@ -6665,12 +7340,12 @@ mod tests {
         let completion = complete_for(&api, "pl", 2);
 
         assert_eq!(api.calls(), Vec::new());
-        assert_eq!(completion.items.len(), 1);
-        assert_eq!(completion.items[0].text, "play");
-        assert_eq!(
-            completion.items[0].kind,
-            np_core::command::CompletionKind::Command
-        );
+        let play = completion
+            .items
+            .iter()
+            .find(|item| item.text == "play")
+            .expect("play candidate");
+        assert_eq!(play.kind, np_core::command::CompletionKind::Command);
     }
 
     #[test]
