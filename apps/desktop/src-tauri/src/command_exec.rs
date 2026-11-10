@@ -499,6 +499,137 @@ fn local_artist_match(track: &Track, name: &str) -> MatchKind {
     }
 }
 
+const HELP_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "播放",
+        &[
+            "play", "pause", "resume", "next", "prev", "seek", "vol", "mode", "queue",
+        ],
+    ),
+    ("媒体库", &["library", "search"]),
+    ("歌单", &["playlist"]),
+    (
+        "系统",
+        &[
+            "clear", "version", "help", "theme", "config", "source", "cache",
+        ],
+    ),
+];
+
+const HELP_ENTRIES: &[(&str, &str, &[&str])] = &[
+    (
+        "play",
+        "播放当前列表的第 n 首；不带参数继续当前曲目",
+        &["play 3", "play"],
+    ),
+    ("pause", "暂停当前播放", &["pause"]),
+    ("resume", "从暂停处继续", &["resume"]),
+    ("next", "播放下一首", &["next"]),
+    ("prev", "播放上一首", &["prev"]),
+    (
+        "seek",
+        "跳转到指定播放位置；+/- 表示相对当前位置",
+        &["seek 1:30", "seek +10"],
+    ),
+    ("vol", "设置音量；+/- 表示相对调整", &["vol 60", "vol +10"]),
+    (
+        "mode",
+        "查看或设置循环/随机模式",
+        &["mode repeat all", "mode shuffle on"],
+    ),
+    (
+        "queue",
+        "查看或编辑播放队列",
+        &[
+            "queue list",
+            "queue add /music/a.flac",
+            "queue add --from-search 2",
+        ],
+    ),
+    (
+        "library",
+        "管理媒体库扫描根、扫描与浏览",
+        &["library list", "library scan", "library add /music"],
+    ),
+    (
+        "search",
+        "搜索本地库与在线音源",
+        &[
+            "search 晴天",
+            "search --artist 周杰伦 --source netease --limit 5",
+            "search 最长的电影 --up 明前奶绿",
+        ],
+    ),
+    (
+        "playlist",
+        "管理歌单：增删条目、显示与播放",
+        &[
+            "playlist list",
+            "playlist create \"周杰伦 情歌\"",
+            "playlist add \"周杰伦 情歌\" 1",
+            "playlist play \"周杰伦 情歌\"",
+        ],
+    ),
+    (
+        "theme",
+        "查看、切换、导出主题",
+        &["theme list", "theme set ice", "theme export graphite"],
+    ),
+    (
+        "config",
+        "读写设置项",
+        &[
+            "config list",
+            "config set theme.id ice",
+            "config get theme.id",
+        ],
+    ),
+    (
+        "source",
+        "启用/禁用在线音源",
+        &["source list", "source disable bilibili"],
+    ),
+    (
+        "cache",
+        "统计或清理缓存",
+        &["cache stat", "cache clear streams"],
+    ),
+    (
+        "help",
+        "查看命令分组或某条命令的详情",
+        &["help", "help play", "help playlist"],
+    ),
+    ("version", "显示版本号", &["version"]),
+    ("clear", "清空终端输出", &["clear"]),
+];
+
+fn help_entry(name: &str) -> (&'static str, &'static [&'static str]) {
+    HELP_ENTRIES
+        .iter()
+        .find(|(command, _, _)| *command == name)
+        .map_or(("", &[]), |(_, description, examples)| {
+            (*description, *examples)
+        })
+}
+
+fn help_arg_label(name: &str) -> String {
+    match name {
+        "index|path" => "序号/路径".to_owned(),
+        "path" => "路径".to_owned(),
+        "index" => "序号".to_owned(),
+        "position" => "位置".to_owned(),
+        "level" => "音量".to_owned(),
+        "mode" => "模式".to_owned(),
+        "keyword" => "关键词".to_owned(),
+        "cmd" => "命令".to_owned(),
+        "key" => "设置项".to_owned(),
+        "value" => "值".to_owned(),
+        "target" => "目标".to_owned(),
+        "id" => "ID".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 /// 音源在终端里的中文短名。
 fn source_label(source: SourceId) -> &'static str {
     match source {
@@ -1732,12 +1863,10 @@ impl Executor<'_> {
             "show" => self.playlist_show(positional_arg(parsed, "名字")?),
             "add" => {
                 let name = positional_arg(parsed, "名字")?;
-                let raw_index = parsed
-                    .positional
-                    .get(1)
-                    .map(String::as_str)
-                    .ok_or_else(|| CmdError::new("E_CMD_ARG", "缺少参数：序号"))?;
-                self.playlist_add(name, user_index(raw_index)?)
+                match parsed.positional.get(1) {
+                    Some(raw_index) => self.playlist_add(name, user_index(raw_index)?),
+                    None => self.playlist_add_current(name),
+                }
             }
             "remove" => {
                 let name = positional_arg(parsed, "名字")?;
@@ -1843,10 +1972,9 @@ impl Executor<'_> {
     }
 
     fn playlist_add(&self, name: &str, index: usize) -> Result<Outcome, CmdError> {
-        let playlist = self.playlist_by_name(name)?;
         let listing = self.library.active_listing().ok_or_else(|| {
             CmdError::new("E_CMD_ARG", "当前没有可用的列表")
-                .with_hint("先 search 或 library list，再用 playlist add")
+                .with_hint("先 search / queue list / playlist show，或先播放一首")
         })?;
         if index >= listing.len {
             return Err(CmdError::new(
@@ -1860,13 +1988,51 @@ impl Executor<'_> {
             ));
         }
         let draft = self.listing_draft(&listing, index)?;
+        self.add_draft(name, draft)
+    }
+
+    fn playlist_add_current(&self, name: &str) -> Result<Outcome, CmdError> {
+        let draft = self.current_playing_draft()?;
+        self.add_draft(name, draft)
+    }
+
+    fn current_playing_draft(&self) -> Result<NewPlaylistItem, CmdError> {
+        let state = self.api.snapshot()?;
+        let path = state.track_id.ok_or_else(|| {
+            CmdError::new("E_CMD_ARG", "当前没有正在播放的曲目")
+                .with_hint("先 search / queue list / playlist show，或先播放一首")
+        })?;
+        Ok(match self.library.track_by_path(&path)? {
+            Some(track) if track.kind == "remote" => remote_track_draft(&track),
+            Some(track) => local_draft(&track),
+            None => NewPlaylistItem {
+                kind: "local".to_owned(),
+                path: path.clone(),
+                source: String::new(),
+                source_id: String::new(),
+                title: track_display(&path),
+                artist: "—".to_owned(),
+                album: String::new(),
+                duration_ms: 0,
+            },
+        })
+    }
+
+    fn add_draft(&self, name: &str, draft: NewPlaylistItem) -> Result<Outcome, CmdError> {
+        let playlist = self.playlist_by_name(name)?;
+        let (_, items) = self.library.playlist_get(playlist.id)?;
+        let duplicate = items.iter().any(|item| same_playlist_item(&draft, item));
         let added = self.library.playlist_add(playlist.id, &draft)?;
+        let mut spans = vec![
+            bold("已加入歌单"),
+            plain(format!(" · {} 第 {} 首", playlist.name, added.position + 1)),
+            dim(format!(" · {}", added.title)),
+        ];
+        if duplicate {
+            spans.push(dim(" · 已在歌单中"));
+        }
         Ok(Outcome {
-            outputs: vec![text_of(vec![
-                bold("已加入歌单"),
-                plain(format!(" · {} 第 {} 首", playlist.name, added.position + 1)),
-                dim(format!(" · {}", added.title)),
-            ])],
+            outputs: vec![text_of(spans)],
             footer: None,
         })
     }
@@ -2630,25 +2796,67 @@ impl Executor<'_> {
                         hint: registry.suggest(name).map(|spec| suggestion(spec.name)),
                     });
                 };
+                let (description, examples) = help_entry(spec.name);
+                let mut outputs = vec![text_of(vec![
+                    bold(spec.usage),
+                    plain(format!("  {description}")),
+                ])];
+                if !spec.args.is_empty() {
+                    outputs.push(text_of(vec![bold("参数")]));
+                    for arg in spec.args {
+                        let suffix = if arg.required { "" } else { "（可选）" };
+                        outputs.push(text_of(vec![plain(format!(
+                            "  <{}>{}",
+                            help_arg_label(arg.name),
+                            suffix
+                        ))]));
+                    }
+                }
+                if !spec.flags.is_empty() {
+                    outputs.push(text_of(vec![bold("选项")]));
+                    for flag in spec.flags {
+                        outputs.push(text_of(vec![
+                            plain(format!("  --{}", flag.name)),
+                            dim(format!("  {}", flag.summary)),
+                        ]));
+                    }
+                }
+                if !spec.subcommands.is_empty() {
+                    outputs.push(text_of(vec![bold("子命令")]));
+                    for subcommand in spec.subcommands {
+                        outputs.push(text_of(vec![
+                            plain(format!("  {}", subcommand.usage)),
+                            dim(format!("  {}", subcommand.summary)),
+                        ]));
+                    }
+                }
+                if !examples.is_empty() {
+                    outputs.push(text_of(vec![bold("例")]));
+                    for example in examples {
+                        outputs.push(text_of(vec![plain(format!("  {example}"))]));
+                    }
+                }
                 Ok(Outcome {
-                    outputs: vec![text_of(vec![
-                        bold(spec.usage),
-                        plain(format!("  {}", spec.summary)),
-                    ])],
-                    footer: None,
+                    outputs,
+                    footer: Some("输入 help 查看分组列表".to_owned()),
                 })
             }
             None => {
-                let outputs = registry
-                    .specs()
-                    .iter()
-                    .map(|spec| {
-                        text_of(vec![bold(format!("{:<8}", spec.name)), plain(spec.summary)])
-                    })
-                    .collect();
+                let mut outputs = Vec::new();
+                for (group, names) in HELP_GROUPS {
+                    outputs.push(text_of(vec![bold(*group)]));
+                    for name in *names {
+                        if let Some(spec) = registry.find(name) {
+                            outputs.push(text_of(vec![
+                                plain(format!("  {:<10}", spec.name)),
+                                dim(spec.summary),
+                            ]));
+                        }
+                    }
+                }
                 Ok(Outcome {
                     outputs,
-                    footer: Some("输入 help <命令> 查看用法".to_owned()),
+                    footer: Some("输入 help <命令> 查看参数与例子".to_owned()),
                 })
             }
         }
@@ -2774,6 +2982,27 @@ fn local_draft(track: &Track) -> NewPlaylistItem {
         artist: track.artist.clone(),
         album: track.album.clone(),
         duration_ms: track.duration_ms,
+    }
+}
+
+fn remote_track_draft(track: &Track) -> NewPlaylistItem {
+    NewPlaylistItem {
+        kind: "remote".to_owned(),
+        path: String::new(),
+        source: track.source.clone(),
+        source_id: track.source_id.clone(),
+        title: track.title.clone(),
+        artist: track.artist.clone(),
+        album: track.album.clone(),
+        duration_ms: track.duration_ms,
+    }
+}
+
+fn same_playlist_item(draft: &NewPlaylistItem, item: &PlaylistItem) -> bool {
+    if draft.kind == "local" {
+        item.kind == "local" && item.path == draft.path
+    } else {
+        item.kind == "remote" && item.source == draft.source && item.source_id == draft.source_id
     }
 }
 
@@ -5757,7 +5986,7 @@ mod tests {
             .expect("non-empty input");
         let error = CmdError::new("E_DECODE", "设备丢失").with_usage(&parsed);
 
-        assert_eq!(error.hint.as_deref(), Some("用法：vol <0-100|±N>"));
+        assert_eq!(error.hint.as_deref(), Some("用法：vol <音量>"));
     }
 
     #[test]
@@ -6326,7 +6555,7 @@ mod tests {
         assert_eq!(code, "E_CMD_ARG");
         let hint = hint.expect("hint must not be empty");
         assert!(
-            hint.contains("用法：seek <ms|mm:ss|±s>"),
+            hint.contains("用法：seek <位置>"),
             "unexpected hint: {hint}"
         );
     }
@@ -6370,7 +6599,77 @@ mod tests {
         let api = FakeApi::new();
         let block = done_block(&api, "help seek");
 
-        assert!(text_of_block(&block).contains("seek <ms|mm:ss|±s>"));
+        assert!(text_of_block(&block).contains("seek <位置>"));
+    }
+
+    #[test]
+    fn help_groups_are_ordered_and_complete() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "help");
+        let text = text_of_block(&block);
+
+        let positions: Vec<usize> = ["播放", "媒体库", "歌单", "系统"]
+            .iter()
+            .map(|group| text.find(group).expect("group missing"))
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        for spec in registry().specs() {
+            assert!(text.contains(spec.name), "help 缺少 {}", spec.name);
+        }
+    }
+
+    #[test]
+    fn help_play_has_description_and_example() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "help play");
+        let text = text_of_block(&block);
+
+        assert!(text.contains("播放当前列表的第 n 首"));
+        assert!(text.contains("play 3"));
+        assert!(text.contains("play [<序号>|<路径>]"));
+    }
+
+    #[test]
+    fn search_registry_usage_lists_all_public_options() {
+        let usage = registry().find("search").expect("search").usage;
+        for token in [
+            "关键词",
+            "--artist",
+            "--source",
+            "--limit",
+            "--local",
+            "--up",
+            "--mid",
+        ] {
+            assert!(usage.contains(token), "usage missing {token}: {usage}");
+        }
+    }
+
+    #[test]
+    fn help_search_has_full_usage_flags_and_examples() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "help search");
+        let text = text_of_block(&block);
+
+        assert!(text.contains("--artist"));
+        assert!(text.contains("--source"));
+        assert!(text.contains("--limit"));
+        assert!(text.contains("--local"));
+        assert!(text.contains("--up"));
+        assert!(text.contains("search 晴天"));
+        assert!(text.contains("search 最长的电影 --up 明前奶绿"));
+    }
+
+    #[test]
+    fn help_playlist_lists_all_subcommands() {
+        let api = FakeApi::new();
+        let block = done_block(&api, "help playlist");
+        let text = text_of_block(&block);
+
+        assert!(text.contains("playlist create"));
+        assert!(text.contains("playlist add"));
+        assert!(text.contains("playlist play"));
+        assert!(text.contains("playlist remove"));
     }
 
     #[test]
@@ -7080,6 +7379,109 @@ mod tests {
         assert_eq!(block.status, BlockStatus::Error);
         assert!(error_fields(&block).1.contains("当前没有可用的列表"));
         assert!(error_fields(&block).2.unwrap().contains("search"));
+    }
+
+    #[test]
+    fn playlist_add_without_index_adds_current_local_track_and_allows_duplicate() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            track_id: Some("/music/current.flac".to_owned()),
+            ..PlaybackState::default()
+        });
+        let library = FakeLibraryApi::new().with_track_by_path(
+            "/music/current.flac",
+            track(1, "正在播放", "艺人", "/music/current.flac", 1_000),
+        );
+        done_with_library(&api, &library, r#"playlist create "A""#);
+
+        let first = done_with_library(&api, &library, r#"playlist add "A""#);
+        assert_eq!(first.status, BlockStatus::Done, "{}", text_of_block(&first));
+        let second = done_with_library(&api, &library, r#"playlist add "A""#);
+        assert_eq!(second.status, BlockStatus::Done);
+        assert!(text_of_block(&second).contains("已在歌单中"));
+
+        let show = done_with_library(&api, &library, r#"playlist show "A""#);
+        let (_, rows) = table_of_block(&show);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][1], "! 正在播放");
+    }
+
+    #[test]
+    fn playlist_add_without_current_or_listing_teaches_user() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        let block = done_with_library(&api, &library, r#"playlist add "A""#);
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("当前没有正在播放的曲目"));
+        assert!(
+            error_fields(&block)
+                .2
+                .is_some_and(|hint| hint.contains("search / queue list / playlist show"))
+        );
+    }
+
+    #[test]
+    fn playlist_add_without_index_adds_current_remote_track() {
+        let api = FakeApi::new().with_state(PlaybackState {
+            track_id: Some("/cache/remote.m4a".to_owned()),
+            ..PlaybackState::default()
+        });
+        let mut remote = track(0, "远程", "UP", "/cache/remote.m4a", 2_000);
+        remote.kind = "remote".to_owned();
+        remote.source = "bilibili".to_owned();
+        remote.source_id = "BVremote".to_owned();
+        let library = FakeLibraryApi::new().with_track_by_path("/cache/remote.m4a", remote);
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        done_with_library(&api, &library, r#"playlist add "A""#);
+
+        let show = done_with_library(&api, &library, r#"playlist show "A""#);
+        let (_, rows) = table_of_block(&show);
+        assert_eq!(rows[0][1], "远程");
+        assert_eq!(rows[0][4], "B站");
+    }
+
+    #[test]
+    fn playlist_add_from_queue_listing_with_index() {
+        let api = FakeApi::new().with_queue(queue_view(&["/music/q.flac"], None));
+        let library = FakeLibraryApi::new().with_track_by_path(
+            "/music/q.flac",
+            track(1, "队列歌", "艺人", "/music/q.flac", 1_000),
+        );
+        done_with_library(&api, &library, "queue list");
+        done_with_library(&api, &library, r#"playlist create "A""#);
+        let add = done_with_library(&api, &library, r#"playlist add "A" 1"#);
+        assert_eq!(add.status, BlockStatus::Done, "{}", text_of_block(&add));
+        let show = done_with_library(&api, &library, r#"playlist show "A""#);
+        assert_eq!(table_of_block(&show).1[0][1], "! 队列歌");
+    }
+
+    #[test]
+    fn playlist_add_from_playlist_listing_with_index() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let source = playlist_with_items(&library, "源");
+        library
+            .playlist_add(
+                source,
+                &NewPlaylistItem {
+                    kind: "remote".to_owned(),
+                    path: String::new(),
+                    source: "netease".to_owned(),
+                    source_id: "10001".to_owned(),
+                    title: "网易云歌".to_owned(),
+                    artist: "艺人".to_owned(),
+                    album: String::new(),
+                    duration_ms: 1_000,
+                },
+            )
+            .expect("item");
+        done_with_library(&api, &library, r#"playlist show "源""#);
+        done_with_library(&api, &library, r#"playlist create "目标""#);
+        let add = done_with_library(&api, &library, r#"playlist add "目标" 1"#);
+        assert_eq!(add.status, BlockStatus::Done, "{}", text_of_block(&add));
+        let show = done_with_library(&api, &library, r#"playlist show "目标""#);
+        assert_eq!(table_of_block(&show).1[0][4], "网易云");
     }
 
     #[test]

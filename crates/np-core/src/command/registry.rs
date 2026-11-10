@@ -246,7 +246,7 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "add",
         summary: "把本地文件或搜索结果加入队列",
-        usage: "queue add <path> | queue add --from-search <n>",
+        usage: "queue add <路径> | queue add --from-search <序号>",
         args: &[ArgSpec {
             name: "path",
             kind: ArgKind::Text,
@@ -261,7 +261,7 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "remove",
         summary: "从队列中移除指定序号",
-        usage: "queue remove <index>",
+        usage: "queue remove <序号>",
         args: &[ArgSpec {
             name: "index",
             kind: ArgKind::Integer,
@@ -279,7 +279,7 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "jump",
         summary: "跳到队列中的指定序号",
-        usage: "queue jump <index>",
+        usage: "queue jump <序号>",
         args: &[ArgSpec {
             name: "index",
             kind: ArgKind::Integer,
@@ -300,7 +300,7 @@ const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "add",
         summary: "把一个目录加入媒体库扫描根",
-        usage: "library add <path>",
+        usage: "library add <路径>",
         args: &[ArgSpec {
             name: "path",
             kind: ArgKind::Text,
@@ -322,7 +322,7 @@ const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "list",
         summary: "列出最近入库的曲目",
-        usage: "library list [--limit=N]",
+        usage: "library list [--limit=<条数>]",
         args: &[],
         flags: &[FlagSpec {
             name: "limit",
@@ -375,7 +375,7 @@ const THEME_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "set",
         summary: "切换主题并立即生效",
-        usage: "theme set <id>",
+        usage: "theme set <主题 id>",
         args: &[ArgSpec {
             name: "id",
             kind: ArgKind::Text,
@@ -386,7 +386,7 @@ const THEME_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "export",
         summary: "把内置主题导出成可编辑的 JSON",
-        usage: "theme export <id>",
+        usage: "theme export <主题 id>",
         args: &[ArgSpec {
             name: "id",
             kind: ArgKind::Text,
@@ -407,7 +407,7 @@ const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "get",
         summary: "读取一个设置项",
-        usage: "config get <key>",
+        usage: "config get <设置项>",
         args: &[ArgSpec {
             name: "key",
             kind: ArgKind::Text,
@@ -418,7 +418,7 @@ const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "set",
         summary: "写入一个设置项",
-        usage: "config set <key> <value>",
+        usage: "config set <设置项> <值>",
         args: &[
             ArgSpec {
                 name: "key",
@@ -436,7 +436,7 @@ const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "unset",
         summary: "删除一个设置项",
-        usage: "config unset <key>",
+        usage: "config unset <设置项>",
         args: &[ArgSpec {
             name: "key",
             kind: ArgKind::Text,
@@ -464,7 +464,7 @@ const SOURCE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "enable",
         summary: "启用一个在线音源",
-        usage: "source enable <id>",
+        usage: "source enable <音源 id>",
         args: &[ArgSpec {
             name: "id",
             kind: ArgKind::Text,
@@ -475,7 +475,7 @@ const SOURCE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "disable",
         summary: "禁用一个在线音源",
-        usage: "source disable <id>",
+        usage: "source disable <音源 id>",
         args: &[ArgSpec {
             name: "id",
             kind: ArgKind::Text,
@@ -567,8 +567,8 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
     },
     SubcommandSpec {
         name: "add",
-        summary: "把当前列表第 n 条加入歌单",
-        usage: "playlist add \"<名字>\" <序号>",
+        summary: "把当前播放或当前列表第 n 条加入歌单",
+        usage: "playlist add \"<名字>\" [序号]",
         args: &[
             ArgSpec {
                 name: "名字",
@@ -578,7 +578,7 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
             ArgSpec {
                 name: "序号",
                 kind: ArgKind::Integer,
-                required: true,
+                required: false,
             },
         ],
         flags: &[],
@@ -626,7 +626,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "play",
         aliases: &[],
         summary: "播放队列中的曲目或文件；不带参数时继续当前曲目",
-        usage: "play [index|path]",
+        usage: "play [<序号>|<路径>]",
         args: &[ArgSpec {
             name: "index|path",
             kind: ArgKind::Text,
@@ -680,7 +680,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "seek",
         aliases: &[],
         summary: "跳到指定播放位置",
-        usage: "seek <ms|mm:ss|±s>",
+        usage: "seek <位置>",
         args: &[ArgSpec {
             name: "position",
             kind: ArgKind::SeekPosition,
@@ -694,7 +694,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "vol",
         aliases: &[],
         summary: "调整音量",
-        usage: "vol <0-100|±N>",
+        usage: "vol <音量>",
         args: &[ArgSpec {
             name: "level",
             kind: ArgKind::Integer,
@@ -738,7 +738,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "search",
         aliases: &[],
         summary: "搜索本地库与在线音源，结果可按序号播放",
-        usage: "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>] [--up <用户名>|--mid <id>]",
+        usage: "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--local | --up <用户名> | --mid <数字 id>]",
         args: &[ArgSpec {
             name: "keyword",
             kind: ArgKind::Text,
@@ -753,7 +753,7 @@ const COMMANDS: &[CommandSpec] = &[
             FlagSpec {
                 name: "artist",
                 takes_value: true,
-                summary: "只保留 artist 包含该名的结果（额外过滤）",
+                summary: "按艺人名过滤；B 站同时匹配上传者或标题",
             },
             FlagSpec {
                 name: "source",
@@ -833,7 +833,7 @@ const COMMANDS: &[CommandSpec] = &[
         name: "help",
         aliases: &["?"],
         summary: "查看帮助或某条命令的用法",
-        usage: "help [cmd] [--all]",
+        usage: "help [命令] [--all]",
         args: &[ArgSpec {
             name: "cmd",
             kind: ArgKind::Text,

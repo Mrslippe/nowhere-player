@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(parsed.positional, [r"C:\Music\My Music\a.flac"]);
         assert_eq!(
             parsed.usage(),
-            "queue add <path> | queue add --from-search <n>"
+            "queue add <路径> | queue add --from-search <序号>"
         );
     }
 
@@ -387,7 +387,7 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("缺少参数"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("seek <ms|mm:ss|±s>"));
+        assert_eq!(error.usage.as_deref(), Some("seek <位置>"));
     }
 
     #[test]
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("整数"), "{}", error.message);
         assert!(error.message.contains("loud"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("vol <0-100|±N>"));
+        assert_eq!(error.usage.as_deref(), Some("vol <音量>"));
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
         assert!(error.message.contains('b'), "{}", error.message);
         assert_eq!(
             error.usage.as_deref(),
-            Some("queue add <path> | queue add --from-search <n>")
+            Some("queue add <路径> | queue add --from-search <序号>")
         );
     }
 
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("未知标志"), "{}", error.message);
         assert!(error.message.contains("--json"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("play [index|path]"));
+        assert_eq!(error.usage.as_deref(), Some("play [<序号>|<路径>]"));
     }
 
     #[test]
@@ -653,7 +653,7 @@ mod tests {
 
         let rendered = error.to_string();
         assert!(rendered.contains("缺少参数"), "{rendered}");
-        assert!(rendered.contains("用法：vol <0-100|±N>"), "{rendered}");
+        assert!(rendered.contains("用法：vol <音量>"), "{rendered}");
     }
 
     #[test]
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(parsed.spec.name, "library");
         assert_eq!(parsed.subcommand.unwrap().name, "add");
         assert_eq!(parsed.positional, [r"C:\Music\Library"]);
-        assert_eq!(parsed.usage(), "library add <path>");
+        assert_eq!(parsed.usage(), "library add <路径>");
     }
 
     #[test]
@@ -689,7 +689,7 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("path"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("library add <path>"));
+        assert_eq!(error.usage.as_deref(), Some("library add <路径>"));
     }
 
     #[test]
@@ -717,7 +717,7 @@ mod tests {
 
         assert_eq!(parsed.subcommand.unwrap().name, "list");
         assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("20"));
-        assert_eq!(parsed.usage(), "library list [--limit=N]");
+        assert_eq!(parsed.usage(), "library list [--limit=<条数>]");
     }
 
     #[test]
@@ -726,7 +726,10 @@ mod tests {
 
         assert_eq!(error.code, CommandErrorCode::Arg);
         assert!(error.message.contains("未知标志"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("library list [--limit=N]"));
+        assert_eq!(
+            error.usage.as_deref(),
+            Some("library list [--limit=<条数>]")
+        );
     }
 
     #[test]
@@ -746,7 +749,7 @@ mod tests {
         assert_eq!(parsed.positional, ["kid a"]);
         assert_eq!(
             parsed.usage(),
-            "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>] [--up <用户名>|--mid <id>]"
+            "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--local | --up <用户名> | --mid <数字 id>]"
         );
     }
 
@@ -984,6 +987,12 @@ mod tests {
     fn playlist_add_takes_name_and_integer() {
         let parsed = parse_ok(r#"playlist add "周杰伦" 2"#);
         assert_eq!(parsed.positional, ["周杰伦", "2"]);
+    }
+
+    #[test]
+    fn playlist_add_accepts_name_only_for_current_track() {
+        let parsed = parse_ok(r#"playlist add "周杰伦""#);
+        assert_eq!(parsed.positional, ["周杰伦"]);
     }
 
     #[test]
