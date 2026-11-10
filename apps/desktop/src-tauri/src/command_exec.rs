@@ -296,6 +296,15 @@ impl SearchOptions {
         }
     }
 
+    /// 默认配额下本地最多占 10 条，剩下留给在线；显式 `--limit` 不额外压本地。
+    fn local_cap(&self) -> usize {
+        if self.explicit_limit {
+            self.limit
+        } else {
+            ONLINE_SEARCH_PER_SOURCE
+        }
+    }
+
     fn matches_artist(&self, artist: &str) -> bool {
         match &self.artist {
             Some(wanted) => artist.to_lowercase().contains(&wanted.to_lowercase()),
@@ -1343,7 +1352,12 @@ impl Executor<'_> {
             .into_iter()
             .enumerate()
             .map(|(index, row)| {
-                let mut cells = vec![(index + 1).to_string(), row.title, row.artist, row.duration];
+                let sequence = if view.index == Some(index) {
+                    format!("▶ {}", index + 1)
+                } else {
+                    (index + 1).to_string()
+                };
+                let mut cells = vec![sequence, row.title, row.artist, row.duration];
                 if has_source {
                     cells.push(row.source.unwrap_or_else(|| "—".to_owned()));
                 }
@@ -3717,7 +3731,7 @@ pub(crate) fn run_online_search_with_options(
     clock: &dyn Fn() -> u64,
 ) {
     // `--source <具体源>` 只搜该在线源，不混本地库。
-    let local = if options.source.is_none() {
+    let mut local = if options.source.is_none() {
         match library.search(&options.keyword, options.limit.saturating_add(1)) {
             Ok(tracks) => tracks,
             Err(error) => {
@@ -3734,21 +3748,30 @@ pub(crate) fn run_online_search_with_options(
     } else {
         Vec::new()
     };
+    let local_before = local.len();
+    if options.artist.is_some() {
+        local.retain(|track| options.matches_artist(&track.artist));
+    }
+    let local_removed = local_before.saturating_sub(local.len());
+    // 默认视图给本地留 10 条上限，剩余名额给在线；显式 --limit 不压本地。
+    local.truncate(options.local_cap());
 
-    let (online_tracks, all_failed) =
+    let (mut online_tracks, all_failed) =
         match online.search_all_for(&options.keyword, options.per_source(), options.source) {
             Ok(result) => (result.tracks, result.all_failed),
             // 在线客户端初始化失败也不能吞掉本地结果。
             Err(_) => (Vec::new(), true),
         };
+    let online_before = online_tracks.len();
+    if options.artist.is_some() {
+        online_tracks.retain(|track| options.matches_artist(&track.artist));
+    }
+    let online_removed = online_before.saturating_sub(online_tracks.len());
 
+    let before_artist = local_before.saturating_add(online_before);
+    let removed = local_removed.saturating_add(online_removed);
     let mut hits: Vec<SearchHit> = local.into_iter().map(SearchHit::Local).collect();
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
-    let before_artist = hits.len();
-    if options.artist.is_some() {
-        hits.retain(|hit| options.matches_artist(hit.artist()));
-    }
-    let removed = before_artist.saturating_sub(hits.len());
     hits.truncate(options.limit);
     library.remember_hits(hits.clone());
     // 即使 0 条，也把上下文切成“空的 Search”，不保留上一张旧表。
@@ -5016,7 +5039,7 @@ mod tests {
         let (columns, rows) = table_of_block(&block);
         assert_eq!(columns, ["序号", "标题", "艺人", "时长"]);
         assert_eq!(rows[0], ["1", "第一首", "甲", "01:05"]);
-        assert_eq!(rows[1], ["2", "第二首", "乙", "02:05"]);
+        assert_eq!(rows[1], ["▶ 2", "第二首", "乙", "02:05"]);
     }
 
     #[test]
@@ -5030,7 +5053,7 @@ mod tests {
 
         let (columns, rows) = table_of_block(&block);
         assert_eq!(columns, ["序号", "标题", "艺人", "时长", "来源"]);
-        assert_eq!(rows[0], ["1", "远程歌", "上传者", "03:20", "B站"]);
+        assert_eq!(rows[0], ["▶ 1", "远程歌", "上传者", "03:20", "B站"]);
     }
 
     #[test]
@@ -6547,6 +6570,60 @@ mod tests {
             dir,
             OnlineService::from_parts(registry, cache, transport, covers_dir, cover_store),
         )
+    }
+
+    #[test]
+    fn run_online_search_default_caps_local_at_ten() {
+        let local_tracks: Vec<Track> = (0..20)
+            .map(|index| {
+                track(
+                    index,
+                    &format!("Local {index}"),
+                    "Artist",
+                    &format!("/music/{index}.flac"),
+                    1_000,
+                )
+            })
+            .collect();
+        let library = FakeLibraryApi::new().with_search_tracks(local_tracks);
+        let online_tracks: Vec<SourceTrack> = (0..20)
+            .map(|index| online_track(SourceId::Bilibili, &format!("BV{index}"), "Bili"))
+            .collect();
+        let online = FakeOnline {
+            tracks: online_tracks,
+            all_failed: false,
+        };
+        let options = SearchOptions {
+            keyword: "x".to_owned(),
+            artist: None,
+            source: None,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_search_with_options(
+            &options,
+            &online,
+            &library,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        let (_, rows) = table_of_block(done);
+        assert_eq!(rows.len(), 20);
+        assert_eq!(rows[0][1], "本地");
+        assert_eq!(rows[9][1], "本地");
+        assert_eq!(rows[10][1], "B站");
+        assert_eq!(rows[19][1], "B站");
     }
 
     #[test]
