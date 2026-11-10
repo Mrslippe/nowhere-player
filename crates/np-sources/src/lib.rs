@@ -20,7 +20,7 @@ mod testing;
 
 pub use artist::{
     MatchKind, ResolvedUp, build_query, match_artist_name, matches_artist, matches_artist_in_query,
-    resolve_up_user,
+    resolve_up_user, title_has_all_keywords,
 };
 pub use bilibili::BilibiliSource;
 pub use cache::{STREAM_CACHE_MAX_BYTES, STREAM_CACHE_TARGET_BYTES, StreamCache};

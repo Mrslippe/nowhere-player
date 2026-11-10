@@ -102,12 +102,22 @@ pub fn matches_artist_in_query(
     keyword: Option<&str>,
 ) -> MatchKind {
     if track.source == SourceId::Bilibili
-        && let Some(keyword) = keyword.map(str::trim).filter(|value| !value.is_empty())
-        && !track.title.to_lowercase().contains(&keyword.to_lowercase())
+        && let Some(keyword) = keyword
+        && !title_has_all_keywords(&track.title, keyword)
     {
         return MatchKind::None;
     }
     matches_artist(track, name)
+}
+
+/// 多关键词标题约束：每个空白分隔的词都要出现在标题里（不要求连续）。
+///
+/// 空关键词视为不过滤。B 站自己的分词不可控，这是结果侧能做的稳定兜底。
+pub fn title_has_all_keywords(title: &str, keyword: &str) -> bool {
+    let title = title.to_lowercase();
+    keyword
+        .split_whitespace()
+        .all(|token| title.contains(&token.to_lowercase()))
 }
 
 #[cfg(test)]
@@ -229,6 +239,32 @@ mod tests {
     fn netease_artist_substring_is_author() {
         let track = track(SourceId::Netease, "明前奶绿Official", "歌");
         assert_eq!(matches_artist(&track, "明前奶绿"), MatchKind::Author);
+    }
+
+    #[test]
+    fn title_constraint_requires_every_keyword_token() {
+        let track = track(
+            SourceId::Bilibili,
+            "搬运",
+            "明前奶绿 文静 老公天下第一 第一次",
+        );
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("文静 第一次")),
+            MatchKind::Title
+        );
+        assert_eq!(
+            matches_artist_in_query(&track, "明前奶绿", Some("文静 不存在")),
+            MatchKind::None
+        );
+    }
+
+    #[test]
+    fn title_constraint_does_not_require_contiguous_phrase() {
+        assert!(title_has_all_keywords(
+            "【明前奶绿】第一次 唱 文静",
+            "文静 第一次"
+        ));
+        assert!(!title_has_all_keywords("【明前奶绿】第一次", "文静 第一次"));
     }
 
     #[test]
