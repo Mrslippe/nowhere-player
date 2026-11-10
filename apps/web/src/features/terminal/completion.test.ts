@@ -7,6 +7,7 @@ import {
   COMPLETION_DEBOUNCE_MS,
   charLength,
   commandPrefix,
+  completionMotion,
   decideKey,
   fromCharOffset,
   shouldRequestRealtimeCompletion,
@@ -188,6 +189,25 @@ describe("历史导航期间不触发候选（T-0046 A）", () => {
   });
 });
 
+describe("候选动效状态（T-0051 E）", () => {
+  const first = openCompletion(completion([item("a"), item("b")]))!;
+
+  it("首次出现 -> enter；关闭 -> none", () => {
+    expect(completionMotion(null, first)).toBe("enter");
+    expect(completionMotion(first, null)).toBe("none");
+  });
+
+  it("可见且内容相同 -> none，不重播", () => {
+    const same = openCompletion(completion([item("a"), item("b")]))!;
+    expect(completionMotion(first, same)).toBe("none");
+  });
+
+  it("可见且内容变了 -> update", () => {
+    const changed = openCompletion(completion([item("a"), item("c")]))!;
+    expect(completionMotion(first, changed)).toBe("update");
+  });
+});
+
 describe("按键归属（T-0020 §11）", () => {
   it("弹层关闭时 Tab 请求补全，不改变输入", () => {
     const decision = decideKey("tab", "pl", null);
@@ -222,7 +242,24 @@ describe("按键归属（T-0020 §11）", () => {
     expect(decision.popup?.activeIndex).toBe(0);
   });
 
-  it("弹层打开时 ↑/↓ 归弹层，不翻历史", () => {
+  it("historyNavigating=true 时旧弹层仍在也归历史，不选候选", () => {
+    const popup = openCompletion(completion([item("a"), item("b")]))!;
+
+    const up = decideKey("arrow-up", "", popup, true);
+    const down = decideKey("arrow-down", "", popup, true);
+
+    expect(up.historyStep).toBe(-1);
+    expect(down.historyStep).toBe(1);
+    expect(up.popup).toBeNull();
+    expect(down.popup).toBeNull();
+  });
+
+  it("historyNavigating=true 且弹层已关时仍翻历史", () => {
+    expect(decideKey("arrow-up", "", null, true).historyStep).toBe(-1);
+    expect(decideKey("arrow-down", "", null, true).historyStep).toBe(1);
+  });
+
+  it("弹层打开且未导航时 ↑/↓ 归弹层，不翻历史", () => {
     const popup = openCompletion(
       completion([item("a"), item("b"), item("c")]),
     )!;

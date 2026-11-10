@@ -28,6 +28,26 @@ describe("TableOutput", () => {
     expect(html).toContain("曲名");
     expect(html).toContain("晴天");
     expect(html).toContain('data-label="备注"');
+    expect(html).toContain('data-role="index"');
+    expect(html).toContain('data-role="title"');
+  });
+
+  it("search/queue/playlist show 的共同角色：标题吃剩余、艺人固定", () => {
+    const html = renderToStaticMarkup(
+      <TableOutput
+        output={{
+          type: "table",
+          columns: ["序号", "来源", "标题", "艺人", "时长"],
+          rows: [["1", "本地", "晴天", "周杰伦", "4:29"]],
+          selectable: true,
+        }}
+      />,
+    );
+
+    expect(html).toContain('data-role="source"');
+    expect(html).toContain('data-role="title"');
+    expect(html).toContain('data-role="artist"');
+    expect(html).toContain('data-role="duration"');
   });
 
   it("超过 40 字符的单元格显示 …，title 保留全文", () => {

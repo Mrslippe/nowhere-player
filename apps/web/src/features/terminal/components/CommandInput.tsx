@@ -3,6 +3,7 @@ import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import type { Completion } from "../../../shared/command-bridge";
 import {
   COMPLETION_DEBOUNCE_MS,
+  completionMotion,
   decideKey,
   openCompletion,
   shouldRequestRealtimeCompletion,
@@ -62,6 +63,8 @@ export function CommandInput({
   const [value, setValue] = useState("");
   const [focused, setFocused] = useState(false);
   const [popup, setPopup] = useState<CompletionPopupState | null>(null);
+  const [popupMotion, setPopupMotion] = useState<"none" | "enter" | "update">("none");
+  const [popupRevision, setPopupRevision] = useState(0);
   const [caret, setCaretState] = useState(0);
   const [history, setHistory] = useState<HistoryCursor>(() =>
     createHistoryCursor(
@@ -75,6 +78,8 @@ export function CommandInput({
   const skipRealtimeRef = useRef(false);
   /** ↑/↓ 翻历史期间保持 true；用户再输入一个字符才清掉（T-0046 A）。 */
   const historyNavigatingRef = useRef(false);
+  /** 当前弹层内容，用于判断可见→可见时是否真的变了（T-0051 E）。 */
+  const popupRef = useRef<CompletionPopupState | null>(null);
 
   useEffect(() => {
     if (persistHistory) {
@@ -127,6 +132,12 @@ export function CommandInput({
     }, 0);
   };
 
+  const closePopup = (): void => {
+    popupRef.current = null;
+    setPopupMotion("none");
+    setPopup(null);
+  };
+
   const requestCompletion = (input: string, caret: number): void => {
     if (complete === undefined) {
       return;
@@ -141,14 +152,21 @@ export function CommandInput({
         if (requestRef.current !== request) {
           return;
         }
-        setPopup(openCompletion(completion));
+        const next = openCompletion(completion);
+        const motion = completionMotion(popupRef.current, next);
+        popupRef.current = next;
+        setPopup(next);
+        setPopupMotion(motion);
+        if (motion !== "none") {
+          setPopupRevision((revision) => revision + 1);
+        }
       })
       .catch(() => {
         if (requestRef.current !== request) {
           return;
         }
         // 补全失败降级：不弹层、不改输入；绝不阻塞继续输入。
-        setPopup(null);
+        closePopup();
       });
   };
 
@@ -169,7 +187,7 @@ export function CommandInput({
       )
     ) {
       if (!historyNavigatingRef.current) {
-        setPopup(null);
+        closePopup();
       }
       return;
     }
@@ -184,7 +202,7 @@ export function CommandInput({
     requestRef.current += 1;
     skipRealtimeRef.current = false;
     historyNavigatingRef.current = false;
-    setPopup(null);
+    closePopup();
     setValue(event.target.value);
     setCaretState(event.target.selectionStart ?? event.target.value.length);
   };
@@ -208,11 +226,16 @@ export function CommandInput({
       return;
     }
 
-    const decision = decideKey(key, value, popup);
+    const decision = decideKey(
+      key,
+      value,
+      popup,
+      historyNavigatingRef.current,
+    );
 
     if (decision.submit) {
       // Enter 执行当前输入；即使弹层打开也不采纳候选。
-      setPopup(null);
+      closePopup();
       return;
     }
 
@@ -240,13 +263,15 @@ export function CommandInput({
           : historyDown(history, value);
       setHistory(moved.cursor);
       setValue(moved.value);
-      setPopup(null);
+      closePopup();
       setCaretState(moved.value.length);
       setCaret(moved.value.length);
       return;
     }
 
-    if (decision.popup !== popup) {
+    if (decision.popup === null) {
+      closePopup();
+    } else if (decision.popup !== popup) {
       event.preventDefault();
       setPopup(decision.popup);
     }
@@ -264,7 +289,7 @@ export function CommandInput({
 
     requestRef.current += 1;
     historyNavigatingRef.current = false;
-    setPopup(null);
+    closePopup();
     // 每条命令执行后入栈（成功失败都算），连续重复由 pushHistory 去重。
     setHistory(createHistoryCursor(pushHistory(history.entries, input)));
     onSubmit(input);
@@ -277,6 +302,7 @@ export function CommandInput({
     <form
       className={["np-lab__input-row", focusBarClass(focused)].filter(Boolean).join(" ")}
       onSubmit={submit}
+      data-completion-motion={popupMotion}
       aria-label="命令输入"
     >
       <span className="np-lab__prompt" aria-hidden="true">
@@ -303,6 +329,7 @@ export function CommandInput({
       />
       {popup !== null && (
         <CompletionPopup
+          key={popupRevision}
           completion={popup.completion}
           activeIndex={popup.activeIndex}
         />

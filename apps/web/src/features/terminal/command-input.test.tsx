@@ -62,11 +62,17 @@ describe("焦点条形状（T-0050 B 修正）", () => {
     };
     const css = fs.readFileSync(new URL("./terminal.css", import.meta.url), "utf8");
 
-    expect(css).toContain("inset: 0 0 -2px 0");
-    expect(css).toContain("border-radius: var(--np-radius-control)");
+    expect(css).toContain("inset: auto 0 -2px 0");
+    expect(css).toContain("height: 14px");
+    expect(css).toContain("border-bottom-left-radius: var(--np-radius-control)");
+    expect(css).toContain("border-bottom-right-radius: var(--np-radius-control)");
     expect(css).toContain("clip-path: inset(0 100% 0 0)");
     expect(css).toContain("clip-path: inset(0 0 0 0)");
     expect(css).not.toContain("scaleX(");
+    expect(css).toContain("np-completion-enter");
+    expect(css).toContain("np-completion-update");
+    expect(css).toContain("translateY(4px)");
+    expect(css).toContain("animation: none");
   });
 });
 

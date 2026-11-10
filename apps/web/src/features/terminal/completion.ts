@@ -129,6 +129,38 @@ export function shouldRequestRealtimeCompletion(
   return !historyNavigating && commandPrefix(input, caret) !== null;
 }
 
+/** 候选弹层的过渡类型（T-0051 E）。 */
+export type CompletionMotion = "none" | "enter" | "update";
+
+function completionSignature(state: CompletionPopupState): string {
+  return [
+    state.completion.replaceStart,
+    state.completion.replaceEnd,
+    ...state.completion.items.map(
+      (item) => `${item.kind}\u0000${item.text}\u0000${item.summary}`,
+    ),
+  ].join("\u0001");
+}
+
+/**
+ * 只在“可见 → 可见且内容变了”时给 update；首次出现给 enter；
+ * 内容相同（连续输入但候选集合没变）不重播。
+ */
+export function completionMotion(
+  previous: CompletionPopupState | null,
+  next: CompletionPopupState | null,
+): CompletionMotion {
+  if (next === null) {
+    return "none";
+  }
+  if (previous === null) {
+    return "enter";
+  }
+  return completionSignature(previous) === completionSignature(next)
+    ? "none"
+    : "update";
+}
+
 /** 当前高亮的候选；空列表为 `null`。 */
 export function activeItem(
   state: CompletionPopupState,
@@ -195,13 +227,16 @@ const NO_OP: KeyDecision = {
 /**
  * 按键归属（T-0020 §11）：
  *
- * - 弹层打开：`↑/↓` 移动高亮、`Tab` 采纳第一条（不关闭）、`Enter` 提交当前输入、`Esc` 关闭；
- * - 弹层关闭：`↑/↓` 翻历史、`Enter` 提交、`Tab` 请求补全。
+ * - 历史导航中：`↑/↓` 只翻历史，哪怕还留着一份旧弹层；
+ * - 弹层打开且不在历史导航：`↑/↓` 移动高亮；
+ * - 弹层关闭：`↑/↓` 翻历史；
+ * - `Tab` / `Enter` / `Esc` 行为不随历史导航改变。
  */
 export function decideKey(
   key: InputKey,
   input: string,
   popup: CompletionPopupState | null,
+  historyNavigating = false,
 ): KeyDecision {
   switch (key) {
     case "tab": {
@@ -217,14 +252,14 @@ export function decideKey(
     }
 
     case "arrow-up": {
-      if (popup === null) {
+      if (historyNavigating || popup === null) {
         return { ...NO_OP, historyStep: -1 };
       }
       return { ...NO_OP, popup: moveCompletion(popup, -1) };
     }
 
     case "arrow-down": {
-      if (popup === null) {
+      if (historyNavigating || popup === null) {
         return { ...NO_OP, historyStep: 1 };
       }
       return { ...NO_OP, popup: moveCompletion(popup, 1) };

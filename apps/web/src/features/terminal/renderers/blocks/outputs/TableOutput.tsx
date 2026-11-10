@@ -3,6 +3,30 @@ import type { TableOutput as TableOutputModel } from "../../../../../shared/term
 /** 单元格最大字符数（ARCH-005 §3）。 */
 const MAX_CELL_CHARS = 40;
 
+/** 列宽角色：标题永远吃剩余空间，其余列固定（T-0051 B）。 */
+type ColumnRole = "index" | "source" | "title" | "artist" | "duration" | "current";
+
+function columnRole(column: string): ColumnRole | null {
+  switch (column) {
+    case "#":
+    case "序号":
+      return "index";
+    case "来源":
+      return "source";
+    case "标题":
+    case "曲名":
+      return "title";
+    case "艺人":
+      return "artist";
+    case "时长":
+      return "duration";
+    case "当前":
+      return "current";
+    default:
+      return null;
+  }
+}
+
 /** 超长单元格截断为 `…` 并把全文放进 `title`。 */
 function truncateCell(value: string): { text: string; title: string | undefined } {
   const characters = Array.from(value);
@@ -35,11 +59,14 @@ export function TableOutput({ output }: TableOutputProps) {
       >
         <thead>
           <tr>
-            {output.columns.map((column, index) => (
-              <th key={index} scope="col">
-                {column}
-              </th>
-            ))}
+            {output.columns.map((column, index) => {
+              const role = columnRole(column);
+              return (
+                <th key={index} scope="col" data-role={role ?? undefined}>
+                  {column}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -47,9 +74,15 @@ export function TableOutput({ output }: TableOutputProps) {
             <tr key={rowIndex}>
               {output.columns.map((column, cellIndex) => {
                 const cell = truncateCell(row[cellIndex] ?? "");
+                const role = columnRole(column);
 
                 return (
-                  <td key={cellIndex} data-label={column} title={cell.title}>
+                  <td
+                    key={cellIndex}
+                    data-label={column}
+                    data-role={role ?? undefined}
+                    title={cell.title}
+                  >
                     {cell.text}
                   </td>
                 );

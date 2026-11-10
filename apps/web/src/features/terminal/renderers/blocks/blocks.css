@@ -196,43 +196,41 @@
 }
 
 /* 序号 / 时长：等宽、右对齐；表头同列也右对齐。 */
-.np-blocks-table th:first-child,
-.np-blocks-table td:first-child,
-.np-blocks-table th:last-child,
-.np-blocks-table td:last-child {
+.np-blocks-table th[data-role="index"],
+.np-blocks-table td[data-role="index"],
+.np-blocks-table th[data-role="duration"],
+.np-blocks-table td[data-role="duration"],
+.np-blocks-table th[data-role="current"],
+.np-blocks-table td[data-role="current"] {
   font-family: var(--np-font-mono);
   font-size: var(--fs-11);
   text-align: right;
 }
 
-/* 5 列搜索结果：序号 48 / 来源 72 / 标题 1fr / 艺人 120 / 时长 72。 */
-.np-blocks-table[data-columns="5"] th:nth-child(1),
-.np-blocks-table[data-columns="5"] td:nth-child(1) { width: var(--np-col-index); }
-.np-blocks-table[data-columns="5"] th:nth-child(2),
-.np-blocks-table[data-columns="5"] td:nth-child(2) { width: var(--np-col-source); }
-.np-blocks-table[data-columns="5"] th:nth-child(4),
-.np-blocks-table[data-columns="5"] td:nth-child(4) { width: var(--np-col-artist); }
-.np-blocks-table[data-columns="5"] th:nth-child(5),
-.np-blocks-table[data-columns="5"] td:nth-child(5) { width: var(--np-col-duration); }
+/*
+ * 统一列宽（T-0051 B）：queue list / search / playlist show 同一套。
+ * 标题不写 width，吃掉剩余空间；其余固定。search 的“来源”在第 2 列，
+ * playlist show 的在最后一列，所以按 data-role 而不是列序号定位。
+ */
+.np-blocks-table th[data-role="index"],
+.np-blocks-table td[data-role="index"] { width: var(--np-col-index); }
 
-/* 4 列库列表：序号 48 / 标题 1fr / 艺人 120 / 时长 72。 */
-.np-blocks-table[data-columns="4"] th:nth-child(1),
-.np-blocks-table[data-columns="4"] td:nth-child(1) { width: var(--np-col-index); }
-.np-blocks-table[data-columns="4"] th:nth-child(3),
-.np-blocks-table[data-columns="4"] td:nth-child(3) { width: var(--np-col-artist); }
-.np-blocks-table[data-columns="4"] th:nth-child(4),
-.np-blocks-table[data-columns="4"] td:nth-child(4) { width: var(--np-col-duration); }
+.np-blocks-table th[data-role="source"],
+.np-blocks-table td[data-role="source"] { width: var(--np-col-source); }
 
-/* 3 列队列：序号 48 / 曲目 1fr / 当前 72。 */
-.np-blocks-table[data-columns="3"] th:nth-child(1),
-.np-blocks-table[data-columns="3"] td:nth-child(1) { width: var(--np-col-index); }
-.np-blocks-table[data-columns="3"] th:nth-child(3),
-.np-blocks-table[data-columns="3"] td:nth-child(3) { width: var(--np-col-duration); }
+.np-blocks-table th[data-role="artist"],
+.np-blocks-table td[data-role="artist"] { width: 160px; }
+
+.np-blocks-table th[data-role="duration"],
+.np-blocks-table td[data-role="duration"] { width: var(--np-col-duration); }
+
+.np-blocks-table th[data-role="current"],
+.np-blocks-table td[data-role="current"] { width: var(--np-col-duration); }
 
 /* 来源/艺人是元信息，降到 11px；标题保持 13px 正文。 */
-.np-blocks-table[data-columns="5"] td:nth-child(2),
-.np-blocks-table[data-columns="5"] td:nth-child(4),
-.np-blocks-table[data-columns="4"] td:nth-child(3) {
+.np-blocks-table td[data-role="source"],
+.np-blocks-table td[data-role="artist"],
+.np-blocks-table td[data-role="current"] {
   color: var(--fg-muted);
   font-size: var(--fs-11);
 }
