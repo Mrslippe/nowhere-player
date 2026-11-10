@@ -259,6 +259,29 @@ pub(crate) fn theme_apply(app: AppHandle, id: String) -> Result<ThemeApplyReply,
     apply_theme(&dir, &id)
 }
 
+/// `theme.initial`：启动时从 settings 读回 `theme.id`；主题文件已失效则清掉并回落默认。
+#[tauri::command(rename = "theme.initial")]
+pub(crate) fn theme_initial(
+    app: AppHandle,
+    library: State<'_, LibraryHandle>,
+) -> Result<Option<String>, CmdErrorPayload> {
+    let Some(id) = library.settings().theme_id() else {
+        return Ok(None);
+    };
+    let dir = themes_dir(&app).map_err(|error| CmdErrorPayload {
+        code: error.code,
+        message: error.message,
+        hint: error.hint,
+    })?;
+    match apply_theme(&dir, &id) {
+        Ok(_) => Ok(Some(id)),
+        Err(_) => {
+            let _ = library.settings().unset_and_save("theme.id");
+            Ok(None)
+        }
+    }
+}
+
 /// `theme.exportBuiltin`：把内置主题导出成 `<appdata>/themes/<id>.json` 样例。
 ///
 /// 已存在同名文件时不覆盖（用户可能正在改它），返回 `created: false`。
@@ -284,7 +307,7 @@ pub(crate) struct ThemeExportReply {
 /// 用户主题目录：`<appdata>/themes`（不存在时按需创建，不在这里建）。
 const THEMES_DIR: &str = "themes";
 
-fn themes_dir(app: &AppHandle) -> Result<PathBuf, ThemeError> {
+pub(crate) fn themes_dir(app: &AppHandle) -> Result<PathBuf, ThemeError> {
     let base = app
         .path()
         .app_data_dir()
@@ -304,7 +327,7 @@ fn parse_json<T: DeserializeOwned>(text: &str) -> Result<T, String> {
 }
 
 /// 列出内置 + 用户主题；同名时用户主题覆盖内置（便于就地改内置主题）。
-fn list_themes(dir: &Path) -> Vec<ThemeListEntry> {
+pub(crate) fn list_themes(dir: &Path) -> Vec<ThemeListEntry> {
     let mut entries: BTreeMap<String, ThemeListEntry> = BTreeMap::new();
 
     for theme in BUILTIN_THEMES.iter() {
@@ -337,7 +360,7 @@ fn user_theme_entries(dir: &Path) -> Vec<ThemeListEntry> {
     entries
 }
 
-fn apply_theme(dir: &Path, id: &str) -> Result<ThemeApplyReply, ThemeError> {
+pub(crate) fn apply_theme(dir: &Path, id: &str) -> Result<ThemeApplyReply, ThemeError> {
     let id = id.trim();
     // 先校验再拼路径：id 里有 `..` / 分隔符时连文件都不碰。
     np_core::theme::validate_theme_id(id)?;
@@ -358,7 +381,7 @@ fn apply_theme(dir: &Path, id: &str) -> Result<ThemeApplyReply, ThemeError> {
     )
 }
 
-fn export_builtin(dir: &Path, id: &str) -> Result<ThemeExportReply, ThemeError> {
+pub(crate) fn export_builtin(dir: &Path, id: &str) -> Result<ThemeExportReply, ThemeError> {
     let id = id.trim();
     let theme = BuiltinTheme::find(id).ok_or_else(|| {
         ThemeError::new(E_THEME_NOT_FOUND, format!("没有内置主题：{id}"))

@@ -45,6 +45,7 @@ pub fn run() {
             ipc::library_track_by_path,
             ipc::theme_list,
             ipc::theme_apply,
+            ipc::theme_initial,
             ipc::theme_export_builtin,
             command_exec::cmd_exec,
             command_exec::cmd_complete,
@@ -56,8 +57,10 @@ pub fn run() {
             let db_path = app.path().app_data_dir()?.join("library.db");
             // 在线音频缓存放系统缓存目录（不随备份同步）；旧 app_data/streams 会失效。
             let cache_root = app.path().app_cache_dir()?;
-            app.manage(command_exec::LibraryHandle::with_cache_root(
-                db_path, cache_root,
+            // settings.json 在 config 目录；setup 先读一次，供主题恢复与音源开关使用。
+            let config_dir = app.path().app_config_dir()?;
+            app.manage(command_exec::LibraryHandle::with_config_dir(
+                db_path, cache_root, config_dir,
             ));
             let handle = app.handle();
             windows::create_player(handle)?;

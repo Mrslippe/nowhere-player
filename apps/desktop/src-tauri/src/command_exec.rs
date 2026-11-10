@@ -13,7 +13,7 @@
 //! - `mode` 一次下发完整 `{ repeat, shuffle }`，避免两次调用互相覆盖。
 //! - `clear` 是视图操作，由前端处理；执行器只留一条防御性错误。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,7 +24,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use np_core::command::{Completion, complete, parse, registry};
 use np_core::{
     Block, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState, PlayerError,
-    PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, Span,
+    PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, SettingValue, Settings,
+    SettingsWarning, Span, ThemeApplyReply, ThemeError, ThemeListEntry, ThemeSource,
+    validate_setting,
 };
 use np_library::{
     CoverCacheUsage, Database, LibraryError, ScanObserver, ScanReport, Scanner, Stats, Track,
@@ -105,6 +107,10 @@ pub(crate) trait LibraryApi {
             .map(SearchHit::Local)
             .collect()
     }
+    /// 按路径查元数据；`cache clear` 用它判断当前是否在播远程曲目。
+    fn track_by_path(&self, _path: &str) -> Result<Option<Track>, CmdError> {
+        Ok(None)
+    }
 }
 
 /// 前台观察者：后台扫描通过它把进度与结果送回 UI 线程。
@@ -182,6 +188,35 @@ fn source_label(source: SourceId) -> &'static str {
     }
 }
 
+fn source_id_from_enabled_key(key: &str) -> Option<&str> {
+    key.strip_prefix("source.")
+        .and_then(|rest| rest.strip_suffix(".enabled"))
+}
+
+fn known_source_ids(online: &dyn OnlineApi) -> Vec<SourceId> {
+    online.known_sources()
+}
+
+fn known_source_by_str(known: &[SourceId], id: &str) -> Option<SourceId> {
+    known.iter().copied().find(|source| source.as_str() == id)
+}
+
+fn target_label(target: CacheTarget) -> &'static str {
+    match target {
+        CacheTarget::Streams => "streams",
+        CacheTarget::Covers => "covers",
+        CacheTarget::All => "streams + covers",
+    }
+}
+
+fn source_description(source: SourceId) -> &'static str {
+    match source {
+        SourceId::Bilibili => "视频站，匿名搜索 + DASH 音频",
+        SourceId::Netease => "音乐站，匿名搜索 + 版权受限时提示",
+        SourceId::Ytdlp => "外部二进制（后续接入）",
+    }
+}
+
 /// 跨源搜索的合并结果。
 #[derive(Debug)]
 pub(crate) struct OnlineSearch {
@@ -219,6 +254,53 @@ struct RemoteMeta {
     cover_key: Option<String>,
 }
 
+/// 缓存清理目标。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheTarget {
+    Streams,
+    Covers,
+    All,
+}
+
+impl CacheTarget {
+    fn parse(raw: &str) -> Result<Self, CmdError> {
+        match raw {
+            "streams" => Ok(Self::Streams),
+            "covers" => Ok(Self::Covers),
+            "all" => Ok(Self::All),
+            _ => Err(CmdError::new("E_CMD_ARG", format!("未知缓存目标：{raw}"))
+                .with_hint("可用：streams / covers / all")),
+        }
+    }
+
+    fn includes_streams(self) -> bool {
+        matches!(self, Self::Streams | Self::All)
+    }
+
+    fn includes_covers(self) -> bool {
+        matches!(self, Self::Covers | Self::All)
+    }
+}
+
+/// 缓存统计（文件数 + 字节数）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CacheUsage {
+    pub(crate) streams_files: u64,
+    pub(crate) streams_bytes: u64,
+    pub(crate) covers_files: u64,
+    pub(crate) covers_bytes: u64,
+}
+
+impl CacheUsage {
+    fn total_files(self) -> u64 {
+        self.streams_files.saturating_add(self.covers_files)
+    }
+
+    fn total_bytes(self) -> u64 {
+        self.streams_bytes.saturating_add(self.covers_bytes)
+    }
+}
+
 /// 命令层依赖的在线音源能力；生产实现是 [`OnlineService`]，单测用假实现。
 pub(crate) trait OnlineApi: Send + Sync {
     /// 串行搜索所有在线源；单源失败在实现内隔离。
@@ -229,12 +311,111 @@ pub(crate) trait OnlineApi: Send + Sync {
         track: &SourceTrack,
         progress: &mut dyn FnMut(u64),
     ) -> Result<PreparedTrack, CmdError>;
+    /// 已知源 id（含被禁用的），顺序稳定。
+    fn known_sources(&self) -> Vec<SourceId> {
+        Vec::new()
+    }
+    /// 进程内启停一个源；下次搜索/prepare 立即生效。
+    fn set_source_enabled(&self, _source: SourceId, _enabled: bool) -> Result<(), CmdError> {
+        Err(CmdError::new(
+            "E_SRC_UNAVAILABLE",
+            "当前在线服务不支持音源开关",
+        ))
+    }
+    /// streams / covers 的文件数与体积。
+    fn cache_usage(&self) -> Result<CacheUsage, CmdError> {
+        Err(CmdError::new(
+            "E_SRC_UNAVAILABLE",
+            "当前在线服务不支持缓存统计",
+        ))
+    }
+    /// 删除目标目录下的文件（不删目录），返回释放字节数。
+    fn clear_cache(&self, _target: CacheTarget) -> Result<u64, CmdError> {
+        Err(CmdError::new(
+            "E_SRC_UNAVAILABLE",
+            "当前在线服务不支持缓存清理",
+        ))
+    }
 }
 
 /// 后台播放线程需要用到的播放器能力；`PlayerHandle` 实现它。
 pub(crate) trait PlaybackTarget: Send + Sync {
     /// 播放本地路径。
     fn play_path(&self, path: &str) -> Result<PlaybackState, CmdError>;
+}
+
+/// `theme.export` 的回执（不把 ipc 的内部结构漏给命令层以外）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ThemeExportTarget {
+    pub(crate) path: String,
+    pub(crate) created: bool,
+}
+
+/// 命令层依赖的主题能力；生产实现是 [`ThemeHandle`]，单测用假实现。
+pub(crate) trait ThemeApi: Send + Sync {
+    fn list(&self) -> Result<Vec<ThemeListEntry>, CmdError>;
+    fn apply(&self, id: &str) -> Result<ThemeApplyReply, CmdError>;
+    fn export(&self, id: &str) -> Result<ThemeExportTarget, CmdError>;
+    /// `theme set` 写盘成功后广播给两个窗口。
+    fn broadcast(&self, id: &str);
+}
+
+/// `theme:changed` 事件名与载荷（前端监听后调用 `theme.apply`）。
+pub(crate) const THEME_CHANGED_EVENT: &str = "theme:changed";
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThemeChanged {
+    id: String,
+}
+
+/// 生产主题服务：复用 ipc 里的用户主题目录/加载/导出逻辑，只额外负责广播。
+pub(crate) struct ThemeHandle {
+    dir: PathBuf,
+    app: AppHandle,
+}
+
+impl ThemeHandle {
+    pub(crate) fn for_app(app: AppHandle) -> Result<Self, CmdError> {
+        let dir = crate::ipc::themes_dir(&app).map_err(theme_error)?;
+        Ok(Self { dir, app })
+    }
+}
+
+impl ThemeApi for ThemeHandle {
+    fn list(&self) -> Result<Vec<ThemeListEntry>, CmdError> {
+        Ok(crate::ipc::list_themes(&self.dir))
+    }
+
+    fn apply(&self, id: &str) -> Result<ThemeApplyReply, CmdError> {
+        crate::ipc::apply_theme(&self.dir, id).map_err(theme_error)
+    }
+
+    fn export(&self, id: &str) -> Result<ThemeExportTarget, CmdError> {
+        crate::ipc::export_builtin(&self.dir, id)
+            .map(|reply| ThemeExportTarget {
+                path: reply.path,
+                created: reply.created,
+            })
+            .map_err(theme_error)
+    }
+
+    fn broadcast(&self, id: &str) {
+        if let Err(error) = self
+            .app
+            .emit(THEME_CHANGED_EVENT, ThemeChanged { id: id.to_owned() })
+        {
+            eprintln!("[theme] emit {THEME_CHANGED_EVENT} failed: {error}");
+        }
+    }
+}
+
+fn theme_error(error: ThemeError) -> CmdError {
+    CmdError {
+        code: error.code,
+        message: error.message,
+        hint: error.hint,
+    }
 }
 
 /// 扫描进度节流的默认间隔：2 Hz。
@@ -362,6 +543,116 @@ impl CmdError {
     }
 }
 
+/// 进程内设置单例：`<config_dir>/settings.json` + 一把锁。
+///
+/// 纯逻辑在 `np_core::settings`；这里只负责路径、缓存与错误码转换。
+pub(crate) struct SettingsHandle {
+    dir: PathBuf,
+    inner: Mutex<Settings>,
+    warnings: Vec<SettingsWarning>,
+}
+
+impl SettingsHandle {
+    pub(crate) fn load(dir: PathBuf) -> Self {
+        let (settings, warnings) = Settings::load(&dir);
+        Self {
+            dir,
+            inner: Mutex::new(settings),
+            warnings,
+        }
+    }
+
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub(crate) fn warnings(&self) -> &[SettingsWarning] {
+        &self.warnings
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<SettingValue> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key)
+            .cloned()
+    }
+
+    pub(crate) fn get_str(&self, key: &str) -> Option<String> {
+        self.get(key)
+            .and_then(|value| value.as_str().map(str::to_owned))
+    }
+
+    pub(crate) fn get_bool(&self, key: &str) -> Option<bool> {
+        self.get(key).and_then(|value| value.as_bool())
+    }
+
+    pub(crate) fn theme_id(&self) -> Option<String> {
+        self.get_str("theme.id")
+    }
+
+    pub(crate) fn entries(&self) -> Vec<(String, SettingValue)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.clone()))
+            .collect()
+    }
+
+    pub(crate) fn enabled_source_ids(&self, known: &[SourceId]) -> HashSet<SourceId> {
+        known
+            .iter()
+            .copied()
+            .filter(|source| {
+                self.get_bool(&format!("source.{source}.enabled"))
+                    .unwrap_or(true)
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_and_save(
+        &self,
+        key: impl Into<String>,
+        value: SettingValue,
+    ) -> Result<(), CmdError> {
+        let mut settings = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        settings.set(key, value);
+        save_settings(&self.dir, &settings)
+    }
+
+    pub(crate) fn unset_and_save(&self, key: &str) -> Result<Option<SettingValue>, CmdError> {
+        let mut settings = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = settings.unset(key);
+        save_settings(&self.dir, &settings)?;
+        Ok(removed)
+    }
+
+    pub(crate) fn reset_and_save(&self) -> Result<(), CmdError> {
+        let mut settings = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        settings.reset();
+        save_settings(&self.dir, &settings)
+    }
+}
+
+fn save_settings(dir: &Path, settings: &Settings) -> Result<(), CmdError> {
+    settings
+        .save(dir)
+        .map_err(|error| CmdError::new("E_SETTINGS_IO", error.to_string()))
+}
+
+/// 当前注册表支持的全部源（`source list` 在禁用状态下也要能列出来）。
+pub(crate) const KNOWN_SOURCES: [SourceId; 2] = [SourceId::Bilibili, SourceId::Netease];
+
 /// 拼写建议的展示文案，与 `ParseError` 的 `Display` 保持一致。
 fn suggestion(name: &str) -> String {
     format!("did you mean '{name}'?")
@@ -430,9 +721,22 @@ pub(crate) fn execute(api: &dyn PlayerApi, block_id: &str, input: &str) -> Execu
 ///
 /// `library scan` 的后台线程可能很快结束，所以 `cmd_exec` 会在调用本函数
 /// **之前**先推 `running` 块，保证进度事件不会先于它到达前端。
+#[cfg(test)]
 pub(crate) fn execute_with_library(
     api: &dyn PlayerApi,
     library: &dyn LibraryApi,
+    block_id: &str,
+    input: &str,
+    observer: Arc<dyn LibraryObserver>,
+) -> Execution {
+    execute_with_services(api, library, Services::default(), block_id, input, observer)
+}
+
+/// 带设置 / 主题 / 在线源依赖的执行入口（生产 `cmd_exec` 用）。
+pub(crate) fn execute_with_services(
+    api: &dyn PlayerApi,
+    library: &dyn LibraryApi,
+    services: Services<'_>,
     block_id: &str,
     input: &str,
     observer: Arc<dyn LibraryObserver>,
@@ -461,6 +765,7 @@ pub(crate) fn execute_with_library(
             api,
             library,
             observer,
+            services,
         }
         .run(parsed),
         // 引号未闭合这类错误定位不到命令，没有 usage / 建议，给一句通用提示
@@ -500,11 +805,20 @@ pub(crate) fn execute_with_library(
     }
 }
 
+/// 设置/主题/在线源这几类命令的依赖；旧测试可以全部传 `None`。
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Services<'a> {
+    pub(crate) settings: Option<&'a SettingsHandle>,
+    pub(crate) theme: Option<&'a dyn ThemeApi>,
+    pub(crate) online: Option<&'a dyn OnlineApi>,
+}
+
 /// 把 [`Parsed`] 映射成 [`PlayerApi`] / [`LibraryApi`] 调用并构造输出。
 struct Executor<'a> {
     api: &'a dyn PlayerApi,
     library: &'a dyn LibraryApi,
     observer: Arc<dyn LibraryObserver>,
+    services: Services<'a>,
 }
 
 impl Executor<'_> {
@@ -534,6 +848,10 @@ impl Executor<'_> {
             "mode" => self.mode(parsed),
             "library" => self.library(parsed),
             "search" => self.search(parsed),
+            "theme" => self.theme(parsed),
+            "config" => self.config(parsed),
+            "source" => self.source(parsed),
+            "cache" => self.cache(parsed),
             "help" => self.help(parsed),
             "version" => Ok(Self::version()),
             "clear" => Err(CmdError::new("E_CMD_ARG", "clear 由终端本地处理")
@@ -966,7 +1284,456 @@ impl Executor<'_> {
         Ok(Outcome { outputs, footer })
     }
 
-    /// `help`：不带参数列全部命令；带参数显示该命令的用法与说明。
+    /// `theme`：列出 / 切换 / 导出。切换会写 settings 并广播 `theme:changed`。
+    fn theme(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let theme = self
+            .services
+            .theme
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "主题服务未接入"))?;
+        let settings = self
+            .services
+            .settings
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "设置服务未接入"))?;
+
+        match parsed.subcommand.map(|subcommand| subcommand.name) {
+            Some("set") => {
+                let id = positional_arg(parsed, "主题 id")?;
+                let applied = theme.apply(id)?;
+                settings.set_and_save("theme.id", SettingValue::Str(applied.id.clone()))?;
+                theme.broadcast(&applied.id);
+
+                let source = match applied.source {
+                    ThemeSource::Builtin => "内置",
+                    ThemeSource::User => "用户",
+                };
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("主题已切换"),
+                        plain(format!(" · {}", applied.name)),
+                        dim(format!(" · {} · {source}", applied.id)),
+                    ])],
+                    footer: Some("重启后仍会恢复到这个主题".to_owned()),
+                })
+            }
+            Some("export") => {
+                let id = positional_arg(parsed, "主题 id")?;
+                let target = theme.export(id)?;
+                let detail = if target.created {
+                    "已导出"
+                } else {
+                    "文件已存在，未覆盖"
+                };
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("主题导出"),
+                        plain(format!(" · {detail}")),
+                        dim(format!(" · {}", target.path)),
+                    ])],
+                    footer: Some("编辑 JSON 后可用 theme set 应用".to_owned()),
+                })
+            }
+            _ => {
+                let entries = theme.list()?;
+                let current = settings.theme_id().unwrap_or_else(|| "graphite".to_owned());
+                let rows = entries
+                    .iter()
+                    .map(|entry| {
+                        vec![
+                            if entry.id == current {
+                                "●".to_owned()
+                            } else {
+                                String::new()
+                            },
+                            entry.id.clone(),
+                            entry.name.clone(),
+                            match entry.source {
+                                ThemeSource::Builtin => "内置".to_owned(),
+                                ThemeSource::User => "用户".to_owned(),
+                            },
+                            entry.skin.as_str().to_owned(),
+                        ]
+                    })
+                    .collect();
+                Ok(Outcome {
+                    outputs: vec![
+                        text_of(vec![bold("主题"), dim(format!(" · 当前：{current}"))]),
+                        Output::Table {
+                            columns: vec![
+                                "当前".to_owned(),
+                                "id".to_owned(),
+                                "名称".to_owned(),
+                                "来源".to_owned(),
+                                "skin".to_owned(),
+                            ],
+                            rows,
+                            selectable: true,
+                        },
+                    ],
+                    footer: Some("theme set <id> 切换 · theme export <id> 导出样例".to_owned()),
+                })
+            }
+        }
+    }
+
+    /// `config`：list / get / set / unset / reset，全部读写同一份 settings.json。
+    fn config(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let settings = self
+            .services
+            .settings
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "设置服务未接入"))?;
+
+        match parsed.subcommand.map(|subcommand| subcommand.name) {
+            Some("get") => {
+                let key = positional_arg(parsed, "key")?;
+                let value = settings.get(key).ok_or_else(|| {
+                    CmdError::new("E_CMD_ARG", format!("未设置：{key}"))
+                        .with_hint(format!("config set {key} <value>"))
+                })?;
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold(key),
+                        plain(format!(" = {}", value.display())),
+                    ])],
+                    footer: None,
+                })
+            }
+            Some("set") => {
+                let key = positional_arg(parsed, "key")?;
+                let raw = parsed
+                    .positional
+                    .get(1)
+                    .map(String::as_str)
+                    .ok_or_else(|| CmdError::new("E_CMD_ARG", "缺少参数：value"))?;
+                let value = SettingValue::parse(raw);
+                let known_themes = self.known_theme_ids();
+                let known_sources: Vec<String> = self
+                    .services
+                    .online
+                    .map(|online| {
+                        online
+                            .known_sources()
+                            .into_iter()
+                            .map(|source| source.as_str().to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let known_sources: Vec<&str> = known_sources.iter().map(String::as_str).collect();
+                validate_setting(key, &value, &known_themes, &known_sources)
+                    .map_err(|message| CmdError::new("E_CMD_ARG", message))?;
+
+                if key == "theme.id" {
+                    let theme = self
+                        .services
+                        .theme
+                        .ok_or_else(|| CmdError::new("E_CMD_ARG", "主题服务未接入"))?;
+                    let id = value.as_str().unwrap_or_default();
+                    let applied = theme.apply(id)?;
+                    settings.set_and_save(key, value.clone())?;
+                    theme.broadcast(&applied.id);
+                } else if let Some(source_id) = source_id_from_enabled_key(key) {
+                    let online = self
+                        .services
+                        .online
+                        .ok_or_else(|| CmdError::new("E_CMD_ARG", "在线音源服务未接入"))?;
+                    let source = known_source_by_str(&known_source_ids(online), source_id)
+                        .ok_or_else(|| {
+                            CmdError::new("E_CMD_ARG", format!("未知音源：{source_id}"))
+                        })?;
+                    settings.set_and_save(key, value.clone())?;
+                    if let Err(error) =
+                        online.set_source_enabled(source, value.as_bool().unwrap_or(true))
+                    {
+                        let _ = settings.unset_and_save(key);
+                        return Err(error);
+                    }
+                } else {
+                    settings.set_and_save(key, value.clone())?;
+                }
+
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold("已写入"),
+                        plain(format!(" · {key} = {}", value.display())),
+                    ])],
+                    footer: None,
+                })
+            }
+            Some("unset") => {
+                let key = positional_arg(parsed, "key")?;
+                let removed = settings.unset_and_save(key)?;
+                if removed.is_some() {
+                    if key == "theme.id" {
+                        if let Some(theme) = self.services.theme {
+                            theme.broadcast("graphite");
+                        }
+                    } else if let Some(source_id) = source_id_from_enabled_key(key)
+                        && let Some(online) = self.services.online
+                        && let Some(source) =
+                            known_source_by_str(&known_source_ids(online), source_id)
+                    {
+                        online.set_source_enabled(source, true)?;
+                    }
+                }
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold(if removed.is_some() {
+                            "已移除"
+                        } else {
+                            "未设置"
+                        }),
+                        plain(format!(" · {key}")),
+                    ])],
+                    footer: None,
+                })
+            }
+            Some("reset") => {
+                settings.reset_and_save()?;
+                if let Some(online) = self.services.online {
+                    for source in known_source_ids(online) {
+                        online.set_source_enabled(source, true)?;
+                    }
+                }
+                if let Some(theme) = self.services.theme {
+                    theme.broadcast("graphite");
+                }
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![bold("已恢复默认设置")])],
+                    footer: Some("settings.json 已清空".to_owned()),
+                })
+            }
+            _ => {
+                let entries = settings.entries();
+                if entries.is_empty() {
+                    return Ok(Outcome {
+                        outputs: vec![text_of(vec![
+                            bold("暂无设置"),
+                            dim(" · 所有项使用内置默认"),
+                        ])],
+                        footer: Some(format!(
+                            "文件：{}",
+                            np_core::settings::settings_path(settings.dir()).display()
+                        )),
+                    });
+                }
+                let mut outputs: Vec<Output> = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        text_of(vec![plain(format!("{key} = ")), bold(value.display())])
+                    })
+                    .collect();
+                for warning in settings.warnings() {
+                    outputs.push(hint_output(&warning.message));
+                }
+                Ok(Outcome {
+                    outputs,
+                    footer: Some(format!(
+                        "文件：{}",
+                        np_core::settings::settings_path(settings.dir()).display()
+                    )),
+                })
+            }
+        }
+    }
+
+    fn known_theme_ids(&self) -> Vec<String> {
+        self.services
+            .theme
+            .and_then(|theme| theme.list().ok())
+            .map(|entries| entries.into_iter().map(|entry| entry.id).collect())
+            .unwrap_or_default()
+    }
+
+    /// `source`：list / enable / disable；写入 settings 并立即影响搜索。
+    fn source(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let settings = self
+            .services
+            .settings
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "设置服务未接入"))?;
+        let online = self
+            .services
+            .online
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "在线音源服务未接入"))?;
+        let known = online.known_sources();
+
+        match parsed.subcommand.map(|subcommand| subcommand.name) {
+            Some("enable") | Some("disable") => {
+                let text = positional_arg(parsed, "音源 id")?;
+                let source = known
+                    .iter()
+                    .copied()
+                    .find(|source| source.as_str() == text)
+                    .ok_or_else(|| {
+                        CmdError::new("E_CMD_ARG", format!("未知音源：{text}")).with_hint(format!(
+                            "可用：{}",
+                            known
+                                .iter()
+                                .map(|source| source.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" / ")
+                        ))
+                    })?;
+                let enabled = parsed.subcommand.map(|subcommand| subcommand.name) == Some("enable");
+                let key = format!("source.{}.enabled", source.as_str());
+                let known_ids: Vec<&str> = known.iter().map(|source| source.as_str()).collect();
+                validate_setting(&key, &SettingValue::Bool(enabled), &[], &known_ids)
+                    .map_err(|message| CmdError::new("E_CMD_ARG", message))?;
+
+                settings.set_and_save(&key, SettingValue::Bool(enabled))?;
+                if let Err(error) = online.set_source_enabled(source, enabled) {
+                    let _ = settings.unset_and_save(&key);
+                    return Err(error);
+                }
+
+                Ok(Outcome {
+                    outputs: vec![text_of(vec![
+                        bold(if enabled { "已启用" } else { "已禁用" }),
+                        plain(format!(" · {} ({})", source_label(source), source.as_str())),
+                    ])],
+                    footer: Some(if enabled {
+                        "下一次搜索会包含该源".to_owned()
+                    } else {
+                        "搜索会跳过该源；已在播放/下载的曲目不受影响".to_owned()
+                    }),
+                })
+            }
+            _ => {
+                let rows = known
+                    .iter()
+                    .map(|source| {
+                        let enabled = settings
+                            .get_bool(&format!("source.{}.enabled", source.as_str()))
+                            .unwrap_or(true);
+                        vec![
+                            source.as_str().to_owned(),
+                            source_label(*source).to_owned(),
+                            if enabled {
+                                "启用".to_owned()
+                            } else {
+                                "禁用".to_owned()
+                            },
+                            source_description(*source).to_owned(),
+                        ]
+                    })
+                    .collect();
+                Ok(Outcome {
+                    outputs: vec![
+                        text_of(vec![bold("在线音源")]),
+                        Output::Table {
+                            columns: vec![
+                                "id".to_owned(),
+                                "名称".to_owned(),
+                                "状态".to_owned(),
+                                "说明".to_owned(),
+                            ],
+                            rows,
+                            selectable: false,
+                        },
+                    ],
+                    footer: Some("source enable/disable <id>".to_owned()),
+                })
+            }
+        }
+    }
+
+    /// `cache`：stat / clear；清 streams 前若正在播远程曲目先停播。
+    fn cache(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let online = self
+            .services
+            .online
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "在线音源服务未接入"))?;
+
+        match parsed.subcommand.map(|subcommand| subcommand.name) {
+            Some("clear") => {
+                let raw = parsed
+                    .positional
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("all");
+                let target = CacheTarget::parse(raw)?;
+                let stopped = self.stop_remote_playback()?;
+                let released = online.clear_cache(target)?;
+
+                let mut spans = vec![
+                    bold("缓存已清理"),
+                    plain(format!(" · {}", target_label(target))),
+                    dim(format!(" · 释放 {}", format_bytes(released))),
+                ];
+                if stopped {
+                    spans.push(dim(" · 已先停止播放远程曲目"));
+                }
+                let mut outputs = vec![text_of(spans)];
+                if target.includes_covers() {
+                    outputs.push(hint_output(
+                        "本地库封面缓存已清空，下次扫描会重建（不会丢功能）",
+                    ));
+                }
+                Ok(Outcome {
+                    outputs,
+                    footer: None,
+                })
+            }
+            _ => {
+                let usage = online.cache_usage()?;
+                let mut outputs = vec![
+                    text_of(vec![
+                        bold("streams"),
+                        plain(format!(
+                            " · {} 个文件 / {}",
+                            usage.streams_files,
+                            format_bytes(usage.streams_bytes)
+                        )),
+                    ]),
+                    text_of(vec![
+                        bold("covers"),
+                        plain(format!(
+                            " · {} 个文件 / {}",
+                            usage.covers_files,
+                            format_bytes(usage.covers_bytes)
+                        )),
+                    ]),
+                    text_of(vec![
+                        bold("合计"),
+                        plain(format!(
+                            " · {} 个文件 / {}",
+                            usage.total_files(),
+                            format_bytes(usage.total_bytes())
+                        )),
+                    ]),
+                ];
+                if usage.total_files() == 0 {
+                    outputs.push(hint_output("缓存为空；播放在线曲目时会自动创建"));
+                }
+                Ok(Outcome {
+                    outputs,
+                    footer: Some("cache clear [streams|covers|all]".to_owned()),
+                })
+            }
+        }
+    }
+
+    /// 正在播放的曲目若是远程缓存，先停止并把它从队列移除（保留其它队列项）。
+    fn stop_remote_playback(&self) -> Result<bool, CmdError> {
+        let state = self.api.snapshot()?;
+        let Some(path) = state.track_id.as_deref() else {
+            return Ok(false);
+        };
+        let is_remote = self
+            .library
+            .track_by_path(path)?
+            .is_some_and(|track| track.kind == "remote");
+        if !is_remote {
+            return Ok(false);
+        }
+
+        let view = self.api.queue_list()?;
+        if let Some(index) = view.index {
+            self.api.queue_remove(index)?;
+        } else {
+            self.api.queue_clear()?;
+        }
+        Ok(true)
+    }
+
     fn help(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let registry = registry();
 
@@ -1524,6 +2291,7 @@ struct LibraryInner {
 pub(crate) struct LibraryHandle {
     inner: Arc<LibraryInner>,
     online: Arc<OnlineService>,
+    settings: Arc<SettingsHandle>,
 }
 
 impl LibraryHandle {
@@ -1537,11 +2305,27 @@ impl LibraryHandle {
     }
 
     /// 显式注入缓存根（生产用 `app_cache_dir()`，测试用临时目录）。
+    #[cfg(test)]
     pub(crate) fn with_cache_root(db_path: PathBuf, cache_root: PathBuf) -> Self {
+        let config_dir = db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        Self::with_config_dir(db_path, cache_root, config_dir)
+    }
+
+    /// 生产入口：缓存根 + 设置目录都由 setup 注入。
+    pub(crate) fn with_config_dir(
+        db_path: PathBuf,
+        cache_root: PathBuf,
+        config_dir: PathBuf,
+    ) -> Self {
         let covers_dir = db_path
             .parent()
             .map(|parent| parent.join("covers"))
             .unwrap_or_else(|| PathBuf::from("covers"));
+        let settings = Arc::new(SettingsHandle::load(config_dir));
+        let enabled = settings.enabled_source_ids(&KNOWN_SOURCES);
         Self {
             inner: Arc::new(LibraryInner {
                 db_path,
@@ -1549,8 +2333,14 @@ impl LibraryHandle {
                 scan: Mutex::new(None),
                 hits: Mutex::new(Vec::new()),
             }),
-            online: Arc::new(OnlineService::new(cache_root, covers_dir)),
+            online: Arc::new(OnlineService::new(cache_root, covers_dir, enabled)),
+            settings,
         }
+    }
+
+    /// 命令层持有的设置 store。
+    pub(crate) fn settings(&self) -> &SettingsHandle {
+        &self.settings
     }
 
     /// 命令层持有的在线音源服务（与媒体库同生命周期）。
@@ -1735,6 +2525,10 @@ impl LibraryApi for LibraryHandle {
             .map(|hits| hits.clone())
             .unwrap_or_default()
     }
+
+    fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
+        LibraryHandle::track_by_path(self, path)
+    }
 }
 
 /// 后台线程：打开独立的库连接、读根、跑扫描，把结果交给观察者。
@@ -1839,10 +2633,18 @@ pub(crate) struct OnlineService {
     track_lookups: AtomicUsize,
     /// 退出时置位；下载器每个 chunk 检查。
     cancel: Arc<AtomicBool>,
+    /// 已知源 id（含被禁用的），`source list` 用。
+    all_ids: Vec<SourceId>,
+    /// 当前启用的源；搜索与 prepare 立即按它过滤。
+    enabled: Mutex<HashSet<SourceId>>,
 }
 
 impl OnlineService {
-    pub(crate) fn new(cache_root: PathBuf, covers_dir: PathBuf) -> Self {
+    pub(crate) fn new(
+        cache_root: PathBuf,
+        covers_dir: PathBuf,
+        enabled: HashSet<SourceId>,
+    ) -> Self {
         Self {
             cache_root,
             covers_dir,
@@ -1853,6 +2655,8 @@ impl OnlineService {
             remote_meta: Mutex::new(HashMap::new()),
             track_lookups: AtomicUsize::new(0),
             cancel: Arc::new(AtomicBool::new(false)),
+            all_ids: KNOWN_SOURCES.to_vec(),
+            enabled: Mutex::new(enabled),
         }
     }
 
@@ -1864,13 +2668,18 @@ impl OnlineService {
         covers_dir: PathBuf,
         cover_store: Arc<dyn CoverStore>,
     ) -> Self {
+        let cache_root = cache
+            .dir()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
         Self {
-            cache_root: PathBuf::new(),
+            cache_root,
             covers_dir,
             cover_store,
             runtime: OnceLock::new(),
             fixed: Some(OnlineRuntime {
-                registry,
+                registry: SourceRegistry::new(registry.sources().to_vec()),
                 cache,
                 transport,
             }),
@@ -1878,6 +2687,8 @@ impl OnlineService {
             remote_meta: Mutex::new(HashMap::new()),
             track_lookups: AtomicUsize::new(0),
             cancel: Arc::new(AtomicBool::new(false)),
+            all_ids: registry.ids(),
+            enabled: Mutex::new(registry.ids().into_iter().collect()),
         }
     }
 
@@ -2016,6 +2827,57 @@ impl OnlineService {
         }
     }
 
+    /// 已知源 id（含被禁用的）。
+    pub(crate) fn known_sources(&self) -> Vec<SourceId> {
+        self.all_ids.clone()
+    }
+
+    /// 进程内启停一个源；不影响已在进行的下载。
+    pub(crate) fn set_source_enabled(
+        &self,
+        source: SourceId,
+        enabled: bool,
+    ) -> Result<(), CmdError> {
+        if !self.all_ids.contains(&source) {
+            return Err(CmdError::new(
+                "E_SRC_UNAVAILABLE",
+                format!("未知音源：{source}"),
+            ));
+        }
+        let mut current = self
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if enabled {
+            current.insert(source);
+        } else {
+            current.remove(&source);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cache_usage(&self) -> Result<CacheUsage, CmdError> {
+        let (streams_files, streams_bytes) = dir_usage(&self.cache_root.join("streams"));
+        let (covers_files, covers_bytes) = dir_usage(&self.covers_dir);
+        Ok(CacheUsage {
+            streams_files,
+            streams_bytes,
+            covers_files,
+            covers_bytes,
+        })
+    }
+
+    pub(crate) fn clear_cache(&self, target: CacheTarget) -> Result<u64, CmdError> {
+        let mut released = 0u64;
+        if target.includes_streams() {
+            released = released.saturating_add(clear_dir_files(&self.cache_root.join("streams")));
+        }
+        if target.includes_covers() {
+            released = released.saturating_add(clear_dir_files(&self.covers_dir));
+        }
+        Ok(released)
+    }
+
     #[cfg(test)]
     fn remote_meta_len(&self) -> usize {
         self.remote_meta
@@ -2048,8 +2910,21 @@ impl OnlineService {
 impl OnlineApi for OnlineService {
     fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError> {
         let runtime = self.runtime()?;
-        let attempted = runtime.registry.sources().len();
-        let merged = runtime.registry.search_all(query, limit);
+        let enabled = self
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let sources: Vec<_> = runtime
+            .registry
+            .sources()
+            .iter()
+            .filter(|source| enabled.contains(&source.id()))
+            .cloned()
+            .collect();
+        let registry = SourceRegistry::new(sources);
+        let attempted = registry.sources().len();
+        let merged = registry.search_all(query, limit);
         let all_failed = attempted > 0 && merged.failures.len() == attempted;
         Ok(OnlineSearch {
             tracks: merged.tracks,
@@ -2062,6 +2937,20 @@ impl OnlineApi for OnlineService {
         track: &SourceTrack,
         progress: &mut dyn FnMut(u64),
     ) -> Result<PreparedTrack, CmdError> {
+        if !self
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&track.source)
+        {
+            return Err(CmdError::new(
+                "E_SRC_UNAVAILABLE",
+                format!(
+                    "该音源已被禁用：{}（source enable {} 可重新启用）",
+                    track.source, track.source
+                ),
+            ));
+        }
         let runtime = self.runtime()?;
         let key = (track.source, track.source_id.clone());
         let lock = self.lock_for(&key);
@@ -2101,6 +2990,60 @@ impl OnlineApi for OnlineService {
 
         Err(expired_url_error())
     }
+
+    fn known_sources(&self) -> Vec<SourceId> {
+        OnlineService::known_sources(self)
+    }
+
+    fn set_source_enabled(&self, source: SourceId, enabled: bool) -> Result<(), CmdError> {
+        OnlineService::set_source_enabled(self, source, enabled)
+    }
+
+    fn cache_usage(&self) -> Result<CacheUsage, CmdError> {
+        OnlineService::cache_usage(self)
+    }
+
+    fn clear_cache(&self, target: CacheTarget) -> Result<u64, CmdError> {
+        OnlineService::clear_cache(self, target)
+    }
+}
+
+/// 统计目录下普通文件的个数与字节数（不递归、不跟随链接）。
+fn dir_usage(dir: &Path) -> (u64, u64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if let Ok(metadata) = entry.metadata() {
+            files = files.saturating_add(1);
+            bytes = bytes.saturating_add(metadata.len());
+        }
+    }
+    (files, bytes)
+}
+
+/// 删除目录下所有普通文件（不删目录），返回释放字节数。
+fn clear_dir_files(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut released = 0u64;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        if fs::remove_file(&path).is_ok() {
+            released = released.saturating_add(bytes);
+        }
+    }
+    released
 }
 
 /// 本地命中优先；未命中才查在线会话映射。
@@ -2696,6 +3639,13 @@ pub(crate) fn cmd_exec(
     }
 
     let api = HandleApi::new(&handle);
+    let online = library.online();
+    let theme = ThemeHandle::for_app(app.clone()).ok();
+    let services = Services {
+        settings: Some(library.settings()),
+        theme: theme.as_ref().map(|theme| theme as &dyn ThemeApi),
+        online: Some(&*online),
+    };
 
     // 后台扫描可能瞬间结束：先推 running，再启动线程，避免 done 抢在 running 前。
     let full = scan_full_flag(&input);
@@ -2712,7 +3662,7 @@ pub(crate) fn cmd_exec(
         Arc::new(NoopLibraryObserver)
     };
 
-    match execute_with_library(&api, &*library, &block_id, &input, observer) {
+    match execute_with_services(&api, &*library, services, &block_id, &input, observer) {
         Execution::Ignored => CmdExecReply { block_id, ok: true },
         Execution::Blocks { running, done } => {
             emit_block(&app, &running);
@@ -3045,6 +3995,7 @@ mod tests {
         covers: CoverCacheUsage,
         busy: bool,
         session: Vec<SearchHit>,
+        tracks_by_path: std::collections::HashMap<String, Track>,
         calls: Vec<LibraryCall>,
     }
 
@@ -3064,6 +4015,7 @@ mod tests {
                     covers: CoverCacheUsage::default(),
                     busy: false,
                     session: Vec::new(),
+                    tracks_by_path: std::collections::HashMap::new(),
                     calls: Vec::new(),
                 }),
             }
@@ -3082,6 +4034,15 @@ mod tests {
 
         fn with_search_tracks(self, tracks: Vec<Track>) -> Self {
             self.state.lock().expect("state mutex").search_tracks = tracks;
+            self
+        }
+
+        fn with_track_by_path(self, path: &str, track: Track) -> Self {
+            self.state
+                .lock()
+                .expect("state mutex")
+                .tracks_by_path
+                .insert(path.to_owned(), track);
             self
         }
 
@@ -3200,6 +4161,16 @@ mod tests {
 
         fn search_hits(&self) -> Vec<SearchHit> {
             self.state.lock().expect("state mutex").session.clone()
+        }
+
+        fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
+            Ok(self
+                .state
+                .lock()
+                .expect("state mutex")
+                .tracks_by_path
+                .get(path)
+                .cloned())
         }
     }
 
@@ -3555,6 +4526,7 @@ mod tests {
             api: &api,
             library: &library,
             observer: Arc::new(NoopLibraryObserver),
+            services: Services::default(),
         }
         .add_paths(&paths)
         .expect("partial success is still a success");
@@ -4369,6 +5341,7 @@ mod tests {
     struct FakeOnlineSource {
         id: SourceId,
         resolves: AtomicUsize,
+        searches: AtomicUsize,
         plans: Mutex<Vec<ResolvePlan>>,
         stream: ResolvedStream,
         delay: Duration,
@@ -4379,6 +5352,7 @@ mod tests {
             Arc::new(Self {
                 id,
                 resolves: AtomicUsize::new(0),
+                searches: AtomicUsize::new(0),
                 plans: Mutex::new(plans),
                 stream: ResolvedStream {
                     url: "https://example.invalid/audio".to_string(),
@@ -4394,6 +5368,7 @@ mod tests {
             let mut cloned = FakeOnlineSource {
                 id: self.id,
                 resolves: AtomicUsize::new(0),
+                searches: AtomicUsize::new(0),
                 plans: Mutex::new(Vec::new()),
                 stream: self.stream.clone(),
                 delay,
@@ -4412,6 +5387,10 @@ mod tests {
         fn resolves(&self) -> usize {
             self.resolves.load(Ordering::SeqCst)
         }
+
+        fn searches(&self) -> usize {
+            self.searches.load(Ordering::SeqCst)
+        }
     }
 
     impl AudioSource for FakeOnlineSource {
@@ -4420,6 +5399,7 @@ mod tests {
         }
 
         fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SourceTrack>, SourceError> {
+            self.searches.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         }
 
@@ -4837,6 +5817,14 @@ mod tests {
     }
 
     impl OnlineApi for FakeOnline {
+        fn known_sources(&self) -> Vec<SourceId> {
+            KNOWN_SOURCES.to_vec()
+        }
+
+        fn set_source_enabled(&self, _source: SourceId, _enabled: bool) -> Result<(), CmdError> {
+            Ok(())
+        }
+
         fn search_all(&self, _query: &str, _limit: usize) -> Result<OnlineSearch, CmdError> {
             Ok(OnlineSearch {
                 tracks: self.tracks.clone(),
@@ -5208,7 +6196,11 @@ mod tests {
     #[test]
     fn remote_track_has_the_frontend_track_shape() {
         let dir = TestDir::new("remote-shape");
-        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
+        let service = OnlineService::new(
+            dir.path().to_path_buf(),
+            dir.path().join("covers"),
+            KNOWN_SOURCES.iter().copied().collect(),
+        );
         let path = dir.path().join("bilibili-BV1xx411c7mD.m4a");
         fs::write(&path, b"abc").expect("write cache");
         let source_track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "晴天");
@@ -5233,7 +6225,11 @@ mod tests {
     #[test]
     fn lookup_track_prefers_local_and_skips_remote_map() {
         let dir = TestDir::new("remote-local-first");
-        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
+        let service = OnlineService::new(
+            dir.path().to_path_buf(),
+            dir.path().join("covers"),
+            KNOWN_SOURCES.iter().copied().collect(),
+        );
         let path = dir.path().join("bilibili-BV1xx.m4a");
         fs::write(&path, b"abc").expect("write cache");
         service.remember_remote(
@@ -5252,7 +6248,11 @@ mod tests {
     #[test]
     fn lookup_track_returns_none_when_both_sides_miss() {
         let dir = TestDir::new("remote-miss");
-        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
+        let service = OnlineService::new(
+            dir.path().to_path_buf(),
+            dir.path().join("covers"),
+            KNOWN_SOURCES.iter().copied().collect(),
+        );
 
         assert!(lookup_track(None, &service, &dir.path().join("nope.m4a")).is_none());
         assert_eq!(service.track_lookups(), 1);
@@ -5293,7 +6293,11 @@ mod tests {
     #[test]
     fn missing_cache_file_removes_remote_metadata() {
         let dir = TestDir::new("remote-missing");
-        let service = OnlineService::new(dir.path().to_path_buf(), dir.path().join("covers"));
+        let service = OnlineService::new(
+            dir.path().to_path_buf(),
+            dir.path().join("covers"),
+            KNOWN_SOURCES.iter().copied().collect(),
+        );
         let path = dir.path().join("netease-10001.mp3");
         fs::write(&path, b"abc").expect("write cache");
         service.remember_remote(
@@ -5512,5 +6516,681 @@ mod tests {
         handle.shutdown();
 
         assert!(handle.online.is_cancelled());
+    }
+
+    // ---- 设置命令族：theme（T-0042） ----
+
+    struct FakeTheme {
+        entries: Vec<ThemeListEntry>,
+        apply: Result<ThemeApplyReply, CmdError>,
+        export: Result<ThemeExportTarget, CmdError>,
+        broadcasts: Mutex<Vec<String>>,
+    }
+
+    impl FakeTheme {
+        fn new(apply: Result<ThemeApplyReply, CmdError>) -> Self {
+            Self {
+                entries: vec![
+                    ThemeListEntry {
+                        id: "graphite".to_owned(),
+                        name: "石墨".to_owned(),
+                        skin: np_core::theme::Skin::Plain,
+                        source: ThemeSource::Builtin,
+                    },
+                    ThemeListEntry {
+                        id: "mine".to_owned(),
+                        name: "我的".to_owned(),
+                        skin: np_core::theme::Skin::Phosphor,
+                        source: ThemeSource::User,
+                    },
+                ],
+                apply,
+                export: Ok(ThemeExportTarget {
+                    path: "/themes/ice.json".to_owned(),
+                    created: true,
+                }),
+                broadcasts: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn broadcasts(&self) -> Vec<String> {
+            self.broadcasts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl ThemeApi for FakeTheme {
+        fn list(&self) -> Result<Vec<ThemeListEntry>, CmdError> {
+            Ok(self.entries.clone())
+        }
+
+        fn apply(&self, _id: &str) -> Result<ThemeApplyReply, CmdError> {
+            self.apply.clone()
+        }
+
+        fn export(&self, _id: &str) -> Result<ThemeExportTarget, CmdError> {
+            self.export.clone()
+        }
+
+        fn broadcast(&self, id: &str) {
+            self.broadcasts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(id.to_owned());
+        }
+    }
+
+    fn theme_reply(id: &str) -> ThemeApplyReply {
+        ThemeApplyReply {
+            id: id.to_owned(),
+            name: "冰".to_owned(),
+            skin: np_core::theme::Skin::Plain,
+            source: ThemeSource::Builtin,
+            tokens: np_core::theme::ThemeTokens::default(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn settings_for(dir: &TestDir) -> SettingsHandle {
+        SettingsHandle::load(dir.path().join("config"))
+    }
+
+    fn done_with_services(
+        api: &FakeApi,
+        library: &FakeLibraryApi,
+        settings: &SettingsHandle,
+        theme: &FakeTheme,
+        input: &str,
+    ) -> Block {
+        let services = Services {
+            settings: Some(settings),
+            theme: Some(theme),
+            online: None,
+        };
+        match execute_with_services(
+            api,
+            library,
+            services,
+            "block-services",
+            input,
+            Arc::new(NoopLibraryObserver),
+        ) {
+            Execution::Blocks { done, .. } => *done,
+            Execution::Accepted { .. } => panic!("unexpected accepted block: {input}"),
+            Execution::Ignored => panic!("expected a block: {input}"),
+        }
+    }
+
+    #[test]
+    fn theme_set_writes_settings_and_broadcasts() {
+        let dir = TestDir::new("theme-set");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_services(&api, &library, &settings, &theme, "theme set ice");
+
+        assert_eq!(block.status, BlockStatus::Done, "{}", text_of_block(&block));
+        assert_eq!(settings.theme_id().as_deref(), Some("ice"));
+        assert_eq!(theme.broadcasts(), vec!["ice".to_owned()]);
+        assert!(text_of_block(&block).contains("主题已切换"));
+    }
+
+    #[test]
+    fn theme_set_invalid_theme_does_not_write_or_broadcast() {
+        let dir = TestDir::new("theme-set-bad");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Err(CmdError::new("E_THEME_NOT_FOUND", "主题不存在")));
+
+        let block = done_with_services(&api, &library, &settings, &theme, "theme set nope");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_THEME_NOT_FOUND");
+        assert_eq!(settings.theme_id(), None);
+        assert!(theme.broadcasts().is_empty());
+    }
+
+    #[test]
+    fn theme_list_marks_current_and_sources() {
+        let dir = TestDir::new("theme-list");
+        let settings = settings_for(&dir);
+        settings
+            .set_and_save("theme.id", SettingValue::Str("mine".into()))
+            .expect("save theme");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_services(&api, &library, &settings, &theme, "theme list");
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], "");
+        assert_eq!(rows[0][1], "graphite");
+        assert_eq!(rows[0][3], "内置");
+        assert_eq!(rows[1][0], "●");
+        assert_eq!(rows[1][1], "mine");
+        assert_eq!(rows[1][3], "用户");
+        assert_eq!(rows[1][4], "phosphor");
+    }
+
+    #[test]
+    fn theme_export_reports_path_and_created() {
+        let dir = TestDir::new("theme-export");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_services(&api, &library, &settings, &theme, "theme export ice");
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(text_of_block(&block).contains("/themes/ice.json"));
+        assert!(text_of_block(&block).contains("已导出"));
+    }
+
+    fn done_with_online_services(
+        api: &FakeApi,
+        library: &FakeLibraryApi,
+        settings: &SettingsHandle,
+        theme: &FakeTheme,
+        online: &dyn OnlineApi,
+        input: &str,
+    ) -> Block {
+        let services = Services {
+            settings: Some(settings),
+            theme: Some(theme),
+            online: Some(online),
+        };
+        match execute_with_services(
+            api,
+            library,
+            services,
+            "block-online-services",
+            input,
+            Arc::new(NoopLibraryObserver),
+        ) {
+            Execution::Blocks { done, .. } => *done,
+            Execution::Accepted { .. } => panic!("unexpected accepted block: {input}"),
+            Execution::Ignored => panic!("expected a block: {input}"),
+        }
+    }
+
+    #[test]
+    fn config_set_infers_types_and_lists_sorted() {
+        let dir = TestDir::new("config-set");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set theme.id mine",
+        );
+        done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set playback.crossfadeMs 300",
+        );
+        done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set ui.compact true",
+        );
+
+        let entries = settings.entries();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].0, "playback.crossfadeMs");
+        assert_eq!(entries[0].1, SettingValue::Num(300.0));
+        assert_eq!(entries[1].0, "theme.id");
+        assert_eq!(entries[2].1, SettingValue::Bool(true));
+
+        let block = done_with_services(&api, &library, &settings, &theme, "config list");
+        let text = text_of_block(&block);
+        assert!(text.contains("playback.crossfadeMs = 300"));
+        assert!(text.contains("theme.id = mine"));
+    }
+
+    #[test]
+    fn config_get_missing_is_arg_error() {
+        let dir = TestDir::new("config-get-missing");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_services(&api, &library, &settings, &theme, "config get theme.id");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(error_fields(&block).1.contains("未设置"));
+    }
+
+    #[test]
+    fn config_unset_and_reset() {
+        let dir = TestDir::new("config-reset");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+        done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set ui.compact true",
+        );
+        done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set theme.id mine",
+        );
+
+        let unset =
+            done_with_services(&api, &library, &settings, &theme, "config unset ui.compact");
+        assert!(text_of_block(&unset).contains("已移除"));
+        assert!(settings.get("ui.compact").is_none());
+
+        let reset = done_with_services(&api, &library, &settings, &theme, "config reset");
+        assert_eq!(reset.status, BlockStatus::Done);
+        assert!(settings.entries().is_empty());
+    }
+
+    #[test]
+    fn config_theme_id_requires_known_theme() {
+        let dir = TestDir::new("config-theme-validate");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let ok = done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set theme.id mine",
+        );
+        assert_eq!(ok.status, BlockStatus::Done, "{}", text_of_block(&ok));
+        assert_eq!(settings.theme_id().as_deref(), Some("mine"));
+
+        let bad = done_with_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            "config set theme.id nope",
+        );
+        assert_eq!(bad.status, BlockStatus::Error);
+        assert_eq!(settings.theme_id().as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn config_source_enabled_requires_known_source_and_bool() {
+        let dir = TestDir::new("config-source-validate");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+        let online = FakeOnline {
+            tracks: Vec::new(),
+            all_failed: false,
+        };
+
+        let ok = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &online,
+            "config set source.bilibili.enabled false",
+        );
+        assert_eq!(ok.status, BlockStatus::Done, "{}", text_of_block(&ok));
+
+        let bad = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &online,
+            "config set source.youtube.enabled false",
+        );
+        assert_eq!(bad.status, BlockStatus::Error);
+        assert_eq!(settings.get_bool("source.bilibili.enabled"), Some(false));
+    }
+
+    fn two_source_service(
+        dir: &TestDir,
+        bili: Arc<FakeOnlineSource>,
+        netease: Arc<FakeOnlineSource>,
+    ) -> OnlineService {
+        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
+        let cache = StreamCache::with_limits(
+            dir.path(),
+            downloader as Arc<dyn Downloader>,
+            10 * 1024 * 1024,
+            5 * 1024 * 1024,
+        );
+        let registry = SourceRegistry::new(vec![
+            bili as Arc<dyn AudioSource>,
+            netease as Arc<dyn AudioSource>,
+        ]);
+        let transport: Arc<dyn Transport> = Arc::new(FakeCoverTransport::new(&[]));
+        let cover_store: Arc<dyn CoverStore> = Arc::new(FakeCoverStore::new(None));
+        OnlineService::from_parts(
+            registry,
+            cache,
+            transport,
+            dir.path().join("covers"),
+            cover_store,
+        )
+    }
+
+    #[test]
+    fn source_list_reads_enabled_state_from_settings() {
+        let dir = TestDir::new("source-list");
+        let settings = settings_for(&dir);
+        settings
+            .set_and_save("source.bilibili.enabled", SettingValue::Bool(false))
+            .expect("save");
+        let bili = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let netease = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let service = two_source_service(&dir, bili, netease);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block =
+            done_with_online_services(&api, &library, &settings, &theme, &service, "source list");
+
+        let (_, rows) = table_of_block(&block);
+        let bili_row = rows.iter().find(|row| row[0] == "bilibili").expect("bili");
+        let netease_row = rows
+            .iter()
+            .find(|row| row[0] == "netease")
+            .expect("netease");
+        assert_eq!(bili_row[2], "禁用");
+        assert_eq!(netease_row[2], "启用");
+    }
+
+    #[test]
+    fn source_disable_writes_settings_and_blocks_old_result_resolve() {
+        let dir = TestDir::new("source-disable");
+        let settings = settings_for(&dir);
+        let bili = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let netease = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let service = two_source_service(&dir, Arc::clone(&bili), netease);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "source disable bilibili",
+        );
+
+        assert_eq!(block.status, BlockStatus::Done, "{}", text_of_block(&block));
+        assert_eq!(settings.get_bool("source.bilibili.enabled"), Some(false));
+        assert_eq!(service.known_sources().len(), 2, "禁用不删列表");
+        let error = service
+            .prepare(
+                &online_track(SourceId::Bilibili, "BV1xx", "Old"),
+                &mut |_| {},
+            )
+            .expect_err("禁用后旧结果应报错");
+        assert_eq!(error.code, "E_SRC_UNAVAILABLE");
+        assert!(error.message.contains("禁用"));
+        assert_eq!(bili.resolves(), 0, "禁用源不应再 resolve");
+    }
+
+    #[test]
+    fn disabled_source_is_skipped_in_search() {
+        let dir = TestDir::new("source-search-skip");
+        let bili = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let netease = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let service = two_source_service(&dir, Arc::clone(&bili), Arc::clone(&netease));
+        service
+            .set_source_enabled(SourceId::Bilibili, false)
+            .expect("disable");
+
+        service.search_all("测试", 5).expect("search");
+
+        assert_eq!(bili.searches(), 0);
+        assert_eq!(netease.searches(), 1);
+    }
+
+    #[test]
+    fn source_enable_restores_settings_and_service() {
+        let dir = TestDir::new("source-enable");
+        let settings = settings_for(&dir);
+        let bili = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let netease = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let service = two_source_service(&dir, bili, netease);
+        service
+            .set_source_enabled(SourceId::Bilibili, false)
+            .expect("disable");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "source enable bilibili",
+        );
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert_eq!(settings.get_bool("source.bilibili.enabled"), Some(true));
+    }
+
+    #[test]
+    fn source_unknown_id_is_arg_error_without_side_effects() {
+        let dir = TestDir::new("source-unknown");
+        let settings = settings_for(&dir);
+        let bili = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let netease = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        let service = two_source_service(&dir, bili, netease);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "source disable youtube",
+        );
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(settings.entries().is_empty());
+    }
+
+    fn cache_service(dir: &TestDir) -> OnlineService {
+        let bili = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
+        let netease = FakeOnlineSource::new(SourceId::Netease, Vec::new());
+        two_source_service(dir, bili, netease)
+    }
+
+    #[test]
+    fn cache_stat_counts_streams_and_covers() {
+        let dir = TestDir::new("cache-stat");
+        let settings = settings_for(&dir);
+        let service = cache_service(&dir);
+        fs::create_dir_all(dir.path().join("streams")).expect("streams");
+        fs::create_dir_all(dir.path().join("covers")).expect("covers");
+        fs::write(dir.path().join("streams/a.mp3"), b"abcd").expect("streams file");
+        fs::write(dir.path().join("covers/b.jpg"), b"abcdef").expect("covers file");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block =
+            done_with_online_services(&api, &library, &settings, &theme, &service, "cache stat");
+
+        let text = text_of_block(&block);
+        assert!(text.contains("streams · 1 个文件 / 4 B"), "{text}");
+        assert!(text.contains("covers · 1 个文件 / 6 B"), "{text}");
+        assert!(text.contains("合计 · 2 个文件 / 10 B"), "{text}");
+    }
+
+    #[test]
+    fn cache_clear_streams_keeps_covers() {
+        let dir = TestDir::new("cache-clear-streams");
+        let settings = settings_for(&dir);
+        let service = cache_service(&dir);
+        fs::create_dir_all(dir.path().join("streams")).expect("streams");
+        fs::create_dir_all(dir.path().join("covers")).expect("covers");
+        fs::write(dir.path().join("streams/a.mp3"), b"abcd").expect("streams file");
+        fs::write(dir.path().join("covers/b.jpg"), b"abcdef").expect("covers file");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "cache clear streams",
+        );
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(!dir.path().join("streams/a.mp3").exists());
+        assert!(dir.path().join("covers/b.jpg").exists());
+        assert!(text_of_block(&block).contains("释放 4 B"));
+    }
+
+    #[test]
+    fn cache_clear_covers_warns_rebuild() {
+        let dir = TestDir::new("cache-clear-covers");
+        let settings = settings_for(&dir);
+        let service = cache_service(&dir);
+        fs::create_dir_all(dir.path().join("covers")).expect("covers");
+        fs::write(dir.path().join("covers/b.jpg"), b"abcdef").expect("covers file");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "cache clear covers",
+        );
+
+        assert!(!dir.path().join("covers/b.jpg").exists());
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. } if text.contains("下次扫描会重建")
+        )));
+    }
+
+    #[test]
+    fn cache_clear_all_stops_remote_playback_first() {
+        let dir = TestDir::new("cache-clear-remote");
+        let settings = settings_for(&dir);
+        let service = cache_service(&dir);
+        let path = dir.path().join("streams/bilibili-BV1xx.mp3");
+        fs::create_dir_all(dir.path().join("streams")).expect("streams");
+        fs::write(&path, b"abcd").expect("cache file");
+        service.remember_remote(
+            &path,
+            &online_track(SourceId::Bilibili, "BV1xx", "Song"),
+            None,
+        );
+        let path_text = path.to_string_lossy().into_owned();
+        let remote = service.track_by_path(&path).expect("remote meta");
+        let api = FakeApi::new()
+            .with_state(PlaybackState {
+                track_id: Some(path_text.clone()),
+                ..PlaybackState::default()
+            })
+            .with_queue(queue_view(&[&path_text], Some(0)));
+        let library = FakeLibraryApi::new().with_track_by_path(&path_text, remote);
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "cache clear all",
+        );
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(api.calls().contains(&Call::QueueRemove(0)));
+        assert!(text_of_block(&block).contains("已先停止播放远程曲目"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cache_clear_does_not_stop_local_playback() {
+        let dir = TestDir::new("cache-clear-local");
+        let settings = settings_for(&dir);
+        let service = cache_service(&dir);
+        let api = FakeApi::new()
+            .with_state(PlaybackState {
+                track_id: Some("/music/local.flac".to_owned()),
+                ..PlaybackState::default()
+            })
+            .with_queue(queue_view(&["/music/local.flac"], Some(0)));
+        let local = track(1, "Local", "Artist", "/music/local.flac", 1_000);
+        let library = FakeLibraryApi::new().with_track_by_path("/music/local.flac", local);
+        let theme = FakeTheme::new(Ok(theme_reply("ice")));
+
+        let block = done_with_online_services(
+            &api,
+            &library,
+            &settings,
+            &theme,
+            &service,
+            "cache clear streams",
+        );
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(!api.calls().contains(&Call::QueueRemove(0)));
+        assert!(!text_of_block(&block).contains("已先停止"));
+    }
+
+    #[test]
+    fn help_lists_the_new_settings_families() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "help");
+        let text = text_of_block(&block);
+
+        for family in ["theme", "config", "source", "cache"] {
+            assert!(text.contains(family), "help 缺少 {family}: {text}");
+        }
+        assert!(block.outputs.len() >= 18);
     }
 }
