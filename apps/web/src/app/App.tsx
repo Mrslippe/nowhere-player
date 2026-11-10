@@ -53,11 +53,11 @@ export function App({ label }: { label: WindowLabel }) {
    * 生产构建 previewTheme 恒为 null，主题加载器只在有 `np.theme.id` 时动作。
    */
   useEffect(() => {
-    if (previewTheme !== null) {
-      return;
-    }
-
-    void installThemeLoader();
+    // dev 预览时只装 theme:changed 监听，不应用 settings，避免覆盖 ?theme=。
+    void installThemeLoader({
+      preferSettings: true,
+      skipInitial: previewTheme !== null,
+    });
   }, []);
 
   /*

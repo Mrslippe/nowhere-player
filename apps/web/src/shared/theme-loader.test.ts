@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Block } from "./terminal-model";
 import {
   THEME_APPLY_COMMAND,
+  THEME_CHANGED_EVENT,
   THEME_EXPORT_COMMAND,
+  THEME_INITIAL_COMMAND,
   THEME_LIST_COMMAND,
   THEME_STORAGE_KEY,
   THEME_TOKEN_NAMES,
@@ -389,10 +391,58 @@ describe("主题加载器", () => {
     });
   });
 
+
+  it("启动恢复：settings 的 theme.id 优先于 URL/localStorage", async () => {
+    const fake = fakeEnvironment();
+    const applied: string[] = [];
+    const transport = {
+      ...transportFor(makeReply({ id: "ice", source: "builtin" }), applied),
+      initial: async () => "ice",
+    };
+
+    const reply = await installThemeLoader({
+      env: fake.env,
+      transport,
+      force: true,
+      preferSettings: true,
+    });
+
+    expect(applied).toEqual(["ice"]);
+    expect(reply?.id).toBe("ice");
+    expect(fake.dataset.theme).toBe("ice");
+  });
+
+  it("监听 theme:changed 并在本窗口应用", async () => {
+    const fake = fakeEnvironment();
+    let handler: ((id: string) => void) | undefined;
+    fake.env.onThemeChanged = (next) => {
+      handler = next;
+      return () => {};
+    };
+    const applied: string[] = [];
+    const transport = transportFor(makeReply({ id: "amber", source: "builtin" }), applied);
+
+    await installThemeLoader({
+      env: fake.env,
+      transport,
+      force: true,
+      skipInitial: true,
+    });
+    expect(handler).toBeDefined();
+    handler?.("amber");
+
+    await vi.waitFor(() => {
+      expect(applied).toEqual(["amber"]);
+    });
+    expect(fake.dataset.theme).toBe("amber");
+  });
+
   it("命令名与阈值是冻结契约", () => {
     expect(THEME_LIST_COMMAND).toBe("theme.list");
     expect(THEME_APPLY_COMMAND).toBe("theme.apply");
     expect(THEME_EXPORT_COMMAND).toBe("theme.exportBuiltin");
+    expect(THEME_INITIAL_COMMAND).toBe("theme.initial");
+    expect(THEME_CHANGED_EVENT).toBe("theme:changed");
     expect(THEME_STORAGE_KEY).toBe("np.theme.id");
     expect(SENTINEL_DELAY_MS).toBe(300);
     expect(MIN_CONTRAST_RATIO).toBe(4.5);

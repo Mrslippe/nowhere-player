@@ -13,7 +13,7 @@
  * 单测用最小 stub，不依赖 jsdom（任务卡 §8）。
  */
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   isTauriRuntime,
   TERMINAL_BLOCK_EVENT,
@@ -28,6 +28,10 @@ export const THEME_LIST_COMMAND = "theme.list";
 export const THEME_APPLY_COMMAND = "theme.apply";
 /** 见 {@link THEME_LIST_COMMAND}。 */
 export const THEME_EXPORT_COMMAND = "theme.exportBuiltin";
+/** 从 settings 读回启动主题（T-0042）。 */
+export const THEME_INITIAL_COMMAND = "theme.initial";
+/** 设置命令切换主题后广播；前端监听并应用。 */
+export const THEME_CHANGED_EVENT = "theme:changed";
 
 /** 选择持久化的 localStorage 键（与 `shared/theme.ts` 的 `np.theme` 区分开）。 */
 export const THEME_STORAGE_KEY = "np.theme.id";
@@ -137,6 +141,8 @@ export interface ThemeEnvironment {
   storage: ThemeStorage;
   /** `theme.apply` 的 IPC 通道（单测注入假实现）。 */
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+  /** 监听 `theme:changed`；单测注入后手动触发 handler。 */
+  onThemeChanged?(handler: (id: string) => void): Promise<() => void> | (() => void);
 }
 
 /** 应用主题的选项。 */
@@ -151,6 +157,8 @@ export interface ThemeTransport {
   list(): Promise<ThemeListEntry[]>;
   apply(id: string): Promise<ThemeApplyReply>;
   exportBuiltin(id: string): Promise<ThemeExportReply>;
+  /** 启动主题（settings.json 的 theme.id）；单测可不实现。 */
+  initial?(): Promise<string | null>;
 }
 
 /** camelCase token → CSS 自定义属性名（`bgElev` → `--bg-elev`）。 */
@@ -432,6 +440,7 @@ export function tauriThemeTransport(): ThemeTransport {
     apply: (id) => invoke<ThemeApplyReply>(THEME_APPLY_COMMAND, { id }),
     exportBuiltin: (id) =>
       invoke<ThemeExportReply>(THEME_EXPORT_COMMAND, { id }),
+    initial: () => invoke<string | null>(THEME_INITIAL_COMMAND),
   };
 }
 
@@ -505,6 +514,14 @@ export function browserEnvironment(): ThemeEnvironment | null {
     },
     storage: browserStorage(),
     invoke: (command, args) => invoke(command, args),
+    onThemeChanged: (handler) =>
+      listen<{ id?: unknown }>(THEME_CHANGED_EVENT, (event) => {
+        const id =
+          typeof event.payload?.id === "string" ? event.payload.id.trim() : "";
+        if (id !== "") {
+          handler(id);
+        }
+      }),
   };
 }
 
@@ -672,6 +689,10 @@ export async function exportBuiltinTheme(
 export interface InstallThemeLoaderOptions extends ApplyThemeOptions {
   /** 测试用：跳过 Tauri 运行时判断（必须同时注入 transport）。 */
   force?: boolean;
+  /** 启动时先读 settings.json 的 theme.id（T-0042）；URL dev 预览仍由 App 跳过 initial。 */
+  preferSettings?: boolean;
+  /** 只装 `theme:changed` 监听，不应用启动主题（dev 预览时用）。 */
+  skipInitial?: boolean;
 }
 
 /**
@@ -702,6 +723,31 @@ export async function installThemeLoader(
 
   installed = true;
 
+  // 先装监听：即使 dev 预览跳过启动主题，`theme set` 也要能立即刷新本窗口。
+  if (env.onThemeChanged) {
+    try {
+      const unlisten = env.onThemeChanged((id) => {
+        void applyThemeById(id, { env, transport: options.transport });
+      });
+      if (unlisten instanceof Promise) {
+        void unlisten.catch(() => {});
+      }
+    } catch {
+      // 监听失败不影响启动主题；下一次命令仍会写 settings。
+    }
+  }
+
+  if (options.skipInitial) {
+    return null;
+  }
+
+  if (options.preferSettings) {
+    const saved = await readInitialThemeId(env, options.transport);
+    if (saved !== null) {
+      return applyThemeById(saved, { env, transport: options.transport });
+    }
+  }
+
   const urlTheme = readUrlTheme();
   const id =
     urlTheme === null
@@ -715,6 +761,21 @@ export async function installThemeLoader(
   }
 
   return applyThemeById(id, { env, transport: options.transport });
+}
+
+async function readInitialThemeId(
+  env: ThemeEnvironment,
+  transport: ThemeTransport | undefined,
+): Promise<string | null> {
+  try {
+    const value =
+      transport?.initial !== undefined
+        ? await transport.initial()
+        : await env.invoke<string | null>(THEME_INITIAL_COMMAND);
+    return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function readUrlTheme(): string | null {
