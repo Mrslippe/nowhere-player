@@ -641,6 +641,7 @@ mod tests {
         usage: "probe [--limit=N]",
         args: &[ArgSpec {
             name: "value",
+            label: "值",
             kind: ArgKind::Text,
             required: false,
         }],

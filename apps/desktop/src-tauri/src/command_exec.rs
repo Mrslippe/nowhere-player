@@ -617,24 +617,6 @@ fn help_entry(name: &str) -> (&'static str, &'static [&'static str]) {
         })
 }
 
-fn help_arg_label(name: &str) -> String {
-    match name {
-        "index|path" => "序号/路径".to_owned(),
-        "path" => "路径".to_owned(),
-        "index" => "序号".to_owned(),
-        "position" => "位置".to_owned(),
-        "level" => "音量".to_owned(),
-        "mode" => "模式".to_owned(),
-        "keyword" => "关键词".to_owned(),
-        "cmd" => "命令".to_owned(),
-        "key" => "设置项".to_owned(),
-        "value" => "值".to_owned(),
-        "target" => "目标".to_owned(),
-        "id" => "ID".to_owned(),
-        other => other.to_owned(),
-    }
-}
-
 /// 音源在终端里的中文短名。
 fn source_label(source: SourceId) -> &'static str {
     match source {
@@ -909,11 +891,40 @@ impl ThemeApi for ThemeHandle {
 }
 
 fn theme_error(error: ThemeError) -> CmdError {
-    CmdError {
+    normalize_cmd_dots(CmdError {
         code: error.code,
         message: error.message,
         hint: error.hint,
+    })
+}
+
+fn normalize_cmd_dots(mut error: CmdError) -> CmdError {
+    error.message = normalize_dotted_commands(&error.message);
+    error.hint = error.hint.map(|hint| normalize_dotted_commands(&hint));
+    error
+}
+
+/// IPC 层的历史注释式命令名（`theme.list`）在终端里统一成 `theme list`。
+fn normalize_dotted_commands(text: &str) -> String {
+    let mut normalized = text.to_owned();
+    for (dotted, spaced) in [
+        ("theme.list", "theme list"),
+        ("theme.set", "theme set"),
+        ("theme.exportBuiltin", "theme export"),
+        ("theme.export", "theme export"),
+        ("queue.list", "queue list"),
+        ("library.list", "library list"),
+        ("library.scan", "library scan"),
+        ("library.stat", "library stat"),
+        ("playlist.show", "playlist show"),
+        ("playlist.add", "playlist add"),
+        ("config.list", "config list"),
+        ("source.list", "source list"),
+        ("cache.stat", "cache stat"),
+    ] {
+        normalized = normalized.replace(dotted, spaced);
     }
+    normalized
 }
 
 /// 扫描进度节流的默认间隔：2 Hz。
@@ -1779,6 +1790,7 @@ impl Executor<'_> {
 
     /// `queue add <path>` 收窄为真实存在的本地文件；`--from-search <n>` 从最近搜索结果入队。
     fn add_paths(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
+        let previous_listing = self.library.active_listing();
         let from_search = parsed.flags.get("from-search");
 
         let path = if let Some(raw) = from_search {
@@ -1823,11 +1835,13 @@ impl Executor<'_> {
                 }
             }
         } else {
-            if parsed.positional.len() != 1 {
-                return Err(
-                    CmdError::new("E_CMD_ARG", "queue add 一次只接受一个文件路径")
-                        .with_hint("queue add <path> | queue add --from-search <n>"),
-                );
+            if parsed.positional.is_empty() {
+                return Err(CmdError::new("E_CMD_ARG", "缺少参数：路径")
+                    .with_hint("queue add <路径> | queue add --from-search <序号>"));
+            }
+            if parsed.positional.len() > 1 {
+                return Err(CmdError::new("E_CMD_ARG", "queue add 一次只接受一个路径")
+                    .with_hint("queue add <路径> | queue add --from-search <序号>"));
             }
             let path = parsed.positional[0].clone();
             if !Path::new(&path).is_file() {
@@ -1838,9 +1852,16 @@ impl Executor<'_> {
         };
 
         let view = self.api.queue_add(vec![path])?;
+        let mut footer = format!("队列现有 {} 首", view.tracks.len());
+        if let Some(listing) = previous_listing {
+            footer.push_str(&format!(
+                " · 现在 play <n> 仍指向{}；要播队列先 queue list",
+                listing.source.label()
+            ));
+        }
         Ok(Outcome {
             outputs: vec![text_of(vec![bold("已加入 1 首")])],
-            footer: Some(format!("队列现有 {} 首", view.tracks.len())),
+            footer: Some(footer),
         })
     }
 
@@ -2285,20 +2306,36 @@ impl Executor<'_> {
         } else {
             format_relative_time(stats.last_scan_at)
         };
-        let lines = [
-            ("曲目", stats.tracks.to_string()),
-            ("专辑", stats.albums.to_string()),
-            ("艺人", stats.artists.to_string()),
-            ("总时长", format_total_duration(stats.total_duration_ms)),
-            ("最近扫描", last_scan),
-            ("封面缓存", format_cover_cache(covers)),
+        let rows = vec![
+            vec![
+                "曲目".to_owned(),
+                stats.tracks.to_string(),
+                "专辑".to_owned(),
+                stats.albums.to_string(),
+            ],
+            vec![
+                "艺人".to_owned(),
+                stats.artists.to_string(),
+                "总时长".to_owned(),
+                format_total_duration(stats.total_duration_ms),
+            ],
+            vec![
+                "最近扫描".to_owned(),
+                last_scan,
+                "封面缓存".to_owned(),
+                format_cover_cache(covers),
+            ],
         ];
 
         Ok(Outcome {
-            outputs: lines
-                .into_iter()
-                .map(|(name, value)| text_of(vec![bold(name), plain(format!(" · {value}"))]))
-                .collect(),
+            outputs: vec![Output::Table {
+                columns: ["项目", "值", "项目", "值"]
+                    .iter()
+                    .map(|column| (*column).to_owned())
+                    .collect(),
+                rows,
+                selectable: false,
+            }],
             footer: Some("输入 library list 查看最近入库".to_owned()),
         })
     }
@@ -2405,7 +2442,7 @@ impl Executor<'_> {
         match parsed.subcommand.map(|subcommand| subcommand.name) {
             Some("set") => {
                 let id = positional_arg(parsed, "主题 id")?;
-                let applied = theme.apply(id)?;
+                let applied = theme.apply(id).map_err(normalize_cmd_dots)?;
                 settings.set_and_save("theme.id", SettingValue::Str(applied.id.clone()))?;
                 theme.broadcast(&applied.id);
 
@@ -2424,7 +2461,7 @@ impl Executor<'_> {
             }
             Some("export") => {
                 let id = positional_arg(parsed, "主题 id")?;
-                let target = theme.export(id)?;
+                let target = theme.export(id).map_err(normalize_cmd_dots)?;
                 let detail = if target.created {
                     "已导出"
                 } else {
@@ -2534,7 +2571,7 @@ impl Executor<'_> {
                         .theme
                         .ok_or_else(|| CmdError::new("E_CMD_ARG", "主题服务未接入"))?;
                     let id = value.as_str().unwrap_or_default();
-                    let applied = theme.apply(id)?;
+                    let applied = theme.apply(id).map_err(normalize_cmd_dots)?;
                     settings.set_and_save(key, value.clone())?;
                     theme.broadcast(&applied.id);
                 } else if let Some(source_id) = source_id_from_enabled_key(key) {
@@ -2862,11 +2899,7 @@ impl Executor<'_> {
                     outputs.push(text_of(vec![bold("参数")]));
                     for arg in spec.args {
                         let suffix = if arg.required { "" } else { "（可选）" };
-                        outputs.push(text_of(vec![plain(format!(
-                            "  <{}>{}",
-                            help_arg_label(arg.name),
-                            suffix
-                        ))]));
+                        outputs.push(text_of(vec![plain(format!("  <{}>{}", arg.label, suffix))]));
                     }
                 }
                 if !spec.flags.is_empty() {
@@ -6541,6 +6574,38 @@ mod tests {
         );
         assert!(text_of_block(&block).contains("已加入 1 首"));
         assert_eq!(block.footer.as_deref(), Some("队列现有 1 首"));
+        assert!(!block.footer.as_deref().unwrap().contains("仍指向"));
+    }
+
+    #[test]
+    fn queue_add_footer_names_the_previous_listing() {
+        let dir = TestDir::new("queue-add-footer");
+        let path = dir.path().join("song.flac");
+        fs::write(&path, b"fake").expect("write");
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Song",
+            "Artist",
+            "/music/song.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "search artist");
+        let input = format!("queue add \"{}\"", path.display());
+        let block = done_with_library(&api, &library, &input);
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("仍指向搜索结果"))
+        );
+        assert!(
+            library
+                .active_listing()
+                .is_some_and(|listing| listing.source == ListingSource::Search)
+        );
     }
 
     #[test]
@@ -6561,6 +6626,7 @@ mod tests {
 
         assert_eq!(block.status, BlockStatus::Error);
         assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert_eq!(error_fields(&block).1, "缺少参数：路径");
         assert!(api.calls().is_empty());
     }
 
@@ -7144,15 +7210,17 @@ mod tests {
             })
             .with_covers(3, 1_572_864);
         let block = done_with_library(&api, &library, "library stat");
-        let text = text_of_block(&block);
+        let (_, rows) = table_of_block(&block);
 
-        assert!(text.contains("曲目 · 3"), "{text}");
-        assert!(text.contains("专辑 · 1"), "{text}");
-        assert!(text.contains("艺人 · 2"), "{text}");
-        assert!(text.contains("总时长 · 1 小时 2 分"), "{text}");
-        assert!(text.contains("最近扫描 · 从未扫描"), "{text}");
-        // 3 个文件 / 1.5 MB：字节数按 1024² 换算，保留一位小数。
-        assert!(text.contains("封面缓存 · 3 个文件 / 1.5 MB"), "{text}");
+        assert_eq!(
+            rows,
+            vec![
+                vec!["曲目", "3", "专辑", "1"],
+                vec!["艺人", "2", "总时长", "1 小时 2 分"],
+                // 3 个文件 / 1.5 MB：字节数按 1024² 换算，保留一位小数。
+                vec!["最近扫描", "从未扫描", "封面缓存", "3 个文件 / 1.5 MB"],
+            ]
+        );
         assert_eq!(
             library.calls(),
             vec![LibraryCall::Stats, LibraryCall::Covers]
@@ -7164,9 +7232,8 @@ mod tests {
         let api = FakeApi::new();
         let library = FakeLibraryApi::new();
         let block = done_with_library(&api, &library, "library stat");
-        let text = text_of_block(&block);
-
-        assert!(text.contains("封面缓存 · 0 个文件 / 0.0 MB"), "{text}");
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows[2][3], "0 个文件 / 0.0 MB");
     }
 
     #[test]
@@ -10747,12 +10814,17 @@ mod tests {
         let settings = settings_for(&dir);
         let api = FakeApi::new();
         let library = FakeLibraryApi::new();
-        let theme = FakeTheme::new(Err(CmdError::new("E_THEME_NOT_FOUND", "主题不存在")));
+        let theme = FakeTheme::new(Err(CmdError::new("E_THEME_NOT_FOUND", "主题不存在")
+            .with_hint("用 theme.list 查看可用主题")));
 
         let block = done_with_services(&api, &library, &settings, &theme, "theme set nope");
 
         assert_eq!(block.status, BlockStatus::Error);
         assert_eq!(error_fields(&block).0, "E_THEME_NOT_FOUND");
+        let (_, _, hint) = error_fields(&block);
+        let hint = hint.expect("hint");
+        assert!(hint.contains("theme list"), "{hint}");
+        assert!(!hint.contains("theme.list"), "{hint}");
         assert_eq!(settings.theme_id(), None);
         assert!(theme.broadcasts().is_empty());
     }

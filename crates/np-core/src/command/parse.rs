@@ -133,9 +133,20 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
     };
     let required = args.iter().filter(|arg| arg.required).count();
     if positional.len() < required {
-        return Err(ParseError::missing_arg(args[positional.len()].name, usage));
+        return Err(ParseError::missing_arg(args[positional.len()].label, usage));
     }
     if positional.len() > args.len() && joined_search.is_none() {
+        if spec.name == "queue"
+            && subcommand.is_some_and(|subcommand| subcommand.name == "add")
+            && positional.len() > 1
+        {
+            return Err(ParseError {
+                code: crate::CommandErrorCode::Arg,
+                message: "queue add 一次只接受一个路径".to_owned(),
+                usage: Some(usage.to_owned()),
+                suggestion: None,
+            });
+        }
         return Err(ParseError::extra_arg(&positional[args.len()].text, usage));
     }
     let mut values = Vec::with_capacity(positional.len().min(args.len()));
@@ -147,7 +158,7 @@ fn parse_with(registry: &Registry, input: &str) -> Result<Option<Parsed>, ParseE
                 Some(value) => values.push(value),
                 None => {
                     return Err(ParseError::invalid_arg(
-                        arg.name,
+                        arg.label,
                         &arg.kind.describe(),
                         &token.text,
                         usage,
@@ -508,7 +519,7 @@ mod tests {
         let error = parse_err("queue add a b");
 
         assert_eq!(error.code, CommandErrorCode::Arg);
-        assert!(error.message.contains('b'), "{}", error.message);
+        assert_eq!(error.message, "queue add 一次只接受一个路径");
         assert_eq!(
             error.usage.as_deref(),
             Some("queue add <路径> | queue add --from-search <序号>")
@@ -577,7 +588,7 @@ mod tests {
         let error = parse_err("queue add a.flac b.flac");
 
         assert_eq!(error.code, CommandErrorCode::Arg);
-        assert!(error.message.contains("b.flac"), "{}", error.message);
+        assert_eq!(error.message, "queue add 一次只接受一个路径");
     }
 
     #[test]
@@ -711,7 +722,7 @@ mod tests {
         let error = parse_err("library add");
 
         assert_eq!(error.code, CommandErrorCode::Arg);
-        assert!(error.message.contains("path"), "{}", error.message);
+        assert!(error.message.contains("路径"), "{}", error.message);
         assert_eq!(error.usage.as_deref(), Some("library add <路径>"));
     }
 

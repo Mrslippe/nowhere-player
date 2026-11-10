@@ -52,8 +52,10 @@ impl ArgKind {
 /// 一个位置参数的规格。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArgSpec {
-    /// 错误信息与帮助里显示的名字，如 `index|path`。
+    /// 内部标识（解析/测试用），不直接展示给用户。
     pub name: &'static str,
+    /// 展示名：错误信息与帮助里使用，必须是人话。
+    pub label: &'static str,
     /// 形状。
     pub kind: ArgKind,
     /// 是否必填。可选参数必须排在必填参数之后（命令表自检会检查）。
@@ -136,18 +138,28 @@ impl Registry {
         })
     }
 
-    /// 拼写建议：编辑距离 ≤ 2，取最小者；同距离按规范名字典序。
+    /// 拼写建议：首字母相同且编辑距离 ≤ 2，取最小者；同距离按规范名字典序。
     ///
     /// 返回规范写法（输入命中别名时也返回原名），供错误信息展示。
     pub fn suggest(&self, name: &str) -> Option<&'static CommandSpec> {
         let mut best: Option<(usize, &'static CommandSpec)> = None;
+        let initial = name.chars().next()?.to_ascii_lowercase();
 
         for spec in self.specs {
-            let distance = std::iter::once(spec.name)
-                .chain(spec.aliases.iter().copied())
+            let candidates = std::iter::once(spec.name).chain(spec.aliases.iter().copied());
+            // 可信建议：首字母相同且距离 ≤ 2；否则 foo 会被建议成 vol。
+            let Some(distance) = candidates
+                .filter(|candidate| {
+                    candidate
+                        .chars()
+                        .next()
+                        .is_some_and(|candidate| candidate.to_ascii_lowercase() == initial)
+                })
                 .map(|candidate| edit_distance(name, candidate))
                 .min()
-                .unwrap_or(usize::MAX);
+            else {
+                continue;
+            };
 
             if distance == 0 || distance > 2 {
                 continue;
@@ -249,11 +261,14 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "queue add <路径> | queue add --from-search <序号>",
         args: &[ArgSpec {
             name: "path",
+            label: "路径",
+
             kind: ArgKind::Text,
             required: false,
         }],
         flags: &[FlagSpec {
             name: "from-search",
+
             takes_value: true,
             summary: "从最近一次搜索结果取第 n 条（1 基）",
         }],
@@ -264,6 +279,8 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "queue remove <序号>",
         args: &[ArgSpec {
             name: "index",
+            label: "序号",
+
             kind: ArgKind::Integer,
             required: true,
         }],
@@ -282,6 +299,8 @@ const QUEUE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "queue jump <序号>",
         args: &[ArgSpec {
             name: "index",
+            label: "序号",
+
             kind: ArgKind::Integer,
             required: true,
         }],
@@ -303,6 +322,8 @@ const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "library add <路径>",
         args: &[ArgSpec {
             name: "path",
+            label: "路径",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -315,6 +336,7 @@ const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[],
         flags: &[FlagSpec {
             name: "full",
+
             takes_value: false,
             summary: "忽略 mtime 指纹，全部重新解析",
         }],
@@ -326,6 +348,7 @@ const LIBRARY_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[],
         flags: &[FlagSpec {
             name: "limit",
+
             takes_value: true,
             summary: "返回条数（默认 20）",
         }],
@@ -346,6 +369,8 @@ const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "mode repeat <off|one|all>",
         args: &[ArgSpec {
             name: "mode",
+            label: "模式",
+
             kind: ArgKind::Enum(&["off", "one", "all"]),
             required: true,
         }],
@@ -357,6 +382,8 @@ const MODE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "mode shuffle <on|off>",
         args: &[ArgSpec {
             name: "switch",
+            label: "开关",
+
             kind: ArgKind::Enum(&["on", "off"]),
             required: true,
         }],
@@ -378,6 +405,8 @@ const THEME_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "theme set <主题 id>",
         args: &[ArgSpec {
             name: "id",
+            label: "编号",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -389,6 +418,8 @@ const THEME_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "theme export <主题 id>",
         args: &[ArgSpec {
             name: "id",
+            label: "编号",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -410,6 +441,8 @@ const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "config get <设置项>",
         args: &[ArgSpec {
             name: "key",
+            label: "设置项",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -422,11 +455,15 @@ const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[
             ArgSpec {
                 name: "key",
+                label: "设置项",
+
                 kind: ArgKind::Text,
                 required: true,
             },
             ArgSpec {
                 name: "value",
+                label: "值",
+
                 kind: ArgKind::Text,
                 required: true,
             },
@@ -439,6 +476,8 @@ const CONFIG_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "config unset <设置项>",
         args: &[ArgSpec {
             name: "key",
+            label: "设置项",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -467,6 +506,8 @@ const SOURCE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "source enable <音源 id>",
         args: &[ArgSpec {
             name: "id",
+            label: "编号",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -478,6 +519,8 @@ const SOURCE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "source disable <音源 id>",
         args: &[ArgSpec {
             name: "id",
+            label: "编号",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -499,6 +542,8 @@ const CACHE_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "cache clear [streams|covers|all]",
         args: &[ArgSpec {
             name: "target",
+            label: "类型",
+
             kind: ArgKind::Enum(&["streams", "covers", "all"]),
             required: false,
         }],
@@ -520,6 +565,8 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "playlist create \"<名字>\"",
         args: &[ArgSpec {
             name: "名字",
+            label: "名字",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -532,11 +579,15 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[
             ArgSpec {
                 name: "旧名",
+                label: "旧名",
+
                 kind: ArgKind::Text,
                 required: true,
             },
             ArgSpec {
                 name: "新名",
+                label: "新名",
+
                 kind: ArgKind::Text,
                 required: true,
             },
@@ -549,6 +600,8 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "playlist delete \"<名字>\"",
         args: &[ArgSpec {
             name: "名字",
+            label: "名字",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -560,6 +613,8 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         usage: "playlist show \"<名字>\"",
         args: &[ArgSpec {
             name: "名字",
+            label: "名字",
+
             kind: ArgKind::Text,
             required: true,
         }],
@@ -572,11 +627,15 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[
             ArgSpec {
                 name: "名字",
+                label: "名字",
+
                 kind: ArgKind::Text,
                 required: true,
             },
             ArgSpec {
                 name: "序号",
+                label: "序号",
+
                 kind: ArgKind::Integer,
                 required: false,
             },
@@ -590,11 +649,15 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[
             ArgSpec {
                 name: "名字",
+                label: "名字",
+
                 kind: ArgKind::Text,
                 required: true,
             },
             ArgSpec {
                 name: "序号",
+                label: "序号",
+
                 kind: ArgKind::Integer,
                 required: true,
             },
@@ -608,11 +671,15 @@ const PLAYLIST_SUBCOMMANDS: &[SubcommandSpec] = &[
         args: &[
             ArgSpec {
                 name: "名字",
+                label: "名字",
+
                 kind: ArgKind::Text,
                 required: true,
             },
             ArgSpec {
                 name: "序号",
+                label: "序号",
+
                 kind: ArgKind::Integer,
                 required: false,
             },
@@ -629,6 +696,8 @@ const COMMANDS: &[CommandSpec] = &[
         usage: "play [<序号>|<路径>]",
         args: &[ArgSpec {
             name: "index|path",
+            label: "序号或路径",
+
             kind: ArgKind::Text,
             required: false,
         }],
@@ -683,6 +752,8 @@ const COMMANDS: &[CommandSpec] = &[
         usage: "seek <位置>",
         args: &[ArgSpec {
             name: "position",
+            label: "位置",
+
             kind: ArgKind::SeekPosition,
             required: true,
         }],
@@ -697,6 +768,8 @@ const COMMANDS: &[CommandSpec] = &[
         usage: "vol <音量>",
         args: &[ArgSpec {
             name: "level",
+            label: "音量",
+
             kind: ArgKind::Integer,
             required: true,
         }],
@@ -741,42 +814,51 @@ const COMMANDS: &[CommandSpec] = &[
         usage: "search <关键词…> [--artist <名>] [--source <all|bilibili|netease>] [--limit <条数>] [--no-filter] [--local | --up <用户名> | --mid <数字 id>]",
         args: &[ArgSpec {
             name: "keyword",
+            label: "关键词",
+
             kind: ArgKind::Text,
             required: false,
         }],
         flags: &[
             FlagSpec {
                 name: "local",
+
                 takes_value: false,
                 summary: "只搜本地库",
             },
             FlagSpec {
                 name: "no-filter",
+
                 takes_value: false,
                 summary: "关闭 artist 过滤与标题关键词约束，返回源原始结果",
             },
             FlagSpec {
                 name: "artist",
+
                 takes_value: true,
                 summary: "按艺人名过滤；B 站同时匹配上传者或标题",
             },
             FlagSpec {
                 name: "source",
+
                 takes_value: true,
                 summary: "只搜指定源：all / bilibili / netease",
             },
             FlagSpec {
                 name: "limit",
+
                 takes_value: true,
                 summary: "本次结果总数（1-100，默认 20）",
             },
             FlagSpec {
                 name: "up",
+
                 takes_value: true,
                 summary: "按 B 站用户名解析 UP，并在其投稿内检索",
             },
             FlagSpec {
                 name: "mid",
+
                 takes_value: true,
                 summary: "直接指定 B 站 UP 的 mid，跳过用户名解析",
             },
@@ -841,11 +923,14 @@ const COMMANDS: &[CommandSpec] = &[
         usage: "help [命令] [--all]",
         args: &[ArgSpec {
             name: "cmd",
+            label: "命令",
+
             kind: ArgKind::Text,
             required: false,
         }],
         flags: &[FlagSpec {
             name: "all",
+
             takes_value: false,
             summary: "列出隐藏命令",
         }],
@@ -940,6 +1025,8 @@ mod tests {
     fn suggests_the_nearest_command() {
         let registry = Registry::new();
 
+        assert_eq!(registry.suggest("pla").map(|spec| spec.name), Some("play"));
+        assert_eq!(registry.suggest("foo"), None);
         assert_eq!(registry.suggest("plya").map(|spec| spec.name), Some("play"));
         assert_eq!(
             registry.suggest("quueu").map(|spec| spec.name),
@@ -963,6 +1050,59 @@ mod tests {
 
         assert!(registry.suggest("xyz").is_none());
         assert!(registry.suggest("toggle").is_none());
+    }
+
+    #[test]
+    fn every_arg_has_a_chinese_display_label_for_missing_arg_errors() {
+        use crate::command::ParseError;
+
+        let mut checked = 0;
+        for spec in COMMANDS {
+            for arg in spec.args {
+                assert_arg_label(arg);
+                let error = ParseError::missing_arg(arg.label, "test");
+                assert!(
+                    !error
+                        .message
+                        .chars()
+                        .any(|character| character.is_ascii_alphabetic()),
+                    "missing-arg message leaks an internal identifier: {}",
+                    error.message
+                );
+                checked += 1;
+            }
+            for subcommand in spec.subcommands {
+                for arg in subcommand.args {
+                    assert_arg_label(arg);
+                    let error = ParseError::missing_arg(arg.label, "test");
+                    assert!(
+                        !error
+                            .message
+                            .chars()
+                            .any(|character| character.is_ascii_alphabetic()),
+                        "missing-arg message leaks an internal identifier: {}",
+                        error.message
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked >= 20,
+            "expected to traverse all args, got {checked}"
+        );
+    }
+
+    fn assert_arg_label(arg: &ArgSpec) {
+        assert!(!arg.label.is_empty(), "{} has no label", arg.name);
+        assert!(
+            !arg.label
+                .chars()
+                .any(|character| character.is_ascii_alphabetic()),
+            "{} label still looks like an internal id: {}",
+            arg.name,
+            arg.label
+        );
     }
 
     #[test]
