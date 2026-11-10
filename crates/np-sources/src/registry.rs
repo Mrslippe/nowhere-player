@@ -34,6 +34,11 @@ impl SourceRegistry {
         &self.sources
     }
 
+    /// 已注册源的 id（只读，`source list` 用）。
+    pub fn ids(&self) -> Vec<SourceId> {
+        self.sources.iter().map(|source| source.id()).collect()
+    }
+
     /// 按 [`SourceId`] 找源；命令层 resolve 时用。
     pub fn source(&self, id: SourceId) -> Option<Arc<dyn AudioSource>> {
         self.sources
@@ -200,6 +205,15 @@ mod tests {
 
         assert!(merged.tracks.is_empty());
         assert_eq!(bili.calls(), 0);
+    }
+
+    #[test]
+    fn ids_returns_registration_order() {
+        let bili = FakeSource::new(SourceId::Bilibili, &[], Failure::None);
+        let netease = FakeSource::new(SourceId::Netease, &[], Failure::None);
+        let registry = SourceRegistry::new(vec![netease, bili]);
+
+        assert_eq!(registry.ids(), vec![SourceId::Netease, SourceId::Bilibili]);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 pub mod command;
 pub mod player;
 pub mod queue;
+pub mod settings;
 pub mod terminal;
 pub mod theme;
 
@@ -15,6 +16,10 @@ pub use player::{
     PlayerCommand, PlayerError, PlayerErrorCode, PlayerEvent, PositionTick, RepeatMode,
 };
 pub use queue::{Queue, QueueStep, QueueView};
+pub use settings::{
+    SETTINGS_BACKUP_FILE, SETTINGS_FILE, SettingValue, Settings, SettingsError, SettingsWarning,
+    settings_path, validate_setting,
+};
 pub use terminal::{Block, BlockStatus, MediaKind, Output, SCHEMA_VERSION, Span, SpanColor, Tone};
 pub use theme::{
     BUILTIN_THEMES, BuiltinTheme, MAX_THEME_ID_LEN, MAX_THEME_NAME_CHARS, RawTheme, Skin,
