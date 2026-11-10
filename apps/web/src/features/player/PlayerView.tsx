@@ -27,12 +27,14 @@ export function PlayerView() {
   const [pinned, setPinned] = useState<PlayerState | null>(() =>
     IS_DEV ? readPlayerStateOverride() : null,
   );
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const player = usePlayer({ enabled: pinned === null });
   const live = pinned === null;
   const status = player.state.status;
 
   const selectPinned = (next: PlayerState | null) => {
     setPinned(next);
+    setSwitcherOpen(false);
 
     if (typeof window === "undefined") {
       return;
@@ -114,29 +116,49 @@ export function PlayerView() {
       </div>
 
       {IS_DEV ? (
-        <nav className="np-player-switcher" aria-label="播放器状态预览">
-          <Button
-            size="sm"
-            variant={live ? "primary" : "ghost"}
-            aria-pressed={live}
-            title="实时状态"
-            onClick={() => selectPinned(null)}
+        <div
+          className="np-player-dev"
+          data-open={switcherOpen ? "true" : "false"}
+        >
+          <nav
+            id="np-player-dev-panel"
+            className="np-player-switcher"
+            aria-label="播放器状态预览"
           >
-            实时
-          </Button>
-          {PLAYER_STATES.map((name) => (
             <Button
-              key={name}
               size="sm"
-              variant={name === pinned ? "primary" : "ghost"}
-              aria-pressed={name === pinned}
-              title={`?state=${name}`}
-              onClick={() => selectPinned(name)}
+              variant={live ? "primary" : "ghost"}
+              aria-pressed={live}
+              title="实时状态"
+              onClick={() => selectPinned(null)}
             >
-              {PLAYER_STATE_LABELS[name]}
+              实时
             </Button>
-          ))}
-        </nav>
+            {PLAYER_STATES.map((name) => (
+              <Button
+                key={name}
+                size="sm"
+                variant={name === pinned ? "primary" : "ghost"}
+                aria-pressed={name === pinned}
+                title={`?state=${name}`}
+                onClick={() => selectPinned(name)}
+              >
+                {PLAYER_STATE_LABELS[name]}
+              </Button>
+            ))}
+          </nav>
+          <button
+            className="np-player-dev__toggle"
+            type="button"
+            aria-label="播放器状态预览"
+            aria-expanded={switcherOpen}
+            aria-controls="np-player-dev-panel"
+            title="播放器状态预览"
+            onClick={() => setSwitcherOpen((open) => !open)}
+          >
+            <span aria-hidden="true" />
+          </button>
+        </div>
       ) : null}
     </main>
   );

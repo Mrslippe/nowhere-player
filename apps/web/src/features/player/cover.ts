@@ -32,10 +32,11 @@ export function coverGradient(seed: string): CoverGradient {
   const hash = hashSeed(seed);
 
   const hue = hash % 360;
-  const hueShift = 24 + ((hash >>> 9) % 48);
-  const saturation = 38 + ((hash >>> 5) % 15);
-  const lightnessStart = 32 + ((hash >>> 13) % 8);
-  const lightnessEnd = 20 + ((hash >>> 21) % 8);
+  // T-0055 #9：降饱和/降明度，避免紫粉渐变在暖中性界面里跳出来。
+  const hueShift = 18 + ((hash >>> 9) % 30);
+  const saturation = 22 + ((hash >>> 5) % 10);
+  const lightnessStart = 25 + ((hash >>> 13) % 6);
+  const lightnessEnd = 15 + ((hash >>> 21) % 6);
   const angle = 105 + ((hash >>> 17) % 6) * 15;
 
   return {

@@ -32,7 +32,49 @@
   height: var(--player-window-h);
 }
 
-/* dev 状态面板（打包后不渲染）；宽度对齐小窗，避免 340px 下横向滚动。 */
+/*
+ * dev 状态面板（打包后不渲染）：不占卡片流布局。
+ * 默认只在窗口右下透明边距露出一枚 12px 小点；点开才浮出面板。
+ */
+.np-player-dev {
+  position: fixed;
+  right: 6px;
+  bottom: 6px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+
+.np-player-dev__toggle {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-circle);
+  background: var(--bg-elev);
+  cursor: pointer;
+}
+
+.np-player-dev__toggle span {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--np-radius-circle);
+  background: var(--accent);
+  opacity: 0.8;
+}
+
+.np-player-dev__toggle:hover {
+  border-color: var(--line-strong);
+}
+
+.np-player-dev[data-open="false"] .np-player-switcher {
+  display: none;
+}
+
 .np-player-switcher {
   display: flex;
   flex-wrap: wrap;
@@ -40,6 +82,13 @@
   justify-content: center;
   gap: var(--sp-1);
   max-width: var(--player-window-w);
+  padding: var(--sp-1);
+  border: var(--np-border-control);
+  border-radius: var(--np-radius-control-sm);
+  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  box-shadow: var(--np-shadow-float);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .np-player-switcher .np-btn {

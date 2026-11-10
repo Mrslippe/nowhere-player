@@ -24,6 +24,28 @@ describe("coverGradient", () => {
     expect(to).not.toContain("#");
   });
 
+  it("T-0055 #9：饱和度和明度收在中性范围", () => {
+    for (let index = 0; index < 64; index += 1) {
+      const { from, to } = coverGradient(`album-${index}`);
+      const parse = (value: string) => {
+        const match = /^hsl\((\d{1,3}), (\d{1,2})%, (\d{1,2})%\)$/.exec(value);
+        if (match === null) {
+          throw new Error(`unexpected hsl: ${value}`);
+        }
+        return { saturation: Number(match[2]), lightness: Number(match[3]) };
+      };
+
+      const start = parse(from);
+      const end = parse(to);
+      expect(start.saturation).toBeGreaterThanOrEqual(22);
+      expect(start.saturation).toBeLessThanOrEqual(31);
+      expect(start.lightness).toBeGreaterThanOrEqual(25);
+      expect(start.lightness).toBeLessThanOrEqual(30);
+      expect(end.lightness).toBeGreaterThanOrEqual(15);
+      expect(end.lightness).toBeLessThanOrEqual(20);
+    }
+  });
+
   it("64 个不同 seed 产出互不相同的背景", () => {
     const backgrounds = new Set(
       Array.from({ length: 64 }, (_, index) => coverBackground(`album-${index}`)),

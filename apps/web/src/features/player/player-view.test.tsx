@@ -18,6 +18,10 @@ describe("PlayerView", () => {
 
     expect(html).toContain('aria-label="播放器状态预览"');
     expect(html).toContain('title="实时状态"');
+    expect(html).toContain("np-player-dev__toggle");
+    expect(html).toContain('data-open="false"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-controls="np-player-dev-panel"');
 
     const states = ["idle", "loading", "playing", "paused", "error", "hover"];
     for (const state of states) {
