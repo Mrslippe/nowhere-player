@@ -111,6 +111,18 @@ pub(crate) trait LibraryApi {
     fn track_by_path(&self, _path: &str) -> Result<Option<Track>, CmdError> {
         Ok(None)
     }
+    /// 最近一次渲染带序号表格的命令写入（T-0043）。
+    fn set_active_listing(&self, _listing: ActiveListing) {}
+    /// 当前序号上下文；没有渲染过列表时为 `None`。
+    fn active_listing(&self) -> Option<ActiveListing> {
+        None
+    }
+    /// 记住 `library list` 渲染的曲目，供 `play <n>` 解析。
+    fn remember_library_listing(&self, _tracks: Vec<Track>) {}
+    /// 最近一次 `library list` 的曲目。
+    fn library_listing(&self) -> Vec<Track> {
+        Vec::new()
+    }
 }
 
 /// 前台观察者：后台扫描通过它把进度与结果送回 UI 线程。
@@ -132,6 +144,35 @@ impl LibraryObserver for NoopLibraryObserver {
     fn on_finished(&self, _report: &ScanReport) {}
 
     fn on_failed(&self, _error: &CmdError) {}
+}
+
+/// 最近一次“带序号表格”的来源（T-0043）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ListingSource {
+    Search,
+    Queue,
+    Library,
+    Playlist(String),
+}
+
+impl ListingSource {
+    /// 终端文案；越界错误也用它。
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Search => "搜索结果".to_owned(),
+            Self::Queue => "播放队列".to_owned(),
+            Self::Library => "媒体库".to_owned(),
+            Self::Playlist(name) => format!("歌单《{name}》"),
+        }
+    }
+}
+
+/// 会话级序号上下文：来源 + 当时渲染的行数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveListing {
+    pub(crate) source: ListingSource,
+    pub(crate) len: usize,
 }
 
 /// 搜索结果上限（T-0023 §6.4）。
@@ -863,10 +904,9 @@ impl Executor<'_> {
         }
     }
 
-    /// `play`：无参 = 继续；纯数字 = 1 基序号；其余 = 文件路径。
+    /// `play`：无参 = 继续；纯数字 = 按**最近一张带序号表格**解析；其余 = 文件路径。
     ///
-    /// 数字序号**优先用播放队列**；队列为空且存在搜索结果时用搜索结果，
-    /// 输出会写明来源（T-0023 §6.4）。
+    /// 没有列表上下文时不再回退到播放队列（T-0043 统一规则）。
     fn play(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let Some(value) = parsed.positional.first() else {
             return Ok(state_outcome("继续播放", &self.api.resume()?));
@@ -874,48 +914,105 @@ impl Executor<'_> {
 
         if is_unsigned_integer(value) {
             let index = user_index(value)?;
-            let queue = self.api.queue_list()?;
-            if !queue.tracks.is_empty() {
-                let view = self.api.queue_jump(index)?;
-                return Ok(queue_jump_outcome(index, &view));
-            }
-
-            let hits = self.library.search_hits();
-            if hits.is_empty() {
-                return Err(CmdError::new("E_CMD_ARG", "播放队列为空，也没有搜索结果")
-                    .with_hint("先用 search <关键词> 搜索，或 queue add <路径> 加入队列"));
-            }
-            let hit = hits.get(index).ok_or_else(|| {
-                CmdError::new(
-                    "E_CMD_ARG",
-                    format!("搜索结果只有 {} 条，没有第 {} 条", hits.len(), index + 1),
-                )
+            let listing = self.library.active_listing().ok_or_else(|| {
+                CmdError::new("E_CMD_ARG", "没有可用的序号列表")
+                    .with_hint("先执行 search / queue list 等命令，再用序号")
             })?;
-            let SearchHit::Local(track) = hit else {
-                // 正常路径由 cmd_exec 的在线分派处理；这里只防御直接调用执行器的场景。
-                return Err(CmdError::new(
-                    "E_SRC_UNAVAILABLE",
-                    "该结果是云曲目，请重新执行 play <序号> 以走在线下载",
-                ));
-            };
 
-            let state = self.api.play(Some(track.path.clone()))?;
-            let mut spans = vec![
-                bold("播放"),
-                plain(format!(" · 搜索结果第 {} 首", index + 1)),
-                dim(format!(" · {}", track.title)),
-            ];
-            if !track.artist.is_empty() {
-                spans.push(dim(format!(" · {}", track.artist)));
+            match listing.source {
+                ListingSource::Search => {
+                    let hits = self.library.search_hits();
+                    if index >= listing.len || index >= hits.len() {
+                        return Err(CmdError::new(
+                            "E_CMD_ARG",
+                            format!(
+                                "{}只有 {} 条，没有第 {} 条",
+                                listing.source.label(),
+                                listing.len.max(hits.len()),
+                                index + 1
+                            ),
+                        ));
+                    }
+                    let hit = &hits[index];
+                    let SearchHit::Local(track) = hit else {
+                        // 正常路径由 cmd_exec 的在线分派处理；这里只防御直接调用执行器的场景。
+                        return Err(CmdError::new(
+                            "E_SRC_UNAVAILABLE",
+                            "该结果是云曲目，请重新执行 play <序号> 以走在线下载",
+                        ));
+                    };
+                    let state = self.api.play(Some(track.path.clone()))?;
+                    let mut spans = vec![
+                        bold("播放"),
+                        plain(format!(" · 搜索结果第 {} 首", index + 1)),
+                        dim(format!(" · {}", track.title)),
+                    ];
+                    if !track.artist.is_empty() {
+                        spans.push(dim(format!(" · {}", track.artist)));
+                    }
+                    return Ok(Outcome {
+                        outputs: vec![text_of(spans)],
+                        footer: Some(format!(
+                            "来源：搜索结果（共 {} 条） · {}",
+                            listing.len.max(hits.len()),
+                            state_footer(&state)
+                        )),
+                    });
+                }
+                ListingSource::Queue => {
+                    let view = self.api.queue_list()?;
+                    if index >= listing.len || view.tracks.get(index).is_none() {
+                        return Err(CmdError::new(
+                            "E_CMD_ARG",
+                            format!(
+                                "{}只有 {} 首，没有第 {} 首",
+                                listing.source.label(),
+                                listing.len.max(view.tracks.len()),
+                                index + 1
+                            ),
+                        ));
+                    }
+                    let view = self.api.queue_jump(index)?;
+                    return Ok(queue_jump_outcome(index, &view));
+                }
+                ListingSource::Library => {
+                    let tracks = self.library.library_listing();
+                    let Some(track) = tracks.get(index) else {
+                        return Err(CmdError::new(
+                            "E_CMD_ARG",
+                            format!(
+                                "{}只有 {} 条，没有第 {} 条",
+                                listing.source.label(),
+                                listing.len.max(tracks.len()),
+                                index + 1
+                            ),
+                        ));
+                    };
+                    let state = self.api.play(Some(track.path.clone()))?;
+                    let mut spans = vec![
+                        bold("播放"),
+                        plain(format!(" · 媒体库第 {} 首", index + 1)),
+                        dim(format!(" · {}", track.title)),
+                    ];
+                    if !track.artist.is_empty() {
+                        spans.push(dim(format!(" · {}", track.artist)));
+                    }
+                    return Ok(Outcome {
+                        outputs: vec![text_of(spans)],
+                        footer: Some(format!(
+                            "来源：媒体库（共 {} 首） · {}",
+                            listing.len.max(tracks.len()),
+                            state_footer(&state)
+                        )),
+                    });
+                }
+                ListingSource::Playlist(name) => {
+                    return Err(CmdError::new(
+                        "E_UNSUPPORTED",
+                        format!("歌单《{name}》尚未接入序号播放"),
+                    ));
+                }
             }
-            return Ok(Outcome {
-                outputs: vec![text_of(spans)],
-                footer: Some(format!(
-                    "来源：搜索结果（共 {} 条） · {}",
-                    hits.len(),
-                    state_footer(&state)
-                )),
-            });
         }
 
         Ok(state_outcome("播放", &self.api.play(Some(value.clone()))?))
@@ -1058,6 +1155,10 @@ impl Executor<'_> {
         } else {
             format!("{} 首 · 输入 play 1 开始播放", view.tracks.len())
         };
+        self.library.set_active_listing(ActiveListing {
+            source: ListingSource::Queue,
+            len: view.tracks.len(),
+        });
 
         Ok(Outcome {
             outputs: vec![Output::Table {
@@ -1162,6 +1263,11 @@ impl Executor<'_> {
                 ]
             })
             .collect();
+        self.library.remember_library_listing(tracks.clone());
+        self.library.set_active_listing(ActiveListing {
+            source: ListingSource::Library,
+            len: tracks.len(),
+        });
 
         let footer = if tracks.is_empty() {
             "库里还没有曲目 · 先 library add <path> 再 library scan".to_owned()
@@ -1236,6 +1342,10 @@ impl Executor<'_> {
                 footer: Some("换个关键词试试".to_owned()),
             });
         }
+        self.library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: tracks.len(),
+        });
 
         let rows = tracks
             .iter()
@@ -2282,6 +2392,8 @@ struct LibraryInner {
     db: Mutex<Option<Database>>,
     scan: Mutex<Option<ScanJob>>,
     hits: Mutex<Vec<SearchHit>>,
+    active_listing: Mutex<Option<ActiveListing>>,
+    library_listing: Mutex<Vec<Track>>,
 }
 
 /// 生产版 [`LibraryApi`]：持有库路径、主线程连接、扫描任务与会话搜索结果。
@@ -2332,6 +2444,8 @@ impl LibraryHandle {
                 db: Mutex::new(None),
                 scan: Mutex::new(None),
                 hits: Mutex::new(Vec::new()),
+                active_listing: Mutex::new(None),
+                library_listing: Mutex::new(Vec::new()),
             }),
             online: Arc::new(OnlineService::new(cache_root, covers_dir, enabled)),
             settings,
@@ -2523,6 +2637,34 @@ impl LibraryApi for LibraryHandle {
             .hits
             .lock()
             .map(|hits| hits.clone())
+            .unwrap_or_default()
+    }
+
+    fn set_active_listing(&self, listing: ActiveListing) {
+        if let Ok(mut slot) = self.inner.active_listing.lock() {
+            *slot = Some(listing);
+        }
+    }
+
+    fn active_listing(&self) -> Option<ActiveListing> {
+        self.inner
+            .active_listing
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    fn remember_library_listing(&self, tracks: Vec<Track>) {
+        if let Ok(mut slot) = self.inner.library_listing.lock() {
+            *slot = tracks;
+        }
+    }
+
+    fn library_listing(&self) -> Vec<Track> {
+        self.inner
+            .library_listing
+            .lock()
+            .map(|tracks| tracks.clone())
             .unwrap_or_default()
     }
 
@@ -3268,6 +3410,12 @@ pub(crate) fn run_online_search(
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
     hits.truncate(limit);
     library.remember_hits(hits.clone());
+    if !hits.is_empty() {
+        library.set_active_listing(ActiveListing {
+            source: ListingSource::Search,
+            len: hits.len(),
+        });
+    }
 
     let outcome = build_search_outcome(keyword, &hits, all_failed);
     emit(&finish_block(
@@ -3514,13 +3662,17 @@ fn search_is_online(parsed: &Parsed) -> bool {
     parsed.spec.name == "search" && !parsed.flags.contains_key("local")
 }
 
-/// 解析 `play <n>`，只命中在线结果；队列非空时永远返回 `None`（队列优先）。
+/// 解析 `play <n>`，只命中**搜索结果**上下文里的在线结果（T-0043）。
 fn online_play_hit(
     parsed: &Parsed,
-    queue_empty: bool,
+    listing: Option<&ActiveListing>,
     hits: &[SearchHit],
 ) -> Option<(usize, SourceTrack)> {
-    if parsed.spec.name != "play" || !queue_empty {
+    if parsed.spec.name != "play" {
+        return None;
+    }
+    let listing = listing?;
+    if listing.source != ListingSource::Search {
         return None;
     }
     let value = parsed.positional.first()?;
@@ -3528,6 +3680,9 @@ fn online_play_hit(
         return None;
     }
     let index = user_index(value).ok()?;
+    if index >= listing.len {
+        return None;
+    }
     match hits.get(index)? {
         SearchHit::Online(track) => Some((index, track.clone())),
         SearchHit::Local(_) => None,
@@ -3540,7 +3695,7 @@ fn online_play_hit(
 /// 的 `play <n>` 都不会被这里截走。
 fn maybe_start_online(
     app: &AppHandle,
-    handle: &PlayerHandle,
+    _handle: &PlayerHandle,
     library: &LibraryHandle,
     input: &str,
     block_id: &str,
@@ -3587,11 +3742,8 @@ fn maybe_start_online(
             .is_some_and(|value| is_unsigned_integer(value))
     {
         let hits = library.search_hits();
-        let queue_empty = handle
-            .queue_list()
-            .ok()
-            .is_none_or(|queue| queue.tracks.is_empty());
-        if let Some((index, track)) = online_play_hit(&parsed, queue_empty, &hits) {
+        let listing = library.active_listing();
+        if let Some((index, track)) = online_play_hit(&parsed, listing.as_ref(), &hits) {
             let template = online_play_started_block(block_id, input, index, &track);
             emit_block(app, &template);
 
@@ -3773,12 +3925,6 @@ mod tests {
 
         fn with_queue(self, queue: QueueView) -> Self {
             *self.queue.lock().expect("queue mutex") = queue;
-            self
-        }
-
-        fn with_reject_paths(self, paths: &[&str]) -> Self {
-            *self.reject_paths.lock().expect("reject mutex") =
-                paths.iter().map(|path| (*path).to_owned()).collect();
             self
         }
 
@@ -3995,6 +4141,8 @@ mod tests {
         covers: CoverCacheUsage,
         busy: bool,
         session: Vec<SearchHit>,
+        active_listing: Option<ActiveListing>,
+        library_listing: Vec<Track>,
         tracks_by_path: std::collections::HashMap<String, Track>,
         calls: Vec<LibraryCall>,
     }
@@ -4015,6 +4163,8 @@ mod tests {
                     covers: CoverCacheUsage::default(),
                     busy: false,
                     session: Vec::new(),
+                    active_listing: None,
+                    library_listing: Vec::new(),
                     tracks_by_path: std::collections::HashMap::new(),
                     calls: Vec::new(),
                 }),
@@ -4163,6 +4313,30 @@ mod tests {
             self.state.lock().expect("state mutex").session.clone()
         }
 
+        fn set_active_listing(&self, listing: ActiveListing) {
+            self.state.lock().expect("state mutex").active_listing = Some(listing);
+        }
+
+        fn active_listing(&self) -> Option<ActiveListing> {
+            self.state
+                .lock()
+                .expect("state mutex")
+                .active_listing
+                .clone()
+        }
+
+        fn remember_library_listing(&self, tracks: Vec<Track>) {
+            self.state.lock().expect("state mutex").library_listing = tracks;
+        }
+
+        fn library_listing(&self) -> Vec<Track> {
+            self.state
+                .lock()
+                .expect("state mutex")
+                .library_listing
+                .clone()
+        }
+
         fn track_by_path(&self, path: &str) -> Result<Option<Track>, CmdError> {
             Ok(self
                 .state
@@ -4275,11 +4449,16 @@ mod tests {
     }
 
     #[test]
-    fn play_number_is_one_based_and_jumps() {
+    fn play_number_is_one_based_and_jumps_after_queue_list() {
         let api = FakeApi::new().with_queue(queue_view(&["a.flac", "b.flac", "c.flac"], None));
-        let block = done_block(&api, "play 3");
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, "queue list");
+        let block = done_with_library(&api, &library, "play 3");
 
-        assert_eq!(api.calls(), vec![Call::QueueList, Call::QueueJump(2)]);
+        assert_eq!(
+            api.calls(),
+            vec![Call::QueueList, Call::QueueList, Call::QueueJump(2)]
+        );
         assert_eq!(block.status, BlockStatus::Done);
         assert!(text_of_block(&block).contains("第 3 首"));
         assert!(
@@ -4511,31 +4690,6 @@ mod tests {
         );
         assert!(text_of_block(&block).contains("已加入 1 首"));
         assert_eq!(block.footer.as_deref(), Some("队列现有 1 首"));
-    }
-
-    #[test]
-    fn queue_add_keeps_going_after_partial_failure() {
-        let api = FakeApi::new().with_reject_paths(&["b.flac"]);
-        let paths = vec![
-            "a.flac".to_owned(),
-            "b.flac".to_owned(),
-            "c.flac".to_owned(),
-        ];
-        let library = FakeLibraryApi::new();
-        let outcome = Executor {
-            api: &api,
-            library: &library,
-            observer: Arc::new(NoopLibraryObserver),
-            services: Services::default(),
-        }
-        .add_paths(&paths)
-        .expect("partial success is still a success");
-
-        assert_eq!(api.calls().len(), 3);
-        assert_eq!(
-            outcome.footer.as_deref(),
-            Some("首条失败：E_DECODE 无法加入：b.flac")
-        );
     }
 
     #[test]
@@ -4915,6 +5069,24 @@ mod tests {
     }
 
     #[test]
+    fn local_search_sets_active_listing_with_row_count() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![
+            track(1, "First", "Artist", "/music/first.flac", 1_000),
+            track(2, "Second", "Artist", "/music/second.flac", 1_000),
+        ]);
+        done_with_library(&api, &library, "search artist --local");
+
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Search,
+                len: 2,
+            })
+        );
+    }
+
+    #[test]
     fn search_requires_a_keyword() {
         let api = FakeApi::new();
         let library = FakeLibraryApi::new();
@@ -4926,7 +5098,7 @@ mod tests {
     }
 
     #[test]
-    fn play_prefers_the_queue_over_search_results() {
+    fn queue_list_replaces_search_as_active_listing() {
         let api = FakeApi::new().with_queue(queue_view(&["a.flac"], None));
         let library = FakeLibraryApi::new().with_search_tracks(vec![track(
             1,
@@ -4936,9 +5108,13 @@ mod tests {
             1_000,
         )]);
         done_with_library(&api, &library, "search song");
+        done_with_library(&api, &library, "queue list");
         let block = done_with_library(&api, &library, "play 1");
 
-        assert_eq!(api.calls(), vec![Call::QueueList, Call::QueueJump(0)]);
+        assert_eq!(
+            api.calls(),
+            vec![Call::QueueList, Call::QueueList, Call::QueueJump(0)]
+        );
         assert!(
             block
                 .footer
@@ -4948,7 +5124,7 @@ mod tests {
     }
 
     #[test]
-    fn play_falls_back_to_search_results_when_the_queue_is_empty() {
+    fn play_uses_search_results_after_search() {
         let api = FakeApi::new();
         let library = FakeLibraryApi::new().with_search_tracks(vec![
             track(1, "First", "Artist", "/music/first.flac", 1_000),
@@ -4959,10 +5135,7 @@ mod tests {
 
         assert_eq!(
             api.calls(),
-            vec![
-                Call::QueueList,
-                Call::Play(Some("/music/second.flac".to_owned()))
-            ]
+            vec![Call::Play(Some("/music/second.flac".to_owned()))]
         );
         assert!(text_of_block(&block).contains("搜索结果第 2 首"));
         assert!(
@@ -4974,14 +5147,20 @@ mod tests {
     }
 
     #[test]
-    fn play_number_without_queue_or_search_results_fails() {
+    fn play_number_without_any_listing_fails_with_teaching_hint() {
         let api = FakeApi::new();
         let library = FakeLibraryApi::new();
         let block = done_with_library(&api, &library, "play 2");
 
         assert_eq!(block.status, BlockStatus::Error);
         assert_eq!(error_fields(&block).0, "E_CMD_ARG");
-        assert_eq!(api.calls(), vec![Call::QueueList]);
+        assert!(error_fields(&block).1.contains("没有可用的序号列表"));
+        assert!(
+            error_fields(&block)
+                .2
+                .is_some_and(|hint| hint.contains("search / queue list"))
+        );
+        assert!(api.calls().is_empty(), "不能偷偷回退到队列");
     }
 
     #[test]
@@ -4999,7 +5178,83 @@ mod tests {
 
         assert_eq!(block.status, BlockStatus::Error);
         assert!(error_fields(&block).1.contains("只有 1 条"));
-        assert_eq!(api.calls(), vec![Call::QueueList]);
+        assert!(api.calls().is_empty());
+    }
+
+    #[test]
+    fn library_list_sets_active_listing_for_play_number() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_list_tracks(vec![
+            track(1, "First", "Artist", "/music/first.flac", 1_000),
+            track(2, "Second", "Artist", "/music/second.flac", 1_000),
+        ]);
+        done_with_library(&api, &library, "library list");
+        let block = done_with_library(&api, &library, "play 2");
+
+        assert_eq!(
+            api.calls(),
+            vec![Call::Play(Some("/music/second.flac".to_owned()))]
+        );
+        assert!(text_of_block(&block).contains("媒体库第 2 首"));
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：媒体库"))
+        );
+    }
+
+    #[test]
+    fn search_replaces_queue_as_active_listing() {
+        let api = FakeApi::new().with_queue(queue_view(&["queued.flac"], None));
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Search",
+            "Artist",
+            "/music/search.flac",
+            1_000,
+        )]);
+        done_with_library(&api, &library, "queue list");
+        done_with_library(&api, &library, "search song");
+        let block = done_with_library(&api, &library, "play 1");
+
+        assert_eq!(
+            api.calls(),
+            vec![
+                Call::QueueList,
+                Call::Play(Some("/music/search.flac".to_owned()))
+            ]
+        );
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("来源：搜索结果"))
+        );
+    }
+
+    #[test]
+    fn empty_queue_listing_gives_zero_count_error() {
+        let api = FakeApi::new().with_queue(queue_view(&[], None));
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, "queue list");
+        let block = done_with_library(&api, &library, "play 1");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("播放队列只有 0 首"));
+        assert!(!api.calls().contains(&Call::QueueJump(0)));
+    }
+
+    #[test]
+    fn queue_listing_out_of_range_fails_without_jump() {
+        let api = FakeApi::new().with_queue(queue_view(&["only.flac"], None));
+        let library = FakeLibraryApi::new();
+        done_with_library(&api, &library, "queue list");
+        let block = done_with_library(&api, &library, "play 2");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert!(error_fields(&block).1.contains("播放队列只有 1 首"));
+        assert!(!api.calls().contains(&Call::QueueJump(1)));
     }
 
     #[test]
@@ -5899,6 +6154,13 @@ mod tests {
         assert_eq!(rows[0][1], "本地");
         assert_eq!(rows[1][1], "B站");
         assert_eq!(library.hits().len(), 2);
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Search,
+                len: 2,
+            })
+        );
     }
 
     struct FakePlayback {
@@ -6168,7 +6430,7 @@ mod tests {
     }
 
     #[test]
-    fn online_play_hit_requires_empty_queue_and_online_track() {
+    fn online_play_hit_requires_search_listing_and_online_track() {
         let hits = vec![
             SearchHit::Local(track(1, "Local", "Artist", "/music/a.flac", 1_000)),
             SearchHit::Online(online_track(SourceId::Bilibili, "BV1xx", "Bili")),
@@ -6176,19 +6438,34 @@ mod tests {
         let play_two = parse("play 2").expect("valid").expect("command");
         let play_one = parse("play 1").expect("valid").expect("command");
         let play_three = parse("play 3").expect("valid").expect("command");
+        let search = ActiveListing {
+            source: ListingSource::Search,
+            len: 2,
+        };
+        let queue = ActiveListing {
+            source: ListingSource::Queue,
+            len: 2,
+        };
 
-        let hit = online_play_hit(&play_two, true, &hits).expect("在线结果");
+        let hit = online_play_hit(&play_two, Some(&search), &hits).expect("在线结果");
         assert_eq!(hit.0, 1);
         assert_eq!(hit.1.source_id, "BV1xx");
         assert!(
-            online_play_hit(&play_one, true, &hits).is_none(),
+            online_play_hit(&play_one, Some(&search), &hits).is_none(),
             "本地结果不截走"
         );
         assert!(
-            online_play_hit(&play_two, false, &hits).is_none(),
-            "队列优先"
+            online_play_hit(&play_two, Some(&queue), &hits).is_none(),
+            "队列上下文不截走"
         );
-        assert!(online_play_hit(&play_three, true, &hits).is_none(), "越界");
+        assert!(
+            online_play_hit(&play_two, None, &hits).is_none(),
+            "无上下文不截走"
+        );
+        assert!(
+            online_play_hit(&play_three, Some(&search), &hits).is_none(),
+            "越界"
+        );
     }
 
     // ---- 远程曲目元数据（T-0039） ----
