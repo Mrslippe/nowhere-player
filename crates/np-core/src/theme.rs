@@ -127,18 +127,18 @@ impl Default for ThemeTokens {
     /// graphite 调色板（与 `apps/web/src/design/themes.css` 的 `:root` 一致）。
     fn default() -> Self {
         Self {
-            bg: "#0b0c0e".to_owned(),
-            bg_elev: "#141619".to_owned(),
-            bg_hover: "#1c1f24".to_owned(),
-            fg: "#e8eaed".to_owned(),
-            fg_muted: "#8b9096".to_owned(),
-            fg_faint: "#4a4f55".to_owned(),
-            accent: "#7c9ef5".to_owned(),
-            accent_soft: "rgba(124, 158, 245, 0.14)".to_owned(),
-            accent_fg: "#0b0c0e".to_owned(),
-            danger: "#f2707a".to_owned(),
-            warn: "#e8b45c".to_owned(),
-            success: "#7fc79a".to_owned(),
+            bg: "#0d0f12".to_owned(),
+            bg_elev: "#14171c".to_owned(),
+            bg_hover: "#1a1e24".to_owned(),
+            fg: "#e9e4da".to_owned(),
+            fg_muted: "#a7a49e".to_owned(),
+            fg_faint: "#7d7c78".to_owned(),
+            accent: "#ffb454".to_owned(),
+            accent_soft: "rgba(255, 180, 84, 0.14)".to_owned(),
+            accent_fg: "#0d0f12".to_owned(),
+            danger: "#ff8b7d".to_owned(),
+            warn: "#ffb454".to_owned(),
+            success: "#a7a49e".to_owned(),
             line: "rgba(255, 255, 255, 0.07)".to_owned(),
             line_strong: "rgba(255, 255, 255, 0.14)".to_owned(),
         }
@@ -551,18 +551,18 @@ pub static BUILTIN_THEMES: [BuiltinTheme; 4] = [
         name: "石墨",
         skin: Skin::Plain,
         tokens: [
-            ("bg", "#0b0c0e"),
-            ("bgElev", "#141619"),
-            ("bgHover", "#1c1f24"),
-            ("fg", "#e8eaed"),
-            ("fgMuted", "#8b9096"),
-            ("fgFaint", "#4a4f55"),
-            ("accent", "#7c9ef5"),
-            ("accentSoft", "rgba(124, 158, 245, 0.14)"),
-            ("accentFg", "#0b0c0e"),
-            ("danger", "#f2707a"),
-            ("warn", "#e8b45c"),
-            ("success", "#7fc79a"),
+            ("bg", "#0d0f12"),
+            ("bgElev", "#14171c"),
+            ("bgHover", "#1a1e24"),
+            ("fg", "#e9e4da"),
+            ("fgMuted", "#a7a49e"),
+            ("fgFaint", "#7d7c78"),
+            ("accent", "#ffb454"),
+            ("accentSoft", "rgba(255, 180, 84, 0.14)"),
+            ("accentFg", "#0d0f12"),
+            ("danger", "#ff8b7d"),
+            ("warn", "#ffb454"),
+            ("success", "#a7a49e"),
             ("line", "rgba(255, 255, 255, 0.07)"),
             ("lineStrong", "rgba(255, 255, 255, 0.14)"),
         ],
@@ -745,7 +745,7 @@ mod tests {
         let spec = parse(r##"{"id":"x","contract":1}"##).expect("无 tokens");
 
         assert_eq!(spec.tokens, ThemeTokens::default());
-        assert_eq!(spec.tokens.bg, "#0b0c0e");
+        assert_eq!(spec.tokens.bg, "#0d0f12");
     }
 
     #[test]
