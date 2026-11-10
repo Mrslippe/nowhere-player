@@ -4742,50 +4742,8 @@ pub(crate) fn run_online_search_with_options(
         let mut d_resolution_failed = false;
         let mut d_blocked = false;
 
-        // D 先于 B：单请求、最高价值，不设超时守卫；只解析一次、只发一次，412 不重试。
+        // B 稳定、不消耗稀缺资源，先于 D。
         if bili_allowed && local.len() + online_tracks.len() < options.limit {
-            match online.resolve_up(artist) {
-                Ok(resolution) if resolution.same_name == 1 => {
-                    let name = resolution.name.as_deref().unwrap_or(artist);
-                    let remaining = options
-                        .limit
-                        .saturating_sub(local.len() + online_tracks.len())
-                        .max(1);
-                    match online.up_archives(resolution.mid, name, &options.keyword, remaining) {
-                        Ok(tracks) => {
-                            let (fetched, removed) = absorb_online_tracks(
-                                options,
-                                tracks,
-                                &mut seen,
-                                &mut online_tracks,
-                            );
-                            online_before += fetched;
-                            online_removed += removed;
-                        }
-                        Err(error) => {
-                            d_blocked = true;
-                            notices.push(error.message);
-                        }
-                    }
-                }
-                Ok(_) => {
-                    d_resolution_failed = true;
-                    notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
-                }
-                Err(error) => {
-                    d_resolution_failed = true;
-                    if error.message.contains("限流") || error.message.contains("412") {
-                        d_blocked = true;
-                        notices.push(error.message);
-                    } else {
-                        notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
-                    }
-                }
-            }
-        }
-
-        // D 不够（或解析失败）才发 B；D 已够数时直接结束。
-        if bili_allowed && !d_blocked && local.len() + online_tracks.len() < options.limit {
             // B：艺人 + 关键词。
             if over_deadline() {
                 notices.push("召回超过 4s，已停止后续 B/C 通道".to_owned());
@@ -4810,6 +4768,54 @@ pub(crate) fn run_online_search_with_options(
                         online_removed += removed;
                     }
                     Err(_) => all_failed = true,
+                }
+            }
+        }
+
+        // D 稀缺：A+B 不够才用；单请求、最高价值，不设超时守卫；只解析一次、只发一次，412 不重试。
+        if bili_allowed && local.len() + online_tracks.len() < options.limit {
+            match online.resolve_up(artist) {
+                Ok(resolution) if resolution.same_name == 1 => {
+                    let name = resolution.name.as_deref().unwrap_or(artist);
+                    let remaining = options
+                        .limit
+                        .saturating_sub(local.len() + online_tracks.len())
+                        .max(1);
+                    match online.up_archives(resolution.mid, name, &options.keyword, remaining) {
+                        Ok(tracks) => {
+                            let (fetched, removed) = absorb_online_tracks(
+                                options,
+                                tracks,
+                                &mut seen,
+                                &mut online_tracks,
+                            );
+                            online_before += fetched;
+                            online_removed += removed;
+                        }
+                        Err(error) => {
+                            d_blocked = true;
+                            notices.push(format!(
+                                "空间检索被限流，本次只用普通搜索（{}）",
+                                error.message
+                            ));
+                        }
+                    }
+                }
+                Ok(_) => {
+                    d_resolution_failed = true;
+                    notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
+                }
+                Err(error) => {
+                    d_resolution_failed = true;
+                    if error.message.contains("限流") || error.message.contains("412") {
+                        d_blocked = true;
+                        notices.push(format!(
+                            "空间检索被限流，本次只用普通搜索（{}）",
+                            error.message
+                        ));
+                    } else {
+                        notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
+                    }
                 }
             }
         }
@@ -8766,12 +8772,12 @@ mod tests {
     }
 
     #[test]
-    fn recall_d_enough_skips_b_and_c() {
+    fn recall_d_enough_skips_c_after_b() {
         let library = FakeLibraryApi::new();
         let mut d_track = online_track(SourceId::Bilibili, "BVd", "花骨朵");
         d_track.artist = "缪尔Miru".to_owned();
         let online = ChannelOnline::new(
-            HashMap::from([("缪尔Miru 花骨朵".to_owned(), vec![d_track.clone()])]),
+            HashMap::new(),
             Ok(resolved_up("缪尔Miru", 42, 1)),
             Ok(vec![d_track]),
         );
@@ -8780,7 +8786,13 @@ mod tests {
         let block = run_online_capture(&options, &online, &library);
 
         assert_eq!(table_of_block(&block).1.len(), 1);
-        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
         assert_eq!(online.archive_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -8829,12 +8841,18 @@ mod tests {
 
         let block = run_online_capture(&options, &online, &library);
 
-        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
         assert_eq!(online.resolve_calls.load(Ordering::SeqCst), 1);
         assert_eq!(online.archive_calls.load(Ordering::SeqCst), 0);
         assert!(block.outputs.iter().any(|output| matches!(
             output,
-            Output::Hint { text, .. } if text.contains("B 站限流")
+            Output::Hint { text, .. } if text.contains("空间检索被限流，本次只用普通搜索")
         )));
     }
 
@@ -8854,10 +8872,16 @@ mod tests {
         let block = run_online_capture(&options, &online, &library);
 
         assert_eq!(online.archive_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
+        assert_eq!(
+            online.calls(),
+            vec![
+                ("花骨朵".to_owned(), None),
+                ("缪尔Miru 花骨朵".to_owned(), Some(SourceId::Bilibili)),
+            ]
+        );
         assert!(block.outputs.iter().any(|output| matches!(
             output,
-            Output::Hint { text, .. } if text.contains("B 站限流")
+            Output::Hint { text, .. } if text.contains("空间检索被限流，本次只用普通搜索")
         )));
     }
 
