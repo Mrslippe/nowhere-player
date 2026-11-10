@@ -597,15 +597,12 @@ html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row {
   padding: 0 var(--np-space-2);
   background: var(--bg-hover);
   border: 0;
-  border-radius: var(--np-radius-inner);
-  box-shadow: var(--np-highlight-inset), var(--np-shadow-float);
+  border-radius: var(--np-radius-control);
+  box-shadow: var(--np-highlight-inset);
 }
 
 html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row:focus-within {
-  box-shadow:
-    var(--np-highlight-inset),
-    var(--np-shadow-float),
-    var(--np-shadow-focus-line);
+  box-shadow: var(--np-highlight-inset), var(--np-shadow-focus-line);
 }
 
 html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__prompt {

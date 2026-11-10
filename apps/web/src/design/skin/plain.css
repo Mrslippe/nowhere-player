@@ -6,8 +6,8 @@
  * 新增 skin（如 T-0028 的 phosphor）复制本文件、只改结构值，不碰颜色。
  */
 [data-skin="plain"] {
-  --np-radius-card: 18px;
-  --np-radius-inner: 12px;
+  --np-radius-card: 14px;
+  --np-radius-inner: 9px;
   --np-radius-control: 8px;
   --np-radius-control-sm: 6px;
   --np-radius-tag: 4px;
@@ -36,6 +36,10 @@
 
   --np-density-line: 1.6;
   --np-density-line-dense: 1.4;
+
+  /* 播放器结构（T-0045 阶段 2）：56 封面 / 14 外边距。 */
+  --np-player-cover: 56px;
+  --np-player-pad: 14px;
 
   --np-bleed: 0;
 }

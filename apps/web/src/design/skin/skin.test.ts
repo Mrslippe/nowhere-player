@@ -42,6 +42,8 @@ const STRUCTURE_TOKENS = [
   "--np-shadow-focus-line",
   "--np-font-ui",
   "--np-font-mono",
+  "--np-player-cover",
+  "--np-player-pad",
   "--np-density-line",
   "--np-density-line-dense",
   "--np-bleed",
@@ -166,6 +168,13 @@ describe("结构层（skin）", () => {
     expect(properties.filter((property) => !property.startsWith("--np-"))).toEqual(
       [],
     );
+  });
+
+  it("plain 的 D3 播放器结构：14 卡片 / 9 封面 / 56 尺寸 / 14 边距", () => {
+    expect(valueOf(plainCss, "--np-radius-card")).toBe("14px");
+    expect(valueOf(plainCss, "--np-radius-inner")).toBe("9px");
+    expect(valueOf(plainCss, "--np-player-cover")).toBe("56px");
+    expect(valueOf(plainCss, "--np-player-pad")).toBe("14px");
   });
 
   it("phosphor 的结构覆盖符合 T-0028 §6.1", () => {

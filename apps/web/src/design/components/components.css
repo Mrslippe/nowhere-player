@@ -160,6 +160,10 @@
   height: 2px;
 }
 
+.np-progress[data-size="3"] {
+  height: 3px;
+}
+
 .np-progress[data-size="4"] {
   height: 4px;
 }

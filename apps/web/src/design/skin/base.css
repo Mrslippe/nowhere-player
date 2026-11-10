@@ -46,6 +46,10 @@
   --np-density-line: 1.6; /* 终端正文行高 */
   --np-density-line-dense: 1.4; /* 小字、角标 */
 
+  /* 播放器结构默认值（T-0045 阶段 2）；skin 可覆盖。 */
+  --np-player-cover: 56px;
+  --np-player-pad: 14px;
+
   /* ── 出血：0 = 有内边距、有卡片；后续 skin 可置 1 ─── */
   --np-bleed: 0;
 }

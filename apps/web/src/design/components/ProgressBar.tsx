@@ -3,8 +3,8 @@ import type { CSSProperties } from "react";
 export type ProgressBarProps = {
   /** 0–1 的完成度；不确定态下忽略。 */
   value?: number;
-  /** 轨道高度：2px / 4px。 */
-  size?: 2 | 4;
+  /** 轨道高度：2px / 3px / 4px。 */
+  size?: 2 | 3 | 4;
   /** 不确定态：来回扫动，不表达具体进度。 */
   indeterminate?: boolean;
   /** 供读屏使用的说明，调用方应填写（如「扫描进度」）。 */

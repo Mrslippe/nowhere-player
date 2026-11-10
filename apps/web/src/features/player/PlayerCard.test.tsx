@@ -63,6 +63,22 @@ describe("PlayerCard", () => {
     expect(html).not.toContain("Tame Impala ·");
   });
 
+  it("空艺人不渲染副标题，少一行也不留空洞（T-0045）", () => {
+    const html = renderCard("playing", { artist: "", album: "" });
+
+    expect(html).not.toContain("np-player-card__subtitle");
+  });
+
+  it("底部三栏带独立 elapsed/total，进度用 3px 连续条", () => {
+    const html = renderCard("playing");
+
+    expect(html).toContain("np-player-card__time--elapsed");
+    expect(html).toContain("np-player-card__time--total");
+    expect(html).toContain(">00:42<");
+    expect(html).toContain(">03:36<");
+    expect(html).toContain('data-size="3"');
+  });
+
   it("同一 coverSeed 两次渲染得到相同渐变，不同 seed 不同", () => {
     const first = coverBackgroundOf(renderCard("playing"));
     const second = coverBackgroundOf(renderCard("playing"));

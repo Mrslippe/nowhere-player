@@ -132,9 +132,15 @@ export function PlayerCard({
   const shownDuration = isIdle ? 0 : durationMs;
   const progress = progressRatio(shownPosition, shownDuration);
   const displayTitle = isError ? "播放失败" : isIdle ? "未在播放" : title;
-  // T-0026：专辑缺失（库里为空 / 查不到 Track）时副标题只显示艺人。
-  const subtitle = isIdle ? "从配置窗选择歌曲" : playerSubtitle(artist, album);
-  const time = `${formatTime(shownPosition)}/${formatTime(shownDuration)}`;
+  // T-0026：专辑缺失时只显示艺人；T-0045：空艺人不留占位。
+  const subtitle = isIdle
+    ? "从配置窗选择歌曲"
+    : artist.trim().length > 0
+      ? playerSubtitle(artist, album)
+      : "";
+  const elapsed = formatTime(shownPosition);
+  const total = formatTime(shownDuration);
+  const time = `${elapsed}/${total}`;
   const errorTitle = error ? `${error.code}：${error.message}` : "播放错误";
   const canSeek = !controlsDisabled && shownDuration > 0;
   const isScrubbing = seeking || dragging;
@@ -263,9 +269,11 @@ export function PlayerCard({
         <h1 className="np-player-card__title" title={displayTitle}>
           {displayTitle}
         </h1>
-        <p className="np-player-card__subtitle" title={subtitle}>
-          {subtitle}
-        </p>
+        {subtitle ? (
+          <p className="np-player-card__subtitle" title={subtitle}>
+            {subtitle}
+          </p>
+        ) : null}
 
         <div className="np-player-card__progress-row">
           <div
@@ -286,26 +294,34 @@ export function PlayerCard({
           >
             <ProgressBar
               value={progress}
-              size={2}
+              size={3}
               indeterminate={isLoading}
               label="播放进度"
               className="np-player-card__progress"
             />
           </div>
-          <span className="np-player-card__time">{time}</span>
-
-          {volumeHint ? (
-            <span
-              className="np-player-card__volume"
-              role="status"
-              data-fading={volumeHintFading ? "true" : undefined}
-              title={volumeHint}
-            >
-              {volumeHint}
-            </span>
-          ) : null}
+          <span className="np-player-card__time np-player-card__time--elapsed">
+            {elapsed}
+          </span>
+          <span className="np-player-card__time np-player-card__time--total">
+            {total}
+          </span>
+          <span className="np-player-card__time np-player-card__time--combined">
+            {time}
+          </span>
         </div>
       </div>
+
+      {volumeHint ? (
+        <span
+          className="np-player-card__volume"
+          role="status"
+          data-fading={volumeHintFading ? "true" : undefined}
+          title={volumeHint}
+        >
+          {volumeHint}
+        </span>
+      ) : null}
 
       <div className="np-player-card__controls" data-tauri-drag-region="false">
         <IconButton
