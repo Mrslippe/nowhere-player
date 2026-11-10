@@ -194,6 +194,136 @@ pub(crate) const DEFAULT_SEARCH_RESULTS: usize = 20;
 /// 默认每个在线源取多少条；两个源正好凑成默认总数 20。
 pub(crate) const ONLINE_SEARCH_PER_SOURCE: usize = 10;
 
+/// 一次 `search` 的解析结果（T-0046 D）。
+#[derive(Debug, Clone)]
+pub(crate) struct SearchOptions {
+    /// 实际发给源的词；只给 `--artist` 时等于艺人名。
+    pub(crate) keyword: String,
+    pub(crate) artist: Option<String>,
+    /// `None` = all（含本地 + 全部在线源）。
+    pub(crate) source: Option<SourceId>,
+    pub(crate) limit: usize,
+    pub(crate) local: bool,
+    pub(crate) explicit_limit: bool,
+}
+
+impl SearchOptions {
+    fn parse(parsed: &Parsed) -> Result<Self, CmdError> {
+        let local = parsed.flags.contains_key("local");
+        let source_raw = parsed.flags.get("source");
+        if local && source_raw.is_some() {
+            return Err(
+                CmdError::new("E_CMD_ARG", "search --source 与 --local 互斥")
+                    .with_hint("--local 只搜本地库；--source 指定在线源"),
+            );
+        }
+        let source = match source_raw.map(String::as_str) {
+            None | Some("all") => None,
+            Some("bilibili") => Some(SourceId::Bilibili),
+            Some("netease") => Some(SourceId::Netease),
+            Some(other) => {
+                return Err(CmdError::new("E_CMD_ARG", format!("未知音源：{other}"))
+                    .with_hint("可用：all / bilibili / netease"));
+            }
+        };
+
+        let explicit_limit = parsed.flags.contains_key("limit");
+        let limit = if let Some(raw) = parsed.flags.get("limit") {
+            let value = raw.parse::<usize>().map_err(|_| {
+                CmdError::new("E_CMD_ARG", format!("无效的 --limit：{raw}"))
+                    .with_hint("--limit 取值范围 1-100")
+            })?;
+            if !(1..=MAX_SEARCH_RESULTS).contains(&value) {
+                return Err(
+                    CmdError::new("E_CMD_ARG", format!("--limit 超出范围：{value}"))
+                        .with_hint("--limit 取值范围 1-100"),
+                );
+            }
+            value
+        } else {
+            DEFAULT_SEARCH_RESULTS
+        };
+
+        let artist = match parsed.flags.get("artist") {
+            Some(raw) if raw.trim().is_empty() => {
+                return Err(CmdError::new("E_CMD_ARG", "--artist 不能为空"));
+            }
+            Some(raw) => Some(raw.trim().to_owned()),
+            None => None,
+        };
+        let raw_keyword = parsed
+            .positional
+            .first()
+            .map(|keyword| keyword.trim())
+            .unwrap_or_default();
+        let keyword = if raw_keyword.is_empty() {
+            artist.clone().unwrap_or_default()
+        } else {
+            raw_keyword.to_owned()
+        };
+        if keyword.is_empty() {
+            return Err(CmdError::new("E_CMD_ARG", "搜索关键词不能为空")
+                .with_hint("search <关键词> 或 search --artist <名>"));
+        }
+
+        Ok(Self {
+            keyword,
+            artist,
+            source,
+            limit,
+            local,
+            explicit_limit,
+        })
+    }
+
+    #[cfg(test)]
+    fn legacy(keyword: &str, limit: usize) -> Self {
+        Self {
+            keyword: keyword.to_owned(),
+            artist: None,
+            source: None,
+            limit,
+            local: false,
+            explicit_limit: true,
+        }
+    }
+
+    fn per_source(&self) -> usize {
+        if self.explicit_limit {
+            self.limit
+        } else {
+            ONLINE_SEARCH_PER_SOURCE
+        }
+    }
+
+    fn matches_artist(&self, artist: &str) -> bool {
+        match &self.artist {
+            Some(wanted) => artist.to_lowercase().contains(&wanted.to_lowercase()),
+            None => true,
+        }
+    }
+
+    fn footer(&self, count: usize, with_source_column: bool) -> String {
+        let hint = if self.local {
+            if self.explicit_limit {
+                format!("--limit {}", self.limit)
+            } else {
+                "--limit 可调".to_owned()
+            }
+        } else if self.explicit_limit {
+            format!("--limit {}", self.limit)
+        } else {
+            format!("每源 {}，--limit 可调", self.per_source())
+        };
+        let source = if with_source_column {
+            "（来源见「来源」列）"
+        } else {
+            ""
+        };
+        format!("共 {count} 条（{hint}） · 输入 play <序号> 播放{source}")
+    }
+}
+
 /// 会话上下文里的一条搜索结果：本地曲目或在线曲目。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SearchHit {
@@ -359,6 +489,19 @@ impl CacheUsage {
 pub(crate) trait OnlineApi: Send + Sync {
     /// 串行搜索所有在线源；单源失败在实现内隔离。
     fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError>;
+    /// 只搜指定源；`None` = 全部启用源。默认实现按 `track.source` 过滤。
+    fn search_all_for(
+        &self,
+        query: &str,
+        limit: usize,
+        source: Option<SourceId>,
+    ) -> Result<OnlineSearch, CmdError> {
+        let mut result = self.search_all(query, limit)?;
+        if let Some(source) = source {
+            result.tracks.retain(|track| track.source == source);
+        }
+        Ok(result)
+    }
     /// resolve → 下载/缓存；进度按已写字节数回调。
     fn prepare(
         &self,
@@ -1401,17 +1544,20 @@ impl Executor<'_> {
         })
     }
 
-    /// `search <关键词>`：结果带 1 基序号，并存进会话上下文供 `play <n>`。
+    /// `search`：本地库搜索（在线分派由 `maybe_start_online` 处理）。
     fn search(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
-        let keyword = positional_arg(parsed, "关键词")?.trim();
-        if keyword.is_empty() {
-            return Err(CmdError::new("E_CMD_ARG", "搜索关键词不能为空"));
+        let options = SearchOptions::parse(parsed)?;
+        let keyword = &options.keyword;
+        let mut tracks = self
+            .library
+            .search(keyword, options.limit.saturating_add(1))?;
+        let before_artist = tracks.len();
+        if options.artist.is_some() {
+            tracks.retain(|track| options.matches_artist(&track.artist));
         }
-
-        // 多取一条用来判断是否超过默认上限，避免“20 条正好”被误报为截断。
-        let mut tracks = self.library.search(keyword, DEFAULT_SEARCH_RESULTS + 1)?;
-        let truncated = tracks.len() > DEFAULT_SEARCH_RESULTS;
-        tracks.truncate(DEFAULT_SEARCH_RESULTS);
+        let removed = before_artist.saturating_sub(tracks.len());
+        let truncated = tracks.len() > options.limit;
+        tracks.truncate(options.limit);
         self.library.remember_search(tracks.clone());
 
         if tracks.is_empty() {
@@ -1420,12 +1566,20 @@ impl Executor<'_> {
                 source: ListingSource::Search,
                 len: 0,
             });
+            let mut outputs = vec![text_of(vec![
+                bold("没有找到"),
+                dim(format!(" · {keyword}")),
+            ])];
+            if options.artist.is_some() && before_artist > 0 && removed > 0 {
+                outputs.push(hint_output(&format!(
+                    "过滤前有 {before_artist} 条，被 --artist 过滤掉了 {removed} 条"
+                )));
+            } else {
+                outputs.push(hint_output("换个关键词试试"));
+            }
             return Ok(Outcome {
-                outputs: vec![text_of(vec![
-                    bold("没有找到"),
-                    dim(format!(" · {keyword}")),
-                ])],
-                footer: Some("换个关键词试试".to_owned()),
+                outputs,
+                footer: Some(options.footer(0, false)),
             });
         }
         self.library.set_active_listing(ActiveListing {
@@ -1460,16 +1614,14 @@ impl Executor<'_> {
         ];
         if truncated {
             outputs.push(text_of(vec![dim(format!(
-                "结果超过 {DEFAULT_SEARCH_RESULTS} 条，只显示前 {DEFAULT_SEARCH_RESULTS} 条"
+                "结果超过 {} 条，只显示前 {} 条",
+                options.limit, options.limit
             ))]));
         }
 
         Ok(Outcome {
             outputs,
-            footer: Some(format!(
-                "共 {} 条（--limit 可调） · 输入 play <序号> 播放（来源：搜索结果）",
-                tracks.len()
-            )),
+            footer: Some(options.footer(tracks.len(), false)),
         })
     }
 
@@ -3174,10 +3326,14 @@ impl OnlineService {
     fn track_lookups(&self) -> usize {
         self.track_lookups.load(Ordering::SeqCst)
     }
-}
 
-impl OnlineApi for OnlineService {
-    fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError> {
+    /// 搜启用源；`source` 限定单个源（T-0046 D）。
+    fn search_enabled(
+        &self,
+        query: &str,
+        limit: usize,
+        source: Option<SourceId>,
+    ) -> Result<OnlineSearch, CmdError> {
         let runtime = self.runtime()?;
         let enabled = self
             .enabled
@@ -3188,7 +3344,10 @@ impl OnlineApi for OnlineService {
             .registry
             .sources()
             .iter()
-            .filter(|source| enabled.contains(&source.id()))
+            .filter(|candidate| {
+                enabled.contains(&candidate.id())
+                    && source.is_none_or(|wanted| candidate.id() == wanted)
+            })
             .cloned()
             .collect();
         let registry = SourceRegistry::new(sources);
@@ -3199,6 +3358,21 @@ impl OnlineApi for OnlineService {
             tracks: merged.tracks,
             all_failed,
         })
+    }
+}
+
+impl OnlineApi for OnlineService {
+    fn search_all(&self, query: &str, limit: usize) -> Result<OnlineSearch, CmdError> {
+        self.search_enabled(query, limit, None)
+    }
+
+    fn search_all_for(
+        &self,
+        query: &str,
+        limit: usize,
+        source: Option<SourceId>,
+    ) -> Result<OnlineSearch, CmdError> {
+        self.search_enabled(query, limit, source)
     }
 
     fn prepare(
@@ -3396,7 +3570,20 @@ fn source_error_to_cmd(error: SourceError) -> CmdError {
 }
 
 /// 合并搜索结果的终端输出：序号 1 基、跨源连续，来源列写明本地 / B站 / 网易云。
+#[cfg(test)]
 fn build_search_outcome(keyword: &str, hits: &[SearchHit], all_online_failed: bool) -> Outcome {
+    let options = SearchOptions::legacy(keyword, hits.len().max(1));
+    build_search_outcome_for(&options, hits, all_online_failed, hits.len(), 0)
+}
+
+fn build_search_outcome_for(
+    options: &SearchOptions,
+    hits: &[SearchHit],
+    all_online_failed: bool,
+    before_artist: usize,
+    removed: usize,
+) -> Outcome {
+    let keyword = &options.keyword;
     if hits.is_empty() {
         let mut outputs = vec![
             text_of(vec![bold("没有找到"), dim(format!(" · {keyword}"))]),
@@ -3406,14 +3593,20 @@ fn build_search_outcome(keyword: &str, hits: &[SearchHit], all_online_failed: bo
                 selectable: true,
             },
         ];
-        outputs.push(hint_output(if all_online_failed {
-            "在线源暂时不可用"
+        if options.artist.is_some() && before_artist > 0 && removed > 0 {
+            outputs.push(hint_output(&format!(
+                "过滤前有 {before_artist} 条，被 --artist 过滤掉了 {removed} 条"
+            )));
         } else {
-            "换个关键词试试"
-        }));
+            outputs.push(hint_output(if all_online_failed {
+                "在线源暂时不可用"
+            } else {
+                "换个关键词试试"
+            }));
+        }
         return Outcome {
             outputs,
-            footer: None,
+            footer: Some(options.footer(0, true)),
         };
     }
 
@@ -3445,10 +3638,7 @@ fn build_search_outcome(keyword: &str, hits: &[SearchHit], all_online_failed: bo
 
     Outcome {
         outputs,
-        footer: Some(format!(
-            "共 {} 条（每源 {ONLINE_SEARCH_PER_SOURCE}，--limit 可调） · 输入 play <序号> 播放（来源见「来源」列）",
-            hits.len()
-        )),
+        footer: Some(options.footer(hits.len(), true)),
     }
 }
 
@@ -3504,6 +3694,7 @@ fn finish_block(
 }
 
 /// 后台执行 `search`：本地库 + 在线源，合并后写入会话上下文并推最终块。
+#[cfg(test)]
 pub(crate) fn run_online_search(
     keyword: &str,
     limit: usize,
@@ -3513,29 +3704,52 @@ pub(crate) fn run_online_search(
     template: &Block,
     clock: &dyn Fn() -> u64,
 ) {
-    let local = match library.search(keyword, limit) {
-        Ok(tracks) => tracks,
-        Err(error) => {
-            emit(&finish_block(
-                template,
-                BlockStatus::Error,
-                vec![error.to_output()],
-                None,
-                clock,
-            ));
-            return;
+    let options = SearchOptions::legacy(keyword, limit);
+    run_online_search_with_options(&options, online, library, emit, template, clock);
+}
+
+pub(crate) fn run_online_search_with_options(
+    options: &SearchOptions,
+    online: &dyn OnlineApi,
+    library: &dyn LibraryApi,
+    emit: &dyn Fn(&Block),
+    template: &Block,
+    clock: &dyn Fn() -> u64,
+) {
+    // `--source <具体源>` 只搜该在线源，不混本地库。
+    let local = if options.source.is_none() {
+        match library.search(&options.keyword, options.limit.saturating_add(1)) {
+            Ok(tracks) => tracks,
+            Err(error) => {
+                emit(&finish_block(
+                    template,
+                    BlockStatus::Error,
+                    vec![error.to_output()],
+                    None,
+                    clock,
+                ));
+                return;
+            }
         }
+    } else {
+        Vec::new()
     };
 
-    let (online_tracks, all_failed) = match online.search_all(keyword, ONLINE_SEARCH_PER_SOURCE) {
-        Ok(result) => (result.tracks, result.all_failed),
-        // 在线客户端初始化失败也不能吞掉本地结果。
-        Err(_) => (Vec::new(), true),
-    };
+    let (online_tracks, all_failed) =
+        match online.search_all_for(&options.keyword, options.per_source(), options.source) {
+            Ok(result) => (result.tracks, result.all_failed),
+            // 在线客户端初始化失败也不能吞掉本地结果。
+            Err(_) => (Vec::new(), true),
+        };
 
     let mut hits: Vec<SearchHit> = local.into_iter().map(SearchHit::Local).collect();
     hits.extend(online_tracks.into_iter().map(SearchHit::Online));
-    hits.truncate(limit);
+    let before_artist = hits.len();
+    if options.artist.is_some() {
+        hits.retain(|hit| options.matches_artist(hit.artist()));
+    }
+    let removed = before_artist.saturating_sub(hits.len());
+    hits.truncate(options.limit);
     library.remember_hits(hits.clone());
     // 即使 0 条，也把上下文切成“空的 Search”，不保留上一张旧表。
     library.set_active_listing(ActiveListing {
@@ -3543,7 +3757,7 @@ pub(crate) fn run_online_search(
         len: hits.len(),
     });
 
-    let outcome = build_search_outcome(keyword, &hits, all_failed);
+    let outcome = build_search_outcome_for(options, &hits, all_failed, before_artist, removed);
     emit(&finish_block(
         template,
         BlockStatus::Done,
@@ -3784,6 +3998,7 @@ fn online_play_started_block(
 }
 
 /// `search` 是否走“本地 + 在线”；`--local` 是唯一的例外。
+#[cfg(test)]
 fn search_is_online(parsed: &Parsed) -> bool {
     parsed.spec.name == "search" && !parsed.flags.contains_key("local")
 }
@@ -3831,12 +4046,15 @@ fn maybe_start_online(
         _ => return None,
     };
 
-    if search_is_online(&parsed) {
-        let keyword = parsed.positional.first()?.trim().to_owned();
-        if keyword.is_empty() {
+    if parsed.spec.name == "search" {
+        // 非法参数不在这里吞掉：交回同步执行器，错误文案与 hint 才统一。
+        let Ok(options) = SearchOptions::parse(&parsed) else {
+            return None;
+        };
+        if options.local {
             return None;
         }
-        let template = search_started_block(block_id, input, &keyword);
+        let template = search_started_block(block_id, input, &options.keyword);
         emit_block(app, &template);
 
         let app = app.clone();
@@ -3845,9 +4063,8 @@ fn maybe_start_online(
             let library = app.state::<LibraryHandle>();
             let emit_app = app.clone();
             let emit = move |block: &Block| emit_block(&emit_app, block);
-            run_online_search(
-                &keyword,
-                DEFAULT_SEARCH_RESULTS,
+            run_online_search_with_options(
+                &options,
                 &*online,
                 &*library,
                 &emit,
@@ -5366,7 +5583,138 @@ mod tests {
             block
                 .footer
                 .as_deref()
-                .is_some_and(|footer| footer.contains("来源：搜索结果"))
+                .is_some_and(|footer| footer.contains("共 2 条"))
+        );
+    }
+
+    #[test]
+    fn search_artist_only_uses_artist_as_keyword() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "晴天",
+            "周杰伦",
+            "/music/qingtian.flac",
+            200_000,
+        )]);
+        let block = done_with_library(&api, &library, "search --artist 周杰伦 --local");
+
+        assert_eq!(
+            library.calls(),
+            vec![LibraryCall::Search("周杰伦".to_owned(), 21)]
+        );
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][2], "周杰伦");
+    }
+
+    #[test]
+    fn search_artist_filters_local_results() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![
+            track(1, "A", "周杰伦", "/music/a.flac", 1_000),
+            track(2, "B", "别人", "/music/b.flac", 1_000),
+        ]);
+        let block = done_with_library(&api, &library, "search 歌 --artist 周杰伦 --local");
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "A");
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("共 1 条"))
+        );
+    }
+
+    #[test]
+    fn search_artist_filter_empty_explains_before_and_removed() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new().with_search_tracks(vec![
+            track(1, "A", "甲", "/music/a.flac", 1_000),
+            track(2, "B", "乙", "/music/b.flac", 1_000),
+            track(3, "C", "丙", "/music/c.flac", 1_000),
+        ]);
+        let block = done_with_library(&api, &library, "search 歌 --artist 周杰伦 --local");
+
+        assert_eq!(block.status, BlockStatus::Done);
+        assert!(block.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. }
+                if text.contains("过滤前有 3 条，被 --artist 过滤掉了 3 条")
+        )));
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Search,
+                len: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn search_local_and_source_are_mutually_exclusive() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "search 晴天 --local --source netease");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(error_fields(&block).1.contains("互斥"));
+        assert!(library.calls().is_empty());
+    }
+
+    #[test]
+    fn search_rejects_invalid_source() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let block = done_with_library(&api, &library, "search 晴天 --source youtube");
+
+        assert_eq!(block.status, BlockStatus::Error);
+        assert_eq!(error_fields(&block).0, "E_CMD_ARG");
+        assert!(error_fields(&block).1.contains("未知音源"));
+    }
+
+    #[test]
+    fn search_rejects_out_of_range_limit() {
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        for input in ["search 晴天 --limit 0", "search 晴天 --limit 101"] {
+            let block = done_with_library(&api, &library, input);
+            assert_eq!(block.status, BlockStatus::Error, "{input}");
+            assert!(error_fields(&block).1.contains("limit"), "{input}");
+        }
+    }
+
+    #[test]
+    fn search_limit_applies_to_local_results() {
+        let api = FakeApi::new();
+        let tracks: Vec<Track> = (0..10)
+            .map(|index| {
+                track(
+                    index,
+                    &format!("Track {index}"),
+                    "Artist",
+                    &format!("/music/{index}.flac"),
+                    1_000,
+                )
+            })
+            .collect();
+        let library = FakeLibraryApi::new().with_search_tracks(tracks);
+        let block = done_with_library(&api, &library, "search track --local --limit 5");
+
+        let (_, rows) = table_of_block(&block);
+        assert_eq!(rows.len(), 5);
+        assert_eq!(
+            library.calls(),
+            vec![LibraryCall::Search("track".to_owned(), 6)]
+        );
+        assert!(
+            block
+                .footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("--limit 5"))
         );
     }
 
@@ -6199,6 +6547,138 @@ mod tests {
             dir,
             OnlineService::from_parts(registry, cache, transport, covers_dir, cover_store),
         )
+    }
+
+    #[test]
+    fn run_online_search_source_excludes_local_and_other_sources() {
+        let library = FakeLibraryApi::new().with_search_tracks(vec![track(
+            1,
+            "Local",
+            "Artist",
+            "/music/local.flac",
+            1_000,
+        )]);
+        let online = FakeOnline {
+            tracks: vec![
+                online_track(SourceId::Bilibili, "BV1xx", "Bili"),
+                online_track(SourceId::Netease, "10001", "Net"),
+            ],
+            all_failed: false,
+        };
+        let options = SearchOptions {
+            keyword: "x".to_owned(),
+            artist: None,
+            source: Some(SourceId::Bilibili),
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_search_with_options(
+            &options,
+            &online,
+            &library,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        let (_, rows) = table_of_block(done);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "B站");
+        assert!(library.calls().is_empty(), "source 搜索不应查本地");
+    }
+
+    #[test]
+    fn run_online_search_artist_empty_explains_filter() {
+        let library = FakeLibraryApi::new();
+        let online = FakeOnline {
+            tracks: vec![online_track(SourceId::Bilibili, "BV1xx", "Bili")],
+            all_failed: false,
+        };
+        let options = SearchOptions {
+            keyword: "歌".to_owned(),
+            artist: Some("周杰伦".to_owned()),
+            source: None,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_search_with_options(
+            &options,
+            &online,
+            &library,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        assert!(done.outputs.iter().any(|output| matches!(
+            output,
+            Output::Hint { text, .. }
+                if text.contains("过滤前有 1 条，被 --artist 过滤掉了 1 条")
+        )));
+        assert_eq!(
+            library.active_listing(),
+            Some(ActiveListing {
+                source: ListingSource::Search,
+                len: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn run_online_search_default_footer_names_per_source_ten() {
+        let library = FakeLibraryApi::new();
+        let online = FakeOnline {
+            tracks: vec![online_track(SourceId::Netease, "10001", "Net")],
+            all_failed: false,
+        };
+        let options = SearchOptions {
+            keyword: "歌".to_owned(),
+            artist: None,
+            source: None,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emit = {
+            let emitted = Arc::clone(&emitted);
+            move |block: &Block| emitted.lock().expect("emitted").push(block.clone())
+        };
+
+        run_online_search_with_options(
+            &options,
+            &online,
+            &library,
+            &emit,
+            &running_template(),
+            &|| 2_000,
+        );
+
+        let blocks = emitted.lock().expect("emitted");
+        let done = blocks.last().expect("done");
+        assert!(
+            done.footer
+                .as_deref()
+                .is_some_and(|footer| footer.contains("每源 10，--limit 可调"))
+        );
     }
 
     #[test]

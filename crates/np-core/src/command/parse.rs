@@ -686,16 +686,108 @@ mod tests {
 
         assert_eq!(parsed.spec.name, "search");
         assert_eq!(parsed.positional, ["kid a"]);
-        assert_eq!(parsed.usage(), "search <keyword> [--local]");
+        assert_eq!(
+            parsed.usage(),
+            "search [关键词] [--artist <名>] [--source <all|bilibili|netease>] [--limit <n>]"
+        );
     }
 
     #[test]
-    fn search_requires_a_keyword() {
-        let error = parse_err("search");
+    fn search_without_keyword_parses_for_executor_to_require_artist_or_keyword() {
+        let parsed = parse_ok("search");
 
-        assert_eq!(error.code, CommandErrorCode::Arg);
-        assert!(error.message.contains("keyword"), "{}", error.message);
-        assert_eq!(error.usage.as_deref(), Some("search <keyword> [--local]"));
+        assert!(parsed.positional.is_empty());
+        assert!(parsed.flags.is_empty());
+    }
+
+    #[test]
+    fn search_parses_artist_and_keyword() {
+        let parsed = parse_ok("search 晴天 --artist 周杰伦");
+
+        assert_eq!(parsed.positional, ["晴天"]);
+        assert_eq!(
+            parsed.flags.get("artist").map(String::as_str),
+            Some("周杰伦")
+        );
+    }
+
+    #[test]
+    fn search_parses_artist_only() {
+        let parsed = parse_ok("search --artist 周杰伦");
+
+        assert!(parsed.positional.is_empty());
+        assert_eq!(
+            parsed.flags.get("artist").map(String::as_str),
+            Some("周杰伦")
+        );
+    }
+
+    #[test]
+    fn search_parses_source_all() {
+        let parsed = parse_ok("search 晴天 --source all");
+
+        assert_eq!(parsed.flags.get("source").map(String::as_str), Some("all"));
+    }
+
+    #[test]
+    fn search_parses_source_bilibili() {
+        let parsed = parse_ok("search 晴天 --source bilibili");
+
+        assert_eq!(
+            parsed.flags.get("source").map(String::as_str),
+            Some("bilibili")
+        );
+    }
+
+    #[test]
+    fn search_parses_limit() {
+        let parsed = parse_ok("search 晴天 --limit 5");
+
+        assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("5"));
+    }
+
+    #[test]
+    fn search_parses_invalid_source_for_executor_to_reject() {
+        let parsed = parse_ok("search 晴天 --source youtube");
+
+        assert_eq!(
+            parsed.flags.get("source").map(String::as_str),
+            Some("youtube")
+        );
+    }
+
+    #[test]
+    fn search_parses_out_of_range_limit_for_executor_to_reject() {
+        let parsed = parse_ok("search 晴天 --limit 101");
+
+        assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("101"));
+    }
+
+    #[test]
+    fn search_parses_local_and_source_for_executor_mutual_exclusion() {
+        let parsed = parse_ok("search 晴天 --local --source netease");
+
+        assert!(parsed.flags.contains_key("local"));
+        assert_eq!(
+            parsed.flags.get("source").map(String::as_str),
+            Some("netease")
+        );
+    }
+
+    #[test]
+    fn search_parses_all_options_together() {
+        let parsed = parse_ok("search 晴天 --artist 周杰伦 --source netease --limit 5");
+
+        assert_eq!(parsed.positional, ["晴天"]);
+        assert_eq!(
+            parsed.flags.get("artist").map(String::as_str),
+            Some("周杰伦")
+        );
+        assert_eq!(
+            parsed.flags.get("source").map(String::as_str),
+            Some("netease")
+        );
+        assert_eq!(parsed.flags.get("limit").map(String::as_str), Some("5"));
     }
 
     #[test]
