@@ -55,6 +55,21 @@ describe("输入行焦点条 class（T-0050 B）", () => {
   });
 });
 
+describe("焦点条形状（T-0050 B 修正）", () => {
+  it("下层卡用 2px 偏移 + 同圆角 + clip-path，不再 scaleX", async () => {
+    const fs = (await import("node:fs" as string)) as {
+      readFileSync: (path: URL, encoding: "utf8") => string;
+    };
+    const css = fs.readFileSync(new URL("./terminal.css", import.meta.url), "utf8");
+
+    expect(css).toContain("inset: 0 0 -2px 0");
+    expect(css).toContain("border-radius: var(--np-radius-control)");
+    expect(css).toContain("clip-path: inset(0 100% 0 0)");
+    expect(css).toContain("clip-path: inset(0 0 0 0)");
+    expect(css).not.toContain("scaleX(");
+  });
+});
+
 describe("输入行结构", () => {
   it("默认不弹层：aria-expanded=false 且没有弹层节点", () => {
     const html = renderToStaticMarkup(

@@ -258,42 +258,59 @@ html[data-theme="phosphor"]
 
 /* ── 输入行 ─────────────────────────────────────────── */
 .np-lab__input-row {
+  --np-composer-bg: var(--bg);
+
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--sp-2);
   height: 40px;
   padding: 0 var(--sp-3);
-  border-bottom: var(--np-border-hairline);
-  background: var(--bg);
+  border-bottom: 0;
+  background: transparent;
   /* 补全弹层相对输入行定位（T-0020）。 */
   position: relative;
+  /* 负 z-index 的下层琥珀卡被限制在本行内，不会跑到窗口背景后面。 */
+  isolation: isolate;
 }
 
 /*
- * 焦点条（T-0050 B）：默认 scaleX(0)，transform-origin:left；
- * 聚焦从左长出（220ms focus-in），失焦从右退回（160ms focus-out）。
- * 只动 transform，不动 width；reduced-motion 时 token 归 0，最终状态仍正确。
+ * 上层输入卡：不透明，盖住下层琥珀卡；只把下层向下偏移 2px 的
+ * 底边 + 两端圆角露出来。用 ::before 而不是给 form 背景，是为了让
+ * 负 z-index 的下层卡稳定地叠在输入卡之后、输入内容之前。
+ */
+.np-lab__input-row::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-bottom: var(--np-border-hairline);
+  border-radius: var(--np-radius-control);
+  background: var(--np-composer-bg);
+  box-shadow: var(--np-highlight-inset);
+  content: "";
+  pointer-events: none;
+}
+
+/*
+ * 下层焦点卡（T-0050 B 正确形状）：同宽、同圆角、向下偏移 2px。
+ * 默认用 clip-path 完全裁掉；聚焦从左往右揭示（220ms），
+ * 失焦从右往左退回（160ms）。不做 scaleX，圆角不会拉伸。
  */
 .np-lab__input-row::after {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 1;
-  height: 2px;
-  border-radius: var(--np-radius-pill);
+  inset: 0 0 -2px 0;
+  z-index: -2;
+  border-radius: var(--np-radius-control);
   background: var(--accent);
+  clip-path: inset(0 100% 0 0);
   content: "";
   pointer-events: none;
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform var(--np-dur-focus-out) var(--np-ease-focus-out);
+  transition: clip-path var(--np-dur-focus-out) var(--np-ease-focus-out);
 }
 
 .np-lab__input-row.is-focused::after,
 .np-lab__input-row:focus-within::after {
-  transform: scaleX(1);
+  clip-path: inset(0 0 0 0);
   transition-duration: var(--np-dur-focus-in);
   transition-timing-function: var(--np-ease-focus-in);
 }
@@ -612,6 +629,8 @@ html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__scroll {
 }
 
 html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row {
+  --np-composer-bg: var(--bg-hover);
+
   position: absolute;
   right: var(--np-space-2);
   bottom: var(--np-space-2);
@@ -619,10 +638,12 @@ html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row {
   z-index: 12;
   height: 48px;
   padding: 0 var(--np-space-2);
-  background: var(--bg-hover);
   border: 0;
   border-radius: var(--np-radius-control);
-  box-shadow: var(--np-highlight-inset);
+}
+
+html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__input-row::before {
+  border-bottom: 0;
 }
 
 html[data-skin="plain"] .np-lab[data-lab="false"] .np-lab__prompt {
