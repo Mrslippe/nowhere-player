@@ -12,20 +12,24 @@ const APP_ENTRY: &str = "index.html";
 
 /// 创建播放器小窗；启动即建，之后只隐藏、不销毁。
 ///
-/// 外壳参数（T-0032）：
+/// 外壳参数（T-0032 / T-0045 阶段 2 外投影 A）：
+/// - `inner_size(360×140)`：卡片 340×120 居中，四周留 10px 透明边距，
+///   CSS 单层外投影才能落在壁纸上，而不是被 340×120 窗口裁掉。
+/// - `transparent(true)`：10px 边距必须透出壁纸；卡片/阴影由 CSS 画。
 /// - `decorations(false)`：桌面挂件不需要系统标题栏。
 /// - `shadow(false)`：**P2 白边的正解**。Tauri 文档明确写着：无边框窗
 ///   `shadow: true` 会画 1px 白边，Windows 11 上还会带圆角；`false` 才去掉。
+///   外投影只用 CSS，绝不开原生 shadow。
 /// - `resizable(false)`：产品不需要改宽高（P3）。Win32 层同时去掉
 ///   `WS_THICKFRAME`，tao 也只在 `RESIZABLE` 时于 `WM_NCHITTEST` 里给边缘
 ///   resize 热区；两者一起消失。
-///
-/// 因此这里**不启用** `transparent`：白边根因是 shadow，不是窗口不透明；
-/// 透明窗的合成开销与点击穿透风险都不必承担。
+/// - 拖拽区只挂在 340×120 卡片上（`data-tauri-drag-region`），10px 透明
+///   边距不可拖，避免用户拖到"空气"。
 pub(crate) fn create_player(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, PLAYER_LABEL, WebviewUrl::App(APP_ENTRY.into()))
         .title("Nowhere Player")
-        .inner_size(340.0, 120.0)
+        .inner_size(360.0, 140.0)
+        .transparent(true)
         .decorations(false)
         .resizable(false)
         .shadow(false)

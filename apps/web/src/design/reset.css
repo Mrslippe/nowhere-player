@@ -74,3 +74,10 @@ select {
     scroll-behavior: auto !important;
   }
 }
+
+
+/* 播放器窗（T-0045 A）：窗口 360×140 透明，卡片 340×120 + 10px 壁纸边距。 */
+html[data-view="player"],
+html[data-view="player"] body {
+  background: transparent;
+}
