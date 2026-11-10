@@ -31,6 +31,7 @@
   /* 零投影；输入焦点线仍是 2px 强调下划线。 */
   --np-shadow-card: none;
   --np-shadow-float: none;
+  --np-shadow-window: none;
   --np-highlight-inset: none;
   --np-shadow-focus-line: inset 0 -2px 0 var(--accent);
 
@@ -53,7 +54,6 @@
   /* 播放器布局（T-0031）：尺寸与进度形态随 skin 变，plain 保持 64/2/16。 */
   --np-player-pad: 8px;
   --np-player-cover: 56px;
-  --np-player-progress-height: 8px;
   --np-player-controls-height: 14px;
 }
 

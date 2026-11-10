@@ -38,6 +38,7 @@ const STRUCTURE_TOKENS = [
   "--np-border-width-emphasis",
   "--np-shadow-card",
   "--np-shadow-float",
+  "--np-shadow-window",
   "--np-highlight-inset",
   "--np-shadow-focus-line",
   "--np-font-ui",

@@ -34,7 +34,8 @@
 
   /* ── 阴影 ─────────────────────────────────────────── */
   --np-shadow-card: var(--shadow-1);
-  --np-shadow-float: var(--shadow-2); /* 浮层：只给浮层用较重投影 */
+  --np-shadow-float: var(--shadow-2);
+  --np-shadow-window: var(--shadow-window); /* 浮层：只给浮层用较重投影 */
   --np-highlight-inset: inset 0 1px 0 var(--hi);
   --np-shadow-focus-line: inset 0 -2px 0 var(--accent); /* 输入行焦点线 */
 

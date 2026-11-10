@@ -385,57 +385,6 @@
   height: 14px;
 }
 
-/*
- * 分段条：空轨道 = 6px 实 + 3px 空；填充用 ::before + clip-path；
- * 播放头用 ::after（6×12，--danger）。不新增任何 DOM。
- */
-[data-skin="phosphor"] .np-player-card .np-player-card__progress {
-  --np-progress: 0;
-
-  flex: 1;
-  height: var(--np-player-progress-height);
-  min-width: 0;
-  overflow: visible;
-  background: repeating-linear-gradient(
-    90deg,
-    var(--line) 0 6px,
-    transparent 6px 9px
-  );
-}
-
-[data-skin="phosphor"]
-  .np-player-card
-  .np-player-card__progress
-  .np-progress__indicator {
-  display: none;
-}
-
-[data-skin="phosphor"] .np-player-card .np-player-card__progress::before {
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    90deg,
-    var(--accent) 0 6px,
-    transparent 6px 9px
-  );
-  clip-path: inset(0 calc(100% - var(--np-progress) * 100%) 0 0);
-  content: "";
-  pointer-events: none;
-  transition: clip-path var(--np-dur-progress) var(--np-ease-out);
-}
-
-[data-skin="phosphor"] .np-player-card .np-player-card__progress::after {
-  position: absolute;
-  top: -2px;
-  left: clamp(0px, calc(var(--np-progress) * 100% - 3px), calc(100% - 6px));
-  width: 6px;
-  height: 12px;
-  background: var(--danger);
-  content: "";
-  pointer-events: none;
-  transition: left var(--np-dur-progress) var(--np-ease-out);
-}
-
 [data-skin="phosphor"] .np-player-card__time {
   font-size: var(--fs-10);
   letter-spacing: 0.02em;
@@ -503,13 +452,39 @@
   color: var(--danger);
 }
 
-/* idle / loading 没有有意义的当前位置：不画红色播放头。 */
-[data-skin="phosphor"]
-  .np-player-card[data-state="idle"]
-  .np-player-card__progress::after,
-[data-skin="phosphor"]
-  .np-player-card[data-state="loading"]
-  .np-player-card__progress::after {
+/* ── 连续进度条（两个 skin 共用，T-0045 阶段 2 一致性） ──
+ * 3px 轨道 + 9px 琥珀圆播放头；28 段碎块彻底移除。
+ */
+.np-player-card__progress {
+  width: 100%;
+  height: 3px;
+  overflow: visible;
+  border-radius: var(--np-radius-pill);
+  background: color-mix(in srgb, var(--fg) 20%, transparent);
+}
+
+.np-player-card__progress .np-progress__indicator {
+  border-radius: var(--np-radius-pill);
+}
+
+.np-player-card__progress::after {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--np-progress) * 100%);
+  width: 9px;
+  height: 9px;
+  border-radius: var(--np-radius-circle);
+  background: var(--accent);
+  outline: 2px solid transparent;
+  outline-offset: 0;
+  content: "";
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: left var(--np-dur-progress) var(--np-ease-out);
+}
+
+.np-player-card[data-state="idle"] .np-player-card__progress::after,
+.np-player-card[data-state="loading"] .np-player-card__progress::after {
   display: none;
 }
 
@@ -523,7 +498,7 @@
   border: 0;
   border-radius: var(--np-radius-card);
   background: var(--bg-elev);
-  box-shadow: var(--np-highlight-inset);
+  box-shadow: var(--np-highlight-inset), var(--np-shadow-window);
 }
 
 [data-skin="plain"] .np-player-card__cover {
@@ -582,44 +557,6 @@
   outline: 1px solid var(--accent);
   outline-offset: 2px;
   border-radius: var(--np-radius-control-sm);
-}
-
-[data-skin="plain"] .np-player-card__progress {
-  width: 100%;
-  height: 3px;
-  overflow: visible;
-  border-radius: var(--np-radius-pill);
-  background: color-mix(in srgb, var(--fg) 20%, transparent);
-}
-
-[data-skin="plain"] .np-player-card__progress .np-progress__indicator {
-  border-radius: var(--np-radius-pill);
-}
-
-/* 9px 播放头；2px 透明描边留出视觉呼吸。 */
-[data-skin="plain"] .np-player-card__progress::after {
-  position: absolute;
-  top: 50%;
-  left: calc(var(--np-progress) * 100%);
-  width: 9px;
-  height: 9px;
-  border-radius: var(--np-radius-circle);
-  background: var(--accent);
-  outline: 2px solid transparent;
-  outline-offset: 0;
-  content: "";
-  pointer-events: none;
-  transform: translate(-50%, -50%);
-  transition: left var(--np-dur-progress) var(--np-ease-out);
-}
-
-[data-skin="plain"]
-  .np-player-card[data-state="idle"]
-  .np-player-card__progress::after,
-[data-skin="plain"]
-  .np-player-card[data-state="loading"]
-  .np-player-card__progress::after {
-  display: none;
 }
 
 [data-skin="plain"] .np-player-card__time--combined {
