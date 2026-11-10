@@ -10,8 +10,11 @@
  */
 import type { Completion, CompletionItem } from "../../shared/command-bridge";
 
-/** Tab 弹层最多显示的候选条数（T-0020 §6.3）。 */
-export const POPUP_LIMIT = 8;
+/** 内联补全最多显示的候选条数（T-0043 §2C）。 */
+export const POPUP_LIMIT = 5;
+
+/** 输入变化后等待多久再请求候选；卡要求 ≤80ms。 */
+export const COMPLETION_DEBOUNCE_MS = 80;
 
 /** 打开的补全弹层：候选与当前高亮下标（相对可见列表）。 */
 export interface CompletionPopupState {
@@ -97,6 +100,21 @@ export function moveCompletion(
   };
 }
 
+/**
+ * 命令名位置的可补全前缀：仅第一个词、光标在末尾、中间没有空白。
+ *
+ * 参数位置（含空格）返回 `null` → 不出候选（T-0043 §2C）。
+ */
+export function commandPrefix(input: string, caret: number): string | null {
+  if (caret !== input.length || input.length === 0) {
+    return null;
+  }
+  if (/\s/.test(input)) {
+    return null;
+  }
+  return input;
+}
+
 /** 当前高亮的候选；空列表为 `null`。 */
 export function activeItem(
   state: CompletionPopupState,
@@ -163,7 +181,7 @@ const NO_OP: KeyDecision = {
 /**
  * 按键归属（T-0020 §11）：
  *
- * - 弹层打开：`↑/↓` 移动高亮、`Tab` 循环、`Enter` 采纳、`Esc` 关闭；
+ * - 弹层打开：`↑/↓` 移动高亮、`Tab` 采纳第一条（不关闭）、`Enter` 提交当前输入、`Esc` 关闭；
  * - 弹层关闭：`↑/↓` 翻历史、`Enter` 提交、`Tab` 请求补全。
  */
 export function decideKey(
@@ -176,7 +194,12 @@ export function decideKey(
       if (popup === null) {
         return { ...NO_OP, popup: null, requestCompletion: true };
       }
-      return { ...NO_OP, popup: moveCompletion(popup, 1) };
+      const item = popup.completion.items[0] ?? null;
+      return {
+        ...NO_OP,
+        popup: { ...popup, activeIndex: 0 },
+        adopt: item === null ? null : applyCompletion(input, popup.completion, item),
+      };
     }
 
     case "arrow-up": {
@@ -193,20 +216,9 @@ export function decideKey(
       return { ...NO_OP, popup: moveCompletion(popup, 1) };
     }
 
-    case "enter": {
-      if (popup === null) {
-        return { ...NO_OP, submit: true };
-      }
-      const item = activeItem(popup);
-      return {
-        ...NO_OP,
-        popup: null,
-        adopt:
-          item === null
-            ? null
-            : applyCompletion(input, popup.completion, item),
-      };
-    }
+    case "enter":
+      // Enter 永远执行当前输入；即使弹层打开也不采纳候选（T-0043 §2C）。
+      return { ...NO_OP, popup: null, submit: true };
 
     case "escape":
       return { ...NO_OP, popup: null };

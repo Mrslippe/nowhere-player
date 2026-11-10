@@ -28,23 +28,23 @@ describe("补全弹层渲染（T-0020 §6.3）", () => {
     expect(html).toBe("");
   });
 
-  it("最多渲染 8 条，并标出高亮项与类型标签", () => {
+  it("最多渲染 5 条，并标出高亮项与类型标签", () => {
     const html = renderToStaticMarkup(
       <CompletionPopup completion={completion(12)} activeIndex={1} />,
     );
 
     const rows = html.match(/class="np-lab__completion-item/g) ?? [];
-    expect(rows).toHaveLength(8);
-    expect(html).toContain('data-count="8"');
+    expect(rows).toHaveLength(5);
+    expect(html).toContain('data-count="5"');
     expect(html).toContain('role="listbox"');
     expect(html).toContain('aria-label="命令补全"');
     // 第 1 条高亮，第 0 条不高亮。
     expect(html).toContain('data-active="true"');
     expect(html).toContain(COMPLETION_KIND_LABELS.command);
     expect(html).toContain(COMPLETION_KIND_LABELS.suggestion);
-    expect(html).toContain("第 7 条");
+    expect(html).toContain("第 4 条");
     // 第 9 条以后被截掉。
-    expect(html).not.toContain("play8");
+    expect(html).not.toContain("play5");
   });
 });
 

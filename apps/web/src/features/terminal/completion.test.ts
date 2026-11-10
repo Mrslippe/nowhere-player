@@ -4,7 +4,9 @@ import {
   POPUP_LIMIT,
   activeItem,
   applyCompletion,
+  COMPLETION_DEBOUNCE_MS,
   charLength,
+  commandPrefix,
   decideKey,
   fromCharOffset,
   moveCompletion,
@@ -62,7 +64,7 @@ describe("弹层状态", () => {
     expect(openCompletion(completion([]))).toBeNull();
   });
 
-  it("最多显示 8 条，初始高亮第一条", () => {
+  it("最多显示 5 条，初始高亮第一条", () => {
     const many = Array.from({ length: 12 }, (_, index) =>
       item(`cmd${index}`),
     );
@@ -152,6 +154,21 @@ describe("采纳候选（只替换当前 token）", () => {
   });
 });
 
+describe("命令名位置（T-0043 §2C）", () => {
+  it("只在第一个词、光标在末尾时出候选", () => {
+    expect(commandPrefix("pl", 2)).toBe("pl");
+    expect(commandPrefix("", 0)).toBeNull();
+    expect(commandPrefix("play ", 5)).toBeNull();
+    expect(commandPrefix("play 1", 6)).toBeNull();
+    expect(commandPrefix("pl", 1)).toBeNull();
+    expect(commandPrefix("中", 1)).toBe("中");
+  });
+
+  it("debounce 不超过 80ms", () => {
+    expect(COMPLETION_DEBOUNCE_MS).toBeLessThanOrEqual(80);
+  });
+});
+
 describe("按键归属（T-0020 §11）", () => {
   it("弹层关闭时 Tab 请求补全，不改变输入", () => {
     const decision = decideKey("tab", "pl", null);
@@ -162,15 +179,28 @@ describe("按键归属（T-0020 §11）", () => {
     expect(decision.adopt).toBeNull();
   });
 
-  it("弹层打开时 Tab 循环高亮", () => {
+  it("弹层打开时 Tab 采纳第一条且不关闭列表", () => {
     const popup = openCompletion(
       completion([item("a"), item("b")]),
     )!;
 
-    const decision = decideKey("tab", "a", popup);
+    const decision = decideKey("tab", "pl", popup);
 
     expect(decision.requestCompletion).toBe(false);
-    expect(decision.popup?.activeIndex).toBe(1);
+    expect(decision.popup?.activeIndex).toBe(0);
+    expect(decision.adopt?.value).toBe("a pl");
+  });
+
+  it("Tab 采纳第一条，而不是当前高亮", () => {
+    const popup = openCompletion(
+      completion([item("play"), item("pause")], 0, 2),
+    )!;
+    const moved = moveCompletion(popup, 1);
+
+    const decision = decideKey("tab", "pl", moved);
+
+    expect(decision.adopt?.value).toBe("play ");
+    expect(decision.popup?.activeIndex).toBe(0);
   });
 
   it("弹层打开时 ↑/↓ 归弹层，不翻历史", () => {
@@ -192,15 +222,15 @@ describe("按键归属（T-0020 §11）", () => {
     expect(decideKey("arrow-down", "", null).historyStep).toBe(1);
   });
 
-  it("弹层打开时 Enter 采纳并关闭弹层", () => {
+  it("弹层打开时 Enter 执行当前输入、不采纳候选", () => {
     const popup = openCompletion(
       completion([item("a"), item("b")], 0, 1),
     )!;
     const decision = decideKey("enter", "a", popup);
 
-    expect(decision.submit).toBe(false);
+    expect(decision.submit).toBe(true);
     expect(decision.popup).toBeNull();
-    expect(decision.adopt?.value).toBe("a ");
+    expect(decision.adopt).toBeNull();
   });
 
   it("弹层关闭时 Enter 才是执行", () => {

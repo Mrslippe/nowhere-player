@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import type { Completion } from "../../../shared/command-bridge";
 import {
+  COMPLETION_DEBOUNCE_MS,
+  commandPrefix,
   decideKey,
   openCompletion,
   toCharOffset,
@@ -41,10 +43,10 @@ const PLACEHOLDER = "输入 help 查看命令，例如 play 1 / queue";
  * 用原生 `<input>`，IME 组合输入与候选框位置交给系统；不画假光标。
  * `›` 前缀只是视觉提示，不进入用户输入值。
  *
- * 交互归属（T-0020 §11）：
- * - Tab 请求 `cmd.complete`；有候选才弹层，无候选不改变输入；
- * - 弹层打开：`↑/↓` 移动高亮、`Tab` 循环、`Enter` 采纳、`Esc` 关闭；
- * - 弹层关闭：`↑/↓` 翻历史、`Enter` 执行。
+ * 交互归属（T-0043 §2C）：
+ * - 输入变化 debounce ≤80ms 自动请求；只在命令名位置出候选（最多 5 条）；
+ * - Tab：弹层打开时采纳第一条（不关闭），关闭时请求一次；
+ * - Enter：永远执行当前输入；`↑/↓` 翻历史（弹层打开时移动高亮）；`Esc` 关闭。
  */
 export function CommandInput({
   onSubmit,
@@ -54,6 +56,7 @@ export function CommandInput({
 }: CommandInputProps) {
   const [value, setValue] = useState("");
   const [popup, setPopup] = useState<CompletionPopupState | null>(null);
+  const [caret, setCaretState] = useState(0);
   const [history, setHistory] = useState<HistoryCursor>(() =>
     createHistoryCursor(
       initialHistory ?? (persistHistory ? loadHistory() : []),
@@ -62,6 +65,8 @@ export function CommandInput({
   const inputRef = useRef<HTMLInputElement | null>(null);
   /** 在途补全请求的代次：输入变化或新请求会作废旧结果。 */
   const requestRef = useRef(0);
+  /** Tab 采纳后本轮渲染不因输入变化立刻清掉列表（卡要求“不关闭列表”）。 */
+  const skipRealtimeRef = useRef(false);
 
   useEffect(() => {
     if (persistHistory) {
@@ -115,16 +120,39 @@ export function CommandInput({
       });
   };
 
+  useEffect(() => {
+    if (complete === undefined) {
+      return;
+    }
+    if (skipRealtimeRef.current) {
+      // 列表保持到下一次用户输入；否则 Tab 采纳后光标/选中事件会立刻关掉它。
+      return;
+    }
+    requestRef.current += 1;
+    if (commandPrefix(value, caret) === null) {
+      setPopup(null);
+      return;
+    }
+
+    const timer = globalThis.setTimeout(() => {
+      requestCompletion(value, caret);
+    }, COMPLETION_DEBOUNCE_MS);
+    return () => globalThis.clearTimeout(timer);
+  }, [value, caret, complete]);
+
   const change = (event: ChangeEvent<HTMLInputElement>): void => {
     requestRef.current += 1;
+    skipRealtimeRef.current = false;
     setPopup(null);
     setValue(event.target.value);
+    setCaretState(event.target.selectionStart ?? event.target.value.length);
   };
 
   const adopt = (adopted: { value: string; caret: number }): void => {
     requestRef.current += 1;
+    skipRealtimeRef.current = true;
     setValue(adopted.value);
-    setPopup(null);
+    setCaretState(adopted.caret);
     setCaret(adopted.caret);
   };
 
@@ -140,6 +168,12 @@ export function CommandInput({
     }
 
     const decision = decideKey(key, value, popup);
+
+    if (decision.submit) {
+      // Enter 执行当前输入；即使弹层打开也不采纳候选。
+      setPopup(null);
+      return;
+    }
 
     if (decision.requestCompletion) {
       event.preventDefault();
@@ -165,6 +199,7 @@ export function CommandInput({
       setHistory(moved.cursor);
       setValue(moved.value);
       setPopup(null);
+      setCaretState(moved.value.length);
       setCaret(moved.value.length);
       return;
     }
@@ -205,6 +240,9 @@ export function CommandInput({
         className="np-lab__input"
         value={value}
         onChange={change}
+        onSelect={(event) =>
+          setCaretState(event.currentTarget.selectionStart ?? 0)
+        }
         onKeyDown={keyDown}
         placeholder={PLACEHOLDER}
         aria-label="命令输入"
