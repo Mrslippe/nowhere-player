@@ -4737,12 +4737,12 @@ pub(crate) fn run_online_search_with_options(
             Err(_) => all_failed = true,
         }
 
-        let over_deadline = || clock().saturating_sub(started) > 2_500;
+        let over_deadline = || clock().saturating_sub(started) > 4_000;
 
         if bili_allowed && local.len() + online_tracks.len() < options.limit {
             // B：艺人 + 关键词。
             if over_deadline() {
-                notices.push("召回超过 2.5s，已停止后续通道".to_owned());
+                notices.push("召回超过 4s，已停止后续 B/C 通道".to_owned());
             } else {
                 let query = build_query(&options.keyword, Some(artist));
                 match online.search_all_for(
@@ -4770,59 +4770,43 @@ pub(crate) fn run_online_search_with_options(
 
         let mut d_resolution_failed = false;
         let mut d_blocked = false;
-        let mut d_deadline = false;
         if bili_allowed && local.len() + online_tracks.len() < options.limit {
-            // D：UP 空间检索；只解析一次、只发一次，412 不重试。
-            if over_deadline() {
-                notices.push("召回超过 2.5s，已停止后续空间检索".to_owned());
-                d_deadline = true;
-            } else {
-                match online.resolve_up(artist) {
-                    Ok(resolution) if resolution.same_name == 1 => {
-                        let name = resolution.name.as_deref().unwrap_or(artist);
-                        let remaining = options
-                            .limit
-                            .saturating_sub(local.len() + online_tracks.len())
-                            .max(1);
-                        if over_deadline() {
-                            notices.push("召回超过 2.5s，已停止空间检索".to_owned());
-                            d_deadline = true;
-                        } else {
-                            match online.up_archives(
-                                resolution.mid,
-                                name,
-                                &options.keyword,
-                                remaining,
-                            ) {
-                                Ok(tracks) => {
-                                    let (fetched, removed) = absorb_online_tracks(
-                                        options,
-                                        tracks,
-                                        &mut seen,
-                                        &mut online_tracks,
-                                    );
-                                    online_before += fetched;
-                                    online_removed += removed;
-                                }
-                                Err(error) => {
-                                    d_blocked = true;
-                                    notices.push(error.message);
-                                }
-                            }
+            // D：单请求、最高价值，不设超时守卫；只解析一次、只发一次，412 不重试。
+            match online.resolve_up(artist) {
+                Ok(resolution) if resolution.same_name == 1 => {
+                    let name = resolution.name.as_deref().unwrap_or(artist);
+                    let remaining = options
+                        .limit
+                        .saturating_sub(local.len() + online_tracks.len())
+                        .max(1);
+                    match online.up_archives(resolution.mid, name, &options.keyword, remaining) {
+                        Ok(tracks) => {
+                            let (fetched, removed) = absorb_online_tracks(
+                                options,
+                                tracks,
+                                &mut seen,
+                                &mut online_tracks,
+                            );
+                            online_before += fetched;
+                            online_removed += removed;
                         }
-                    }
-                    Ok(_) => {
-                        d_resolution_failed = true;
-                        notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
-                    }
-                    Err(error) => {
-                        d_resolution_failed = true;
-                        if error.message.contains("限流") || error.message.contains("412") {
+                        Err(error) => {
                             d_blocked = true;
                             notices.push(error.message);
-                        } else {
-                            notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
                         }
+                    }
+                }
+                Ok(_) => {
+                    d_resolution_failed = true;
+                    notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
+                }
+                Err(error) => {
+                    d_resolution_failed = true;
+                    if error.message.contains("限流") || error.message.contains("412") {
+                        d_blocked = true;
+                        notices.push(error.message);
+                    } else {
+                        notices.push("未能解析到该艺人对应的 UP，已退回普通搜索".to_owned());
                     }
                 }
             }
@@ -4833,11 +4817,10 @@ pub(crate) fn run_online_search_with_options(
             && local.len() + online_tracks.len() < options.limit
             && d_resolution_failed
             && !d_blocked
-            && !d_deadline
         {
             // C：仅艺人；标题仍要满足关键词约束。
             if over_deadline() {
-                notices.push("召回超过 2.5s，已停止后续通道".to_owned());
+                notices.push("召回超过 4s，已停止后续 B/C 通道".to_owned());
             } else {
                 match online.search_all_for(
                     artist,
@@ -8870,7 +8853,7 @@ mod tests {
     }
 
     #[test]
-    fn recall_stops_after_2_5s_and_reports() {
+    fn recall_stops_b_and_c_after_4s_but_still_tries_d() {
         let library = FakeLibraryApi::new();
         let online = ChannelOnline::new(
             HashMap::new(),
@@ -8884,7 +8867,7 @@ mod tests {
             if clock_calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 0
             } else {
-                3_000
+                5_000
             }
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
@@ -8902,11 +8885,12 @@ mod tests {
         );
 
         assert_eq!(online.calls(), vec![("花骨朵".to_owned(), None)]);
+        assert_eq!(online.resolve_calls.load(Ordering::SeqCst), 1);
         let blocks = emitted.lock().expect("emitted");
         let done = blocks.last().expect("done");
         assert!(done.outputs.iter().any(|output| matches!(
             output,
-            Output::Hint { text, .. } if text.contains("超过 2.5s")
+            Output::Hint { text, .. } if text.contains("超过 4s")
         )));
     }
 
