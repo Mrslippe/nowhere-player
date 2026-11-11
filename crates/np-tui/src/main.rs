@@ -178,17 +178,24 @@ impl App {
             return false;
         }
         let completion = complete_for(player, &self.input_text(), self.cursor);
-        let changed = self
-            .completion
-            .as_ref()
-            .map(|old| old.items.len() != completion.items.len())
-            .unwrap_or(false);
+        let changed = self.completion.as_ref().is_none_or(|old| {
+            old.items.len() != completion.items.len()
+                || old
+                    .items
+                    .iter()
+                    .zip(&completion.items)
+                    .any(|(left, right)| left.text != right.text)
+        }) && !completion.items.is_empty();
         self.completion = if completion.items.is_empty() {
             None
         } else {
             Some(completion)
         };
-        self.completion_index = 0;
+        if changed {
+            self.completion_index = 0;
+        } else if let Some(completion) = &self.completion {
+            self.completion_index = self.completion_index.min(completion.items.len() - 1);
+        }
         changed
     }
 
@@ -217,8 +224,13 @@ impl App {
         };
         let start = completion.replace_start.min(self.input.len());
         let end = completion.replace_end.min(self.input.len());
-        self.input.splice(start..end, item.text.chars());
-        self.cursor = start + item.text.chars().count();
+        let replacement = if item.kind == np_core::CompletionKind::Command {
+            format!("{} ", item.text.trim_end())
+        } else {
+            item.text.clone()
+        };
+        self.input.splice(start..end, replacement.chars());
+        self.cursor = start + replacement.chars().count();
         self.history_nav = false;
         self.last_edit = std::time::Instant::now();
         true
@@ -1204,6 +1216,17 @@ mod tests {
     }
 
     #[test]
+    fn np_app_completion_has_search_for_sea() {
+        let audio = TuiAudio::empty();
+        let completion = complete_for(&audio, "sea", 3);
+        assert!(
+            completion.items.iter().any(|item| item.text == "search"),
+            "{:?}",
+            completion.items
+        );
+    }
+
+    #[test]
     fn tab_accepts_highlighted_completion() {
         let mut app = App::new();
         app.input = "sea".chars().collect();
@@ -1219,8 +1242,8 @@ mod tests {
             }],
         });
         assert!(app.accept_completion());
-        assert_eq!(app.input_text(), "search");
-        assert_eq!(app.cursor, 6);
+        assert_eq!(app.input_text(), "search ");
+        assert_eq!(app.cursor, 7);
     }
 
     #[test]
