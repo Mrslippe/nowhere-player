@@ -199,7 +199,10 @@ export function applyStructure(
 
 /** 首屏默认结构：先写 plain 预设，主题到达后再覆盖。 */
 export function ensureDefaultStructure(root: ThemeRoot): Structure {
-  return applyStructure(root, "plain");
+  const structure = applyStructure(root, "plain");
+  root.dataset.scheme = "dark";
+  root.style.setProperty("color-scheme", "dark");
+  return structure;
 }
 
 /** `theme.apply` 的回执。 */
@@ -340,8 +343,11 @@ export function applyTheme(theme: ThemeApplyReply, env: ThemeEnvironment): strin
   env.root.dataset.skin = theme.skin === "phosphor" ? "phosphor" : "plain";
   env.root.dataset.theme = theme.id;
   applyStructure(env.root, env.root.dataset.skin as Skin, theme.structure);
-  // 四套主题都是暗色（DES-001）；同步 color-scheme，滚动条/表单控件跟随。
-  env.root.style.setProperty("color-scheme", "dark");
+
+  // T-0057b：scheme 由 bg 的 WCAG 相对亮度推导，不新增主题字段。
+  const scheme = schemeForBackground(theme.tokens?.bg ?? "");
+  env.root.dataset.scheme = scheme;
+  env.root.style.setProperty("color-scheme", scheme);
 
   return applied;
 }
@@ -356,7 +362,33 @@ export function resetToGraphite(env: ThemeEnvironment): void {
   env.root.dataset.theme = "graphite";
   env.root.dataset.skin = "plain";
   applyStructure(env.root, "plain");
+  env.root.dataset.scheme = "dark";
   env.root.style.setProperty("color-scheme", "dark");
+}
+
+/**
+ * WCAG 相对亮度（线性化 sRGB）：0 黑，1 白。
+ * 用于 T-0057b 的 scheme 推导；非不透明 hex 返回 null。
+ */
+export function relativeLuminanceHex(value: string): number | null {
+  const rgb = parseOpaqueColor(value);
+  if (rgb === null) {
+    return null;
+  }
+  const linear = [rgb.r, rgb.g, rgb.b].map((channel) => {
+    const s = channel / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+/**
+ * 亮/暗 scheme：按 bg 的 WCAG 相对亮度，阈值 0.5（>= 为 light）。
+ * #808080 的亮度约 0.2159，因此是 dark，而不是“看起来居中就算亮”。
+ */
+export function schemeForBackground(bg: string): "light" | "dark" {
+  const luminance = relativeLuminanceHex(bg);
+  return luminance !== null && luminance >= 0.5 ? "light" : "dark";
 }
 
 /** 解析不透明色（`#RGB` / `#RRGGBB`）；带 alpha 的形式返回 `null`（不参与对比度）。 */

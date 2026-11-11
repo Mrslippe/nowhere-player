@@ -45,6 +45,13 @@
   );
   --border-window-line: rgba(255, 255, 255, 0.08);
   --border-window-line-phosphor: rgba(255, 255, 255, 0.055);
+  /* T-0057b：亮色窗口边（墨环，顶部深、底部浅）。 */
+  --border-window-light: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.12),
+    rgba(0, 0, 0, 0.05)
+  );
+  --border-window-line-light: rgba(0, 0, 0, 0.12);
 
   /* ── 间距：4pt 网格 ───────────────────────────────── */
   --sp-1: 4px;

@@ -14,6 +14,8 @@ import "./skin/plain.css";
 import "./skin/phosphor.css";
 // T-0056：8 个结构轴只按 <html data-structure-*> 切分支。
 import "./structure.css";
+// T-0057b：亮色窗口边；深色仍走 skin 的 T-0052 白环。
+import "./scheme.css";
 
 import { installThemePersistence } from "../shared/theme";
 

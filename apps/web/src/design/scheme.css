@@ -1,0 +1,10 @@
+/*
+ * T-0057b：亮色 scheme 的窗口边。
+ *
+ * 深色完全沿用 T-0052 现有白环（不写 dark 覆盖，避免改变任何暗色像素）。
+ * 亮色用墨环，顶部深、底部浅，模拟纸张边缘。
+ */
+:root[data-scheme="light"] {
+  --np-border-window: var(--border-window-light);
+  --np-border-window-line: 1px solid var(--border-window-line-light);
+}

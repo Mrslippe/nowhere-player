@@ -22,7 +22,9 @@ import {
   isThemeApplyReply,
   isThemeColor,
   listThemes,
+  relativeLuminanceHex,
   resolveStructure,
+  schemeForBackground,
   loadSelectedThemeId,
   resetThemeLoader,
   saveSelectedThemeId,
@@ -167,6 +169,7 @@ describe("主题加载器", () => {
     expect(fake.style.get("--fg-muted")).toBe("#cccccc");
     expect(fake.style.get("--line-strong")).toBe("rgba(255, 255, 255, 0.14)");
     expect(fake.style.get("color-scheme")).toBe("dark");
+    expect(fake.dataset.scheme).toBe("dark");
     expect(fake.dataset.skin).toBe("plain");
     expect(fake.dataset.theme).toBe("my-theme");
     // 14 个 token 全写进去。
@@ -182,6 +185,29 @@ describe("主题加载器", () => {
       structureStripe: "off",
       structureFont: "mixed",
     });
+  });
+
+  it("scheme：亮色 bg 写 data-scheme=light / color-scheme=light", async () => {
+    const fake = fakeEnvironment();
+    await applyThemeById("paper", {
+      env: fake.env,
+      transport: transportFor(
+        makeReply({ id: "paper", tokens: { ...TOKENS, bg: "#f2efe9" } }),
+      ),
+    });
+
+    expect(fake.dataset.scheme).toBe("light");
+    expect(fake.style.get("color-scheme")).toBe("light");
+  });
+
+  it("scheme：阈值 0.5；#808080 的 WCAG 亮度约 0.216，判 dark", () => {
+    expect(schemeForBackground("#000000")).toBe("dark");
+    expect(schemeForBackground("#ffffff")).toBe("light");
+    expect(schemeForBackground("#f2efe9")).toBe("light");
+    expect(relativeLuminanceHex("#808080")).toBeCloseTo(0.2158605, 6);
+    expect(schemeForBackground("#808080")).toBe("dark");
+    // 非不透明 hex 不猜，按 dark 兜底。
+    expect(schemeForBackground("rgba(0, 0, 0, 0.5)")).toBe("dark");
   });
 
   it("structure：合法值覆盖、非法轴逐项回落 skin 预设", () => {
@@ -236,7 +262,9 @@ describe("主题加载器", () => {
       structureLabels: "sentence",
       structureStripe: "off",
       structureFont: "mixed",
+      scheme: "dark",
     });
+    expect(fake.style.get("color-scheme")).toBe("dark");
   });
 
   it("structure：labels=tracked，reverse+stripe 强制 off，blocks+mixed 回退 line", () => {
