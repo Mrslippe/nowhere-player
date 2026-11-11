@@ -4,6 +4,7 @@
 //! 是 ARCH-006 约定的扩展点（独占后端、在线音源、位完美直通）。
 
 mod engine;
+mod tap;
 
 pub mod error;
 pub mod format;
@@ -22,6 +23,7 @@ pub use sink::{
     AudioSink, CpalDevices, CpalSharedSink, DeviceInfo, DeviceProvider, DeviceSignature, RenderFn,
 };
 pub use source::{AudioSource, FileSource};
+pub use tap::{SampleTapHandle, TAP_CAPACITY};
 pub use volume::{clamp_volume, gain_for_volume};
 
 use std::path::Path;
@@ -32,14 +34,22 @@ use std::path::Path;
 /// 内部只经原子变量通信，不会阻塞音频回调。
 pub struct Player {
     engine: engine::Engine,
+    tap: SampleTapHandle,
 }
 
 impl Player {
     /// 打开 `path`，协商设备格式并启动输出流。
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AudioError> {
+        let (tap_writer, tap) = tap::create(48_000);
         Ok(Self {
-            engine: engine::Engine::start(path.as_ref())?,
+            engine: engine::Engine::start(path.as_ref(), tap_writer)?,
+            tap,
         })
+    }
+
+    /// 只读样本 tap；供频谱等可视化读取，不改变播放路径。
+    pub fn sample_tap(&self) -> SampleTapHandle {
+        self.tap.clone()
     }
 
     /// 开始 / 继续播放。

@@ -118,6 +118,7 @@ pub(crate) struct Renderer {
     handled_epoch: u64,
     /// Seek generation currently fading out / waiting for the decoder.
     fade_epoch: Option<u64>,
+    tap: Option<crate::tap::SampleTapWriter>,
 }
 
 impl Renderer {
@@ -127,6 +128,7 @@ impl Renderer {
         channels: usize,
         sample_rate: u32,
         software_gain: bool,
+        tap: Option<crate::tap::SampleTapWriter>,
     ) -> Self {
         let fade_frames = sample_rate as f32 * FADE_MS as f32 / 1000.0;
         Self {
@@ -138,10 +140,18 @@ impl Renderer {
             gain: 0.0,
             handled_epoch: 0,
             fade_epoch: None,
+            tap,
         }
     }
 
     fn render(&mut self, out: &mut [f32]) {
+        self.render_inner(out);
+        if let Some(tap) = &self.tap {
+            tap.write_interleaved(out, self.channels);
+        }
+    }
+
+    fn render_inner(&mut self, out: &mut [f32]) {
         let frames = out.len() / self.channels;
         if frames == 0 {
             return;
@@ -294,7 +304,7 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-    pub fn start(path: &Path) -> Result<Self, AudioError> {
+    pub fn start(path: &Path, tap_writer: crate::tap::SampleTapWriter) -> Result<Self, AudioError> {
         let source = FileSource::open(path)?;
         let source_format = source.format();
         let duration_ms = source.duration_ms();
@@ -316,6 +326,7 @@ impl Engine {
             output_format.frame_samples(),
             output_format.sample_rate,
             plan.gain,
+            Some(tap_writer),
         );
         let mut sink: Box<dyn AudioSink> = Box::new(cpal_sink);
         sink.open(
@@ -631,7 +642,14 @@ mod tests {
     ) -> (Renderer, RingProducer, Arc<Shared>) {
         let (producer, consumer) = ring::spsc(capacity_frames * CHANNELS);
         let shared = Arc::new(Shared::new());
-        let renderer = Renderer::new(consumer, Arc::clone(&shared), CHANNELS, RATE, software_gain);
+        let renderer = Renderer::new(
+            consumer,
+            Arc::clone(&shared),
+            CHANNELS,
+            RATE,
+            software_gain,
+            None,
+        );
         (renderer, producer, shared)
     }
 

@@ -8,22 +8,29 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod audio;
+mod cover;
+mod fft;
+
+use audio::TuiAudio;
+use cover::CoverView;
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use fft::{level_char, spectrum};
 use np_app::{
     Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services,
     execute_with_services,
 };
-use np_core::{Block, BlockStatus, Output, PlaybackState, QueueView, Span, SpanColor, Tone};
+use np_core::{Block, BlockStatus, Output, Span, SpanColor, Tone};
 use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span as TuiSpan},
     widgets::{Block as TuiBlock, Borders, Paragraph, Wrap},
@@ -48,57 +55,6 @@ const PALETTE: Palette = Palette {
     danger: Color::Rgb(0xff, 0x8b, 0x7d),
 };
 
-/// 骨架阶段没有音频；所有播放调用都返回空闲状态。
-struct NullPlayer;
-
-impl PlayerApi for NullPlayer {
-    fn snapshot(&self) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn play(&self, _path: Option<String>) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn pause(&self) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn resume(&self) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn next(&self) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn prev(&self) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn seek(&self, _position_ms: u64) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn volume(&self, _volume: f32) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn mode(&self, _mode: np_core::PlaybackMode) -> Result<PlaybackState, np_app::CmdError> {
-        Ok(PlaybackState::default())
-    }
-    fn queue_list(&self) -> Result<QueueView, np_app::CmdError> {
-        Ok(QueueView {
-            tracks: Vec::new(),
-            index: None,
-        })
-    }
-    fn queue_add(&self, _paths: Vec<String>) -> Result<QueueView, np_app::CmdError> {
-        self.queue_list()
-    }
-    fn queue_remove(&self, _index: usize) -> Result<QueueView, np_app::CmdError> {
-        self.queue_list()
-    }
-    fn queue_clear(&self) -> Result<QueueView, np_app::CmdError> {
-        self.queue_list()
-    }
-    fn queue_jump(&self, _index: usize) -> Result<QueueView, np_app::CmdError> {
-        self.queue_list()
-    }
-}
-
 struct App {
     input: Vec<char>,
     cursor: usize,
@@ -108,6 +64,10 @@ struct App {
     scroll: u16,
     auto_scroll: bool,
     status: String,
+    panel_visible: bool,
+    immersive: bool,
+    spectrum: Vec<f32>,
+    spectrum_generation: u64,
 }
 
 impl App {
@@ -121,6 +81,10 @@ impl App {
             scroll: 0,
             auto_scroll: true,
             status: "就绪".to_owned(),
+            panel_visible: true,
+            immersive: false,
+            spectrum: vec![0.0; 16],
+            spectrum_generation: 0,
         }
     }
 
@@ -264,7 +228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache_dir,
         data_dir,
     });
-    let player = NullPlayer;
+    let mut player = TuiAudio::from_env();
     let mut app = App::new();
 
     enable_raw_mode()?;
@@ -272,11 +236,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    terminal.draw(|frame| draw(frame, &mut app))?;
+    let cover_path = std::env::var_os("NP_TUI_COVER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/cover.jpg"));
+    let mut cover = CoverView::load(&cover_path);
+    terminal.draw(|frame| draw(frame, &mut app, &player, &mut cover))?;
     if let Ok(path) = std::env::var("NP_TUI_STARTUP_FILE") {
         std::fs::write(path, started.elapsed().as_millis().to_string())?;
     }
-    let result = run(&mut terminal, &mut app, &player, &library);
+    let result = run(&mut terminal, &mut app, &mut player, &mut cover, &library);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -291,51 +259,124 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-    player: &dyn PlayerApi,
+    player: &mut TuiAudio,
+    cover: &mut CoverView,
     library: &dyn LibraryApi,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: std::error::Error + 'static,
 {
+    let mut draw_needed = true;
     loop {
-        terminal.draw(|frame| draw(frame, app))?;
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if draw_needed {
+            update_spectrum(app, player);
+            terminal.draw(|frame| draw(frame, app, player, cover))?;
+            draw_needed = false;
+        }
+        let timeout = if player.is_playing() {
+            std::time::Duration::from_millis(50)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Esc => return Ok(()),
-                    KeyCode::Enter => {
-                        let input = app.input_text();
-                        app.run(input, player, library);
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('b') | KeyCode::Char('B'))
+                    {
+                        app.panel_visible = !app.panel_visible;
+                        draw_needed = true;
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
+                    {
+                        app.immersive = !app.immersive;
+                        draw_needed = true;
+                    } else {
+                        match key.code {
+                            KeyCode::Esc => {
+                                if app.immersive {
+                                    app.immersive = false;
+                                    draw_needed = true;
+                                } else {
+                                    return Ok(());
+                                }
+                            }
+                            KeyCode::Enter => {
+                                let input = app.input_text();
+                                app.run(input, player, library);
+                                draw_needed = true;
+                            }
+                            KeyCode::Char(' ') if app.input.is_empty() => {
+                                player.toggle();
+                                draw_needed = true;
+                            }
+                            KeyCode::Char(character) => {
+                                app.insert(character);
+                                draw_needed = true;
+                            }
+                            KeyCode::Backspace => {
+                                app.backspace();
+                                draw_needed = true;
+                            }
+                            KeyCode::Left => {
+                                app.left();
+                                draw_needed = true;
+                            }
+                            KeyCode::Right => {
+                                app.right();
+                                draw_needed = true;
+                            }
+                            KeyCode::Up => {
+                                app.history_up();
+                                draw_needed = true;
+                            }
+                            KeyCode::Down => {
+                                app.history_down();
+                                draw_needed = true;
+                            }
+                            KeyCode::PageUp => {
+                                app.scroll = app.scroll.saturating_sub(5);
+                                app.auto_scroll = false;
+                                draw_needed = true;
+                            }
+                            KeyCode::PageDown => {
+                                app.scroll = app.scroll.saturating_add(5);
+                                app.auto_scroll = false;
+                                draw_needed = true;
+                            }
+                            _ => {}
+                        }
                     }
-                    KeyCode::Char(character) => app.insert(character),
-                    KeyCode::Backspace => app.backspace(),
-                    KeyCode::Left => app.left(),
-                    KeyCode::Right => app.right(),
-                    KeyCode::Up => app.history_up(),
-                    KeyCode::Down => app.history_down(),
-                    KeyCode::PageUp => {
-                        app.scroll = app.scroll.saturating_sub(5);
-                        app.auto_scroll = false;
-                    }
-                    KeyCode::PageDown => {
-                        app.scroll = app.scroll.saturating_add(5);
-                        app.auto_scroll = false;
-                    }
-                    _ => {}
-                },
+                }
                 Event::Paste(text) => {
                     for character in text.chars() {
                         app.insert(character);
                     }
+                    draw_needed = true;
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => draw_needed = true,
                 _ => {}
             }
+        } else if player.is_playing() {
+            draw_needed = true;
         }
     }
 }
 
-fn draw(frame: &mut ratatui::Frame, app: &mut App) {
+fn update_spectrum(app: &mut App, player: &TuiAudio) {
+    let Some(tap) = player.tap() else {
+        return;
+    };
+    if tap.generation() == app.spectrum_generation {
+        return;
+    }
+    let mut samples = vec![0.0f32; 2048];
+    tap.latest(&mut samples);
+    app.spectrum = spectrum(&samples, tap.sample_rate(), 16);
+    app.spectrum_generation = tap.generation();
+}
+
+fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mut CoverView) {
     let area = frame.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -359,28 +400,20 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg));
     frame.render_widget(title, rows[0]);
 
-    let lines = all_lines(app);
-    let output_height = rows[1].height.saturating_sub(2);
-    let max_scroll = lines.len().saturating_sub(output_height as usize) as u16;
-    if app.auto_scroll {
-        app.scroll = max_scroll;
+    if app.immersive {
+        draw_panel(frame, rows[1], app, player, cover, true);
+    } else if app.panel_visible {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(24), Constraint::Length(28)])
+            .split(rows[1]);
+        draw_output(frame, body[0], app);
+        draw_panel(frame, body[1], app, player, cover, false);
     } else {
-        app.scroll = app.scroll.min(max_scroll);
+        draw_output(frame, rows[1], app);
     }
-    let output = Paragraph::new(lines)
-        .block(
-            TuiBlock::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(PALETTE.muted))
-                .title(" 输出 "),
-        )
-        .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg))
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll, 0));
-    frame.render_widget(output, rows[1]);
 
-    let input_line = input_line(app);
-    let input = Paragraph::new(input_line)
+    let input = Paragraph::new(input_line(app))
         .block(
             TuiBlock::default()
                 .borders(Borders::ALL)
@@ -397,13 +430,233 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let cursor_y = rows[2].y.saturating_add(1);
     frame.set_cursor_position((cursor_x, cursor_y));
 
+    let panel_hint = if app.panel_visible {
+        "Ctrl+B 隐藏面板"
+    } else {
+        "Ctrl+B 显示面板"
+    };
     let status = Paragraph::new(format!(
-        " {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · PgUp/PgDn 滚动 · Esc 退出 ",
+        " {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出 ",
         app.status,
-        app.input.len()
+        app.input.len(),
+        panel_hint
     ))
     .style(Style::default().bg(PALETTE.bg).fg(PALETTE.muted));
     frame.render_widget(status, rows[3]);
+}
+
+fn draw_output(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let lines = all_lines(app);
+    let output_height = area.height.saturating_sub(2);
+    let max_scroll = lines.len().saturating_sub(output_height as usize) as u16;
+    if app.auto_scroll {
+        app.scroll = max_scroll;
+    } else {
+        app.scroll = app.scroll.min(max_scroll);
+    }
+    let output = Paragraph::new(lines)
+        .block(
+            TuiBlock::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(PALETTE.muted))
+                .title(" 输出 "),
+        )
+        .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg))
+        .wrap(Wrap { trim: false })
+        .scroll((app.scroll, 0));
+    frame.render_widget(output, area);
+}
+
+fn draw_panel(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    player: &TuiAudio,
+    cover: &mut CoverView,
+    immersive: bool,
+) {
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(PALETTE.muted))
+        .title(format!(" 播放 · {} ", cover.protocol()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 4 || inner.height < 4 {
+        return;
+    }
+
+    let cover_height = if immersive {
+        inner.height.saturating_mul(6) / 10
+    } else {
+        (inner.width / 2)
+            .min(8)
+            .min(inner.height.saturating_sub(8))
+            .max(4)
+    };
+    let cover_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: if immersive {
+            inner.width.saturating_mul(6) / 10
+        } else {
+            inner.width
+        },
+        height: cover_height,
+    };
+    cover.render(cover_area, frame);
+
+    let text_x = if immersive {
+        cover_area.x + cover_area.width + 2
+    } else {
+        inner.x
+    };
+    let text_width = if immersive {
+        inner.width.saturating_sub(cover_area.width + 2)
+    } else {
+        inner.width
+    };
+    let mut y = if immersive {
+        inner.y
+    } else {
+        inner.y + cover_height
+    };
+    let title = truncate_width(player.title(), text_width as usize);
+    let artist = truncate_width(player.artist(), text_width as usize);
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Line::from(TuiSpan::styled(
+                title,
+                Style::default().fg(PALETTE.fg).add_modifier(Modifier::BOLD),
+            ))),
+            Rect {
+                x: text_x,
+                y,
+                width: text_width,
+                height: 1,
+            },
+        );
+        y += 1;
+    }
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Line::from(TuiSpan::styled(
+                artist,
+                Style::default().fg(PALETTE.muted),
+            ))),
+            Rect {
+                x: text_x,
+                y,
+                width: text_width,
+                height: 1,
+            },
+        );
+        y += 1;
+    }
+
+    // Spectrum: one char per band, several rows so it reads as bars.
+    let spectrum_rows = 4u16.min(inner.height / 4).max(1);
+    if y < inner.y + inner.height {
+        for row in 0..spectrum_rows {
+            let threshold = 1.0 - row as f32 / spectrum_rows.max(1) as f32;
+            let text: String = app_spectrum_chars(&app.spectrum, threshold, inner.width as usize);
+            frame.render_widget(
+                Paragraph::new(Line::from(TuiSpan::styled(
+                    text,
+                    Style::default().fg(PALETTE.accent),
+                ))),
+                Rect {
+                    x: text_x,
+                    y,
+                    width: text_width,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+    }
+
+    let duration = player.duration_ms().unwrap_or(0);
+    let position = player.position_ms().min(duration);
+    let ratio = if duration == 0 {
+        0.0
+    } else {
+        position as f64 / duration as f64
+    };
+    let bar_width = text_width.saturating_sub(14).max(4) as usize;
+    let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
+    let progress = format!(
+        "{}{}  {} / {}",
+        "▮".repeat(filled),
+        "▯".repeat(bar_width.saturating_sub(filled)),
+        format_time(position),
+        format_time(duration)
+    );
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Line::from(TuiSpan::styled(
+                progress,
+                Style::default().fg(PALETTE.fg),
+            ))),
+            Rect {
+                x: text_x,
+                y,
+                width: text_width,
+                height: 1,
+            },
+        );
+        y += 1;
+    }
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Line::from(TuiSpan::styled(
+                "◀◀   ▶   ▶▶",
+                Style::default().fg(PALETTE.accent),
+            ))),
+            Rect {
+                x: text_x,
+                y,
+                width: text_width,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn app_spectrum_chars(values: &[f32], threshold: f32, width: usize) -> String {
+    values
+        .iter()
+        .take(width)
+        .map(|value| {
+            if *value >= threshold {
+                level_char(*value)
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
+fn format_time(ms: u64) -> String {
+    let seconds = ms / 1000;
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn truncate_width(value: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= width {
+        return value.to_owned();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let char_width = UnicodeWidthStr::width(character.to_string().as_str());
+        if used + char_width + 1 > width {
+            break;
+        }
+        out.push(character);
+        used += char_width;
+    }
+    out.push('…');
+    out
 }
 
 fn input_width_before(app: &App) -> usize {
@@ -644,7 +897,11 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::new();
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
         let compact = rendered.replace(' ', "");

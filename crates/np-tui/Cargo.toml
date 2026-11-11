@@ -8,7 +8,10 @@ publish = false
 
 [dependencies]
 np-app = { path = "../np-app" }
+np-audio = { path = "../np-audio" }
 np-core = { path = "../np-core" }
 ratatui = "0.30.1"
 crossterm = "0.29"
 unicode-width = "0.2"
+ratatui-image = { version = "11.1", default-features = false, features = ["image-defaults", "crossterm"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
