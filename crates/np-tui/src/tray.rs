@@ -9,7 +9,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     Show,
     Toggle,
@@ -41,6 +41,15 @@ unsafe extern "system" {
 
 const WM_QUIT: u32 = 0x0012;
 const SW_RESTORE: i32 = 9;
+
+fn media_action(code: Code) -> Option<TrayAction> {
+    match code {
+        Code::MediaPlayPause => Some(TrayAction::Toggle),
+        Code::MediaTrackNext => Some(TrayAction::Next),
+        Code::MediaTrackPrevious => Some(TrayAction::Prev),
+        _ => None,
+    }
+}
 
 pub fn spawn(sender: Sender<TrayAction>) {
     std::thread::spawn(move || run(sender));
@@ -90,9 +99,21 @@ fn run(sender: Sender<TrayAction>) {
                 Some(Modifiers::CONTROL | Modifiers::ALT),
                 TrayAction::Next,
             ),
-            (Code::MediaPlayPause, None, TrayAction::Toggle),
-            (Code::MediaTrackNext, None, TrayAction::Next),
-            (Code::MediaTrackPrevious, None, TrayAction::Prev),
+            (
+                Code::MediaPlayPause,
+                None,
+                media_action(Code::MediaPlayPause).unwrap_or(TrayAction::Toggle),
+            ),
+            (
+                Code::MediaTrackNext,
+                None,
+                media_action(Code::MediaTrackNext).unwrap_or(TrayAction::Next),
+            ),
+            (
+                Code::MediaTrackPrevious,
+                None,
+                media_action(Code::MediaTrackPrevious).unwrap_or(TrayAction::Prev),
+            ),
         ] {
             let hotkey = HotKey::new(modifiers, code);
             if manager.register(hotkey).is_err() {
@@ -179,4 +200,19 @@ fn icon_rgba() -> Vec<u8> {
         }
     }
     pixels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_keys_map_to_queue_and_toggle() {
+        assert_eq!(media_action(Code::MediaPlayPause), Some(TrayAction::Toggle));
+        assert_eq!(media_action(Code::MediaTrackNext), Some(TrayAction::Next));
+        assert_eq!(
+            media_action(Code::MediaTrackPrevious),
+            Some(TrayAction::Prev)
+        );
+    }
 }
