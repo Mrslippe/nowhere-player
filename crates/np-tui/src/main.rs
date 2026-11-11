@@ -919,6 +919,11 @@ fn draw_panel(
     let block = TuiBlock::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.palette.line))
+        .style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        )
         .title(format!(" 播放 · {} ", cover.protocol()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -941,7 +946,16 @@ fn draw_panel(
         },
         height: cover_height,
     };
-    cover.render(cover_area, frame);
+    // 主题模式下先铺封面区域的底色，避免 Placeholder / Sixel 未就绪时出现黑块。
+    if let Some(bg) = app.palette.bg {
+        let fill = " ".repeat(cover_area.width as usize);
+        let lines = vec![Line::from(fill); cover_area.height as usize];
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(bg)),
+            cover_area,
+        );
+    }
+    cover.render(cover_area, frame, app.palette.faint, app.palette.bg);
 
     let text_x = if immersive {
         cover_area.x + cover_area.width + 2
@@ -965,6 +979,7 @@ fn draw_panel(
             Paragraph::new(Line::from(TuiSpan::styled(
                 title,
                 Style::default()
+                    .bg(app.palette.bg.unwrap_or(Color::Reset))
                     .fg(app.palette.fg)
                     .add_modifier(Modifier::BOLD),
             ))),
@@ -981,7 +996,9 @@ fn draw_panel(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 artist,
-                Style::default().fg(app.palette.muted),
+                Style::default()
+                    .bg(app.palette.bg.unwrap_or(Color::Reset))
+                    .fg(app.palette.muted),
             ))),
             Rect {
                 x: text_x,

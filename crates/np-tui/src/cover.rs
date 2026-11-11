@@ -77,7 +77,13 @@ impl CoverView {
         updated
     }
 
-    pub fn render(&mut self, area: Rect, frame: &mut ratatui::Frame) {
+    pub fn render(
+        &mut self,
+        area: Rect,
+        frame: &mut ratatui::Frame,
+        foreground: ratatui::style::Color,
+        background: Option<ratatui::style::Color>,
+    ) {
         if area.width < 2 || area.height < 2 {
             return;
         }
@@ -94,7 +100,11 @@ impl CoverView {
                 crate::glyphs::COVER_FILL,
                 crate::glyphs::COVER_FILL,
             ))
-            .style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+            .style(
+                ratatui::style::Style::default()
+                    .fg(foreground)
+                    .bg(background.unwrap_or(ratatui::style::Color::Reset)),
+            );
             let inner = Rect {
                 x: area.x,
                 y: area.y + 1,
