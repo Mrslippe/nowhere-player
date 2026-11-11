@@ -148,8 +148,8 @@
   .np-progress:not([data-indeterminate="true"]),
 :root[data-structure-progress="bracket"][data-structure-font="mono"]
   .np-progress:not([data-indeterminate="true"]) {
-  height: auto;
-  min-height: var(--np-density-line-dense);
+  /* 保持 track 自身高度；glyph 用绝对层覆盖它，不参与流式排版。 */
+  overflow: visible;
   background: none;
 }
 
@@ -168,8 +168,10 @@
 :root[data-structure-progress="bracket"][data-structure-font="mono"]
   .np-progress:not([data-indeterminate="true"])
   .np-progress__glyphs {
-  position: relative;
-  display: inline-block;
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: visible;
   color: var(--fg-faint);
   font-family: var(--np-font-mono);
   font-size: var(--fs-11);
@@ -180,28 +182,52 @@
 
 :root[data-structure-progress="blocks"][data-structure-font="mono"]
   .np-progress__glyphs::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max-content;
+  height: auto;
+  line-height: 1;
+  transform: translate(-50%, -50%);
   content: "▱▱▱▱▱▱▱▱▱▱";
 }
 
 :root[data-structure-progress="blocks"][data-structure-font="mono"]
   .np-progress__glyphs::after {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  width: max-content;
+  height: auto;
+  line-height: 1;
   color: var(--fg-muted);
+  transform: translate(-50%, -50%);
   content: "▰▰▰▰▰▰▰▰▰▰";
   clip-path: inset(0 calc((1 - var(--np-progress)) * 100%) 0 0);
 }
 
 :root[data-structure-progress="bracket"][data-structure-font="mono"]
   .np-progress__glyphs::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max-content;
+  height: auto;
+  line-height: 1;
+  transform: translate(-50%, -50%);
   content: "[▱▱▱▱▱▱▱▱]";
 }
 
 :root[data-structure-progress="bracket"][data-structure-font="mono"]
   .np-progress__glyphs::after {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  width: max-content;
+  height: auto;
+  line-height: 1;
   color: var(--fg-muted);
+  transform: translate(-50%, -50%);
   content: "[▰▰▰▰▰▰▰▰]";
   clip-path: inset(0 calc((1 - var(--np-progress)) * 100%) 0 0);
 }
