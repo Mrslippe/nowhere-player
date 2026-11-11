@@ -1356,6 +1356,20 @@ fn draw_help(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         width,
         height,
     };
+    if app.palette.bg.is_some() && area.width >= 60 {
+        let shadow = Rect {
+            x: overlay.x.saturating_add(2),
+            y: overlay.y.saturating_add(1),
+            width: overlay.width.min(area.width.saturating_sub(overlay.x + 2)),
+            height: overlay
+                .height
+                .min(area.height.saturating_sub(overlay.y + 1)),
+        };
+        frame.render_widget(
+            TuiBlock::default().style(Style::default().bg(Color::Black)),
+            shadow,
+        );
+    }
     frame.render_widget(Clear, overlay);
     let block = TuiBlock::default()
         .borders(Borders::ALL)
