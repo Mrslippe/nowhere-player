@@ -1,7 +1,7 @@
 ---
 id: ADR-0006
 title: TUI 宿主与渲染栈
-status: proposed
+status: accepted
 owner: 架构师
 updated: 2026-11-11
 tags: [adr, tui, architecture]
@@ -120,15 +120,25 @@ related: [ADR-0003, DES-007, DES-008, ARCH-007]
 
 ---
 
-## 6. 验证方式
+## 6. 验证结果（T-0058 spike，2026-11-11）
 
-**先 spike，后承诺**：
+**通过。** 实测（Windows Terminal + Release 构建）：
 
-1. 300 行 demo：表格 + 输入行 + 真实封面（`ratatui-image`）+ 中文混排；
-2. 在 Windows Terminal 里运行并截图；
-3. 验收：封面可辨、中英对齐、输入法可用、内存 < 50MB。
+| 项 | 目标 | 实测 |
+|---|---|---:|
+| `Picker` 协议 | 需 Sixel | **Sixel** ✅ |
+| 常驻内存 | <50MB | **9.53 MiB** ✅ |
+| 首帧启动 | <100ms | **44–56ms** ✅ |
+| 中文输入法 | 候选窗正确 | 候选窗在输入行下方，上屏正常 ✅ |
+| 封面 | 能认出真实图 | **可辨**（Sixel，像素化但认得出）✅ |
 
-**spike 不通过 → 回退到 xterm 路线（ADR-0006 作废）。**
+对比现有 Tauri：**412MB → 9.5MB（1/43），秒级 → 44ms。**
+
+**边界（需记录）**：
+
+- 封面在 TUI 中为 **Sixel 像素化观感**，不是 WebView 那种锐利缩放——这是 TUI 图像的正常边界。
+- **彩色 emoji 不可用**：Windows Terminal 当前字体没有彩色 emoji glyph，`🎵` 会显示缺字方块；demo 改用 `♪`。要用 emoji 须先确认字体/终端支持。
+- 以上均为 Windows Terminal 环境；老 conhost 会退回 halfblock。
 
 ---
 
