@@ -245,3 +245,72 @@ related: [DES-007, ARCH-007]
 2. 打包 **一套一个字重**：`sarasa-mono-web`（2.4 MB）优先；若中文覆盖不足，退 `@mogeko/maple-mono-cn`（9.5 MB）。
 3. 引入前必须验证三件事：**中文覆盖**（生僻字）、**2:1 比例**（`晴` vs `A`）、**许可证**（MIT/OFL 都可商用，但要保留声明）。
 4. Windows 上可零成本退化到 `SimSun`（2:1、简体），但宋体观感与等宽拉丁不协调——**只作兜底**。
+
+---
+
+## 8. 二次调研：TUI 框架选型（2026-11-11）
+
+来源：[《TUI 的繁荣与选型》](https://www.cnblogs.com/xietianjiao/p/20267070)（博客园，2026-06）
+
+### 8.1 文章给的关键数字
+
+| 维度 | Bubble Tea (Go) | **Ratatui (Rust)** | Textual (Py) | Ink (JS) |
+|---|---|---|---|---|
+| 启动 | ~30ms | **<10ms** | ~250ms | ~200ms |
+| 内存 | ~45MB | **~12MB** | ~120MB | ~100MB+ |
+| 二进制 | ~8MB | **~2.5MB** | 需 Py | 需 Node |
+| 图片 | Sixel/Kitty | Sixel/Kitty/**Halfblock** | 三套 | 有限 |
+| Web 运行 | ❌ | ✅ **ratzilla (WASM)** | ✅ serve | ✅ |
+
+**AI TUI 应用现状**：Claude Code / Codex / Gemini CLI / Copilot CLI 全用 **Ink**（200–400MB、启动 2–5s）；**OpenCode 用自研 OpenTUI（Zig）**；Crush 用 Bubble Tea。
+
+**对我们的意义**：我们现在是 Tauri + WebView2（Chromium），常驻内存**远比 TUI 重**。而产品定位是「**常驻桌面**的播放器」——**内存与启动速度直接影响「常驻」这个卖点**。
+
+### 8.2 我上一轮说错的地方
+
+我说过「只有 xterm 或 DOM 模拟两条路」——**错了**。存在第三条：
+
+**Ratzilla：Ratatui → WASM → 浏览器渲染。**
+
+来源：[docs.rs/ratzilla](https://docs.rs/ratzilla/latest/ratzilla/)（v0.3.1，MIT/Apache）
+
+API 暴露的能力正好是我们纠结的那几项：
+
+| 能力 | Ratzilla 提供 |
+|---|---|
+| 渲染后端 | **DomBackend / CanvasBackend / WebGl2Backend**（WebGL 用字体图集，边缘最锐） |
+| **单元格选择** | `SelectionMode` 枚举 —— **选择是渲染器的一等概念** |
+| **光标** | `CursorShape` —— 光标形状可控 |
+| 事件 | `on_key_event` |
+| 布局/组件 | 直接用 Ratatui 全套（`Block` / `Table` / `Paragraph` / `Gauge` …） |
+
+**这意味着**：字符选择、光标、滚动语义**不用我们手写**——它们和 xterm 一样属于渲染器，只不过这次是 Ratatui 生态的。
+
+### 8.3 四条路线（修正后的全谱）
+
+| 路线 | 渲染 | 选择/光标 | 中文输入法 | 工作量 | 风险 |
+|---|---|---|---|---|---|
+| **A. DOM 模拟**（现状+改进） | CSS | 自研 | 原生（已知） | 2 周 | 交互永远差一点 |
+| **B. xterm.js**（lab 已有） | 终端缓冲 | **免费** | 走终端路径 | 3 周 | 需把 Block 映射成 ANSI |
+| **C. Ratzilla**（新发现） | DOM/Canvas/WebGL | **免费** | **未知** | 4 周 | WASM 工具链 + IPC 桥接 |
+| **D. Ratatui 原生**（真 TUI 程序） | 终端 | 免费 | 依赖终端 | 3 周 | 需要终端宿主，装不进桌面窗 |
+
+### 8.4 Ratzilla 的两个现实疑问（必须先验）
+
+1. **IPC**：UI 变成 WASM 后，怎么调我们现有的 Tauri 命令？
+   - 可能路径：WASM → JS `invoke` → Rust；或把命令层也编进 WASM（但文件/音频必须留在 native）。
+2. **中文输入法**：DOM/Canvas 后端下，IME 候选窗锚定在谁身上？完全未知。
+
+**还有一条**：Ratzilla 的图片能力未在文档中确认（`ratatui-image` 是终端协议库）。封面可能需要走**半块字符**（任何后端都能画）。
+
+### 8.5 建议：先做一天 spike
+
+不写产品代码，只验证三件事（用 ratzilla 官方 demo 改）：
+
+| 验什么 | 通过标准 |
+|---|---|
+| 能否嵌进 Tauri WebView | 现有窗口里跑起来 Ratatui `Block`+`Table` |
+| 中文渲染与宽度 | 中英混排表格列对齐；`晴` = 2× `A` |
+| 输入法 | 在 Input widget 里打中文，候选窗位置正确 |
+
+**通过 → 走 C（4 周，一步到位）；不通过 → 走 B（xterm，3 周，久经考验）。**
