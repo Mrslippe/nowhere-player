@@ -1,0 +1,14 @@
+[package]
+name = "tui-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# 独立于主 workspace：避免被根 Cargo.toml 纳入构建。
+[workspace]
+
+[dependencies]
+ratatui = "0.30.1"
+crossterm = "0.29"
+ratatui-image = { version = "11.1", default-features = false, features = ["image-defaults", "crossterm"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
