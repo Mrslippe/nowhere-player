@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-/// 默认保留最近 8192 个单声道样本。
+/// 默认保留最近 8192 帧（L/R）。
 pub const TAP_CAPACITY: usize = 8192;
 
 struct TapShared {
@@ -29,7 +29,7 @@ pub(crate) struct SampleTapWriter {
 /// 创建一个 tap，返回写端与读端。
 pub(crate) fn create(sample_rate: u32) -> (SampleTapWriter, SampleTapHandle) {
     let shared = Arc::new(TapShared {
-        samples: (0..TAP_CAPACITY)
+        samples: (0..TAP_CAPACITY * 2)
             .map(|_| AtomicU64::new(0))
             .collect::<Vec<_>>()
             .into_boxed_slice(),
@@ -46,7 +46,7 @@ pub(crate) fn create(sample_rate: u32) -> (SampleTapWriter, SampleTapHandle) {
 }
 
 impl SampleTapWriter {
-    /// 音频回调内调用：多声道取平均后写入环形缓冲。
+    /// 音频回调内调用：保存 L/R；单声道两边写相同值。
     pub(crate) fn write_interleaved(&self, samples: &[f32], channels: usize) {
         if channels == 0 || samples.is_empty() {
             return;
@@ -55,12 +55,14 @@ impl SampleTapWriter {
         let mut write = self.shared.write.load(Ordering::Relaxed);
         for frame in 0..frames {
             let start = frame * channels;
-            let mut sum = 0.0;
-            for sample in &samples[start..start + channels] {
-                sum += *sample;
-            }
-            let mono = sum / channels as f32;
-            self.shared.samples[write].store(u64::from(mono.to_bits()), Ordering::Relaxed);
+            let (left, right) = if channels == 1 {
+                (samples[start], samples[start])
+            } else {
+                (samples[start], samples[start + 1])
+            };
+            let slot = write * 2;
+            self.shared.samples[slot].store(u64::from(left.to_bits()), Ordering::Relaxed);
+            self.shared.samples[slot + 1].store(u64::from(right.to_bits()), Ordering::Relaxed);
             write += 1;
             if write == TAP_CAPACITY {
                 write = 0;
@@ -82,7 +84,7 @@ impl SampleTapHandle {
         self.shared.generation.load(Ordering::Acquire)
     }
 
-    /// 读取最近 `out.len()` 个单声道样本；不足时用 0 填充。
+    /// 读取最近 `out.len()` 个单声道样本（L/R 平均）；不足时用 0 填充。
     pub fn latest(&self, out: &mut [f32]) {
         if out.is_empty() {
             return;
@@ -92,13 +94,40 @@ impl SampleTapHandle {
         let start = (write + TAP_CAPACITY - count) % TAP_CAPACITY;
         for (index, slot) in out.iter_mut().enumerate() {
             if index < count {
-                let value =
-                    self.shared.samples[(start + index) % TAP_CAPACITY].load(Ordering::Relaxed);
-                *slot = f32::from_bits(value as u32);
+                let frame = (start + index) % TAP_CAPACITY;
+                let left = self.shared.samples[frame * 2].load(Ordering::Relaxed);
+                let right = self.shared.samples[frame * 2 + 1].load(Ordering::Relaxed);
+                let left = f32::from_bits(left as u32);
+                let right = f32::from_bits(right as u32);
+                *slot = (left + right) * 0.5;
             } else {
                 *slot = 0.0;
             }
         }
+    }
+
+    /// 读取最近 L/R 样本，返回实际写入的帧数；不足部分两边用 0 填充。
+    pub fn latest_stereo(&self, left: &mut [f32], right: &mut [f32]) -> usize {
+        let count = left.len().min(right.len()).min(TAP_CAPACITY);
+        if count == 0 {
+            return 0;
+        }
+        let write = self.shared.write.load(Ordering::Acquire);
+        let start = (write + TAP_CAPACITY - count) % TAP_CAPACITY;
+        for index in 0..count {
+            let frame = (start + index) % TAP_CAPACITY;
+            let l = self.shared.samples[frame * 2].load(Ordering::Relaxed);
+            let r = self.shared.samples[frame * 2 + 1].load(Ordering::Relaxed);
+            left[index] = f32::from_bits(l as u32);
+            right[index] = f32::from_bits(r as u32);
+        }
+        for slot in &mut left[count..] {
+            *slot = 0.0;
+        }
+        for slot in &mut right[count..] {
+            *slot = 0.0;
+        }
+        count
     }
 }
 
@@ -114,6 +143,20 @@ mod tests {
         handle.latest(&mut out);
         assert_eq!(out, [2.0, 3.0]);
         assert_eq!(handle.generation(), 1);
+    }
+
+    #[test]
+    fn stereo_survives_left_and_right() {
+        let (writer, handle) = create(48_000);
+        writer.write_interleaved(&[0.25, -0.25, 0.5, -0.5], 2);
+        let mut left = [0.0; 2];
+        let mut right = [0.0; 2];
+        assert_eq!(handle.latest_stereo(&mut left, &mut right), 2);
+        assert_eq!(left, [0.25, 0.5]);
+        assert_eq!(right, [-0.25, -0.5]);
+        let mut mono = [0.0; 2];
+        handle.latest(&mut mono);
+        assert_eq!(mono, [0.0, 0.0]);
     }
 
     #[test]

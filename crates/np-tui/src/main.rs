@@ -80,6 +80,8 @@ struct App {
     immersive: bool,
     spectrum: Vec<f32>,
     waveform: Vec<f32>,
+    stereo_left: Vec<f32>,
+    stereo_right: Vec<f32>,
     spectrum_generation: u64,
     visual_mode: VisualMode,
     completion: Option<np_core::Completion>,
@@ -108,6 +110,8 @@ impl App {
             immersive: false,
             spectrum: vec![0.0; 16],
             waveform: vec![0.0; 2048],
+            stereo_left: vec![0.0; 2048],
+            stereo_right: vec![0.0; 2048],
             spectrum_generation: 0,
             visual_mode: VisualMode::Spectrum,
             completion: None,
@@ -472,12 +476,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir,
     }));
     let (search_tx, search_rx) = std::sync::mpsc::channel();
+    // TUI 的颜色是产品语义的一部分；某些宿主环境会带 NO_COLOR=1，
+    // 那会让 Ratatui/Crossterm 把所有主题色降级成终端默认色。
+    crossterm::style::Colored::set_ansi_color_disabled(false);
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
     app.load_theme(
         &theme_api,
         settings.theme_id().as_deref().unwrap_or("terminal"),
     );
+    if let Ok(mode) = std::env::var("NP_TUI_VISUAL") {
+        app.visual_mode = match mode.trim().to_ascii_lowercase().as_str() {
+            "waveform" | "wave" => VisualMode::Waveform,
+            "vectorscope" | "vector" => VisualMode::Vectorscope,
+            _ => VisualMode::Spectrum,
+        };
+    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -559,7 +573,7 @@ where
             draw_needed = false;
         }
         let timeout = if player.is_playing() || app.search_pending || !app.input.is_empty() {
-            std::time::Duration::from_millis(50)
+            std::time::Duration::from_millis(66)
         } else {
             std::time::Duration::from_millis(500)
         };
@@ -684,12 +698,17 @@ fn update_spectrum(app: &mut App, player: &TuiAudio) {
         return;
     }
     let mut samples = vec![0.0f32; 2048];
+    let mut left = vec![0.0f32; 2048];
+    let mut right = vec![0.0f32; 2048];
     tap.latest(&mut samples);
+    tap.latest_stereo(&mut left, &mut right);
     let next = spectrum(&samples, tap.sample_rate(), 16);
     for (old, new) in app.spectrum.iter_mut().zip(next) {
         *old = *old * 0.65 + new * 0.35;
     }
     app.waveform = samples;
+    app.stereo_left = left;
+    app.stereo_right = right;
     app.spectrum_generation = tap.generation();
 }
 
@@ -1023,16 +1042,53 @@ fn draw_visual(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color)
         VisualMode::Spectrum => draw_spectrum(frame, area, &app.spectrum, accent),
         VisualMode::Waveform => draw_waveform(frame, area, &app.waveform, accent),
         VisualMode::Vectorscope => {
-            let warning = "矢量模式需要立体声样本；当前 tap 为单声道";
-            frame.render_widget(
-                Paragraph::new(Line::from(TuiSpan::styled(
-                    truncate_width(warning, area.width as usize),
-                    Style::default().fg(app.palette.muted),
-                ))),
-                area,
-            );
+            draw_vectorscope(frame, area, &app.stereo_left, &app.stereo_right, accent)
         }
     }
+}
+
+fn draw_vectorscope(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    left: &[f32],
+    right: &[f32],
+    accent: Color,
+) {
+    let canvas = Canvas::default()
+        .x_bounds([-1.0, 1.0])
+        .y_bounds([-1.0, 1.0])
+        .marker(Marker::Braille)
+        .paint(move |ctx| {
+            // 45° reference line; no signal / mono source naturally lies here.
+            ctx.draw(&CanvasLine {
+                x1: -1.0,
+                y1: -1.0,
+                x2: 1.0,
+                y2: 1.0,
+                color: accent,
+            });
+            let count = left.len().min(right.len());
+            if count == 0 {
+                return;
+            }
+            let step = (count / 256).max(1);
+            let mut previous: Option<(f64, f64)> = None;
+            for index in (0..count).step_by(step) {
+                let x = left[index].clamp(-1.0, 1.0) as f64;
+                let y = right[index].clamp(-1.0, 1.0) as f64;
+                if let Some((x1, y1)) = previous {
+                    ctx.draw(&CanvasLine {
+                        x1,
+                        y1,
+                        x2: x,
+                        y2: y,
+                        color: accent,
+                    });
+                }
+                previous = Some((x, y));
+            }
+        });
+    frame.render_widget(canvas, area);
 }
 
 fn draw_waveform(frame: &mut ratatui::Frame, area: Rect, samples: &[f32], accent: Color) {
@@ -1381,6 +1437,34 @@ mod tests {
     }
 
     #[test]
+    fn vectorscope_draws_reference_or_samples() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new();
+        app.visual_mode = VisualMode::Vectorscope;
+        app.stereo_left = (0..2048).map(|i| (i as f32 * 0.03).sin()).collect();
+        app.stereo_right = app.stereo_left.clone();
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .unwrap();
+        let braille = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| {
+                let ch = cell.symbol().chars().next().unwrap_or(' ');
+                ('\u{2800}'..='\u{28FF}').contains(&ch)
+            })
+            .count();
+        assert!(braille > 4, "vectorscope braille cells: {braille}");
+    }
+
+    #[test]
     fn waveform_mode_draws_braille_points() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -1435,6 +1519,44 @@ mod tests {
             })
             .count();
         assert!(braille > 4, "braille cells: {braille}");
+    }
+
+    #[test]
+    fn paper_background_is_written_to_crossterm_backend() {
+        use ratatui::Terminal;
+        use ratatui::backend::CrosstermBackend;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = Sink(Arc::new(Mutex::new(Vec::new())));
+        crossterm::style::Colored::set_ansi_color_disabled(false);
+        let mut terminal = Terminal::new(CrosstermBackend::new(sink.clone())).unwrap();
+        let mut app = App::new();
+        let theme = TuiThemeApi::new(std::env::temp_dir().join("np-tui-paper-writer"));
+        app.load_theme(&theme, "tui-paper");
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .unwrap();
+        let bytes = sink.0.lock().unwrap().clone();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("242"),
+            "missing paper bg; bytes={}",
+            text.escape_default()
+        );
     }
 
     #[test]
