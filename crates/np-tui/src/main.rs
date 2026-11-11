@@ -83,7 +83,9 @@ enum Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiMode {
     Normal,
+    Filter,
     Command,
+    Help,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -124,6 +126,10 @@ struct App {
     theme_name: String,
     focus: Focus,
     mode: UiMode,
+    filter: String,
+    g_pending: Option<std::time::Instant>,
+    quit_armed: bool,
+    delete_armed: bool,
     views: Vec<ViewData>,
     view_index: usize,
     row_index: usize,
@@ -162,6 +168,10 @@ impl App {
             theme_name: "跟随终端".to_owned(),
             focus: Focus::Library,
             mode: UiMode::Normal,
+            filter: String::new(),
+            g_pending: None,
+            quit_armed: false,
+            delete_armed: false,
             views: Vec::new(),
             view_index: 0,
             row_index: 0,
@@ -314,6 +324,34 @@ impl App {
         self.views.get(self.view_index)
     }
 
+    fn filtered_rows(&self) -> Vec<Vec<String>> {
+        let Some(view) = self.selected_view() else {
+            return Vec::new();
+        };
+        view.rows
+            .iter()
+            .filter(|row| filter_matches(row, &self.filter))
+            .cloned()
+            .collect()
+    }
+
+    fn filtered_row_count(&self) -> usize {
+        self.filtered_rows().len()
+    }
+
+    fn press_g(&mut self, now: std::time::Instant) -> bool {
+        let repeated = self
+            .g_pending
+            .is_some_and(|at| now.duration_since(at) <= std::time::Duration::from_millis(300));
+        if repeated {
+            self.row_index = 0;
+            self.g_pending = None;
+        } else {
+            self.g_pending = Some(now);
+        }
+        repeated
+    }
+
     fn move_view(&mut self, down: bool) {
         if self.views.is_empty() {
             return;
@@ -327,10 +365,7 @@ impl App {
     }
 
     fn move_row(&mut self, down: bool) {
-        let len = self
-            .selected_view()
-            .map(|view| view.rows.len())
-            .unwrap_or(0);
+        let len = self.filtered_row_count();
         if len == 0 {
             return;
         }
@@ -346,6 +381,24 @@ impl App {
             Focus::Library => Focus::List,
             Focus::List => Focus::Library,
         };
+    }
+
+    fn enter_filter(&mut self) {
+        self.mode = UiMode::Filter;
+        self.filter.clear();
+        self.input.clear();
+        self.cursor = 0;
+        self.completion = None;
+        self.row_index = 0;
+    }
+
+    fn leave_filter(&mut self, clear: bool) {
+        if clear {
+            self.filter.clear();
+        }
+        self.mode = UiMode::Normal;
+        self.input.clear();
+        self.cursor = 0;
     }
 
     fn enter_command(&mut self) {
@@ -626,6 +679,11 @@ fn tui_data_dir() -> PathBuf {
     }
 }
 
+fn filter_matches(row: &[String], filter: &str) -> bool {
+    let filter = filter.trim().to_lowercase();
+    filter.is_empty() || row.iter().any(|cell| cell.to_lowercase().contains(&filter))
+}
+
 fn capture_table(
     player: &dyn PlayerApi,
     library: &dyn LibraryApi,
@@ -720,6 +778,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "playlist" | "playlists" => 3,
             _ => 0,
         };
+    }
+    if let Ok(mode) = std::env::var("NP_TUI_MODE") {
+        if mode.trim() == "help" {
+            app.mode = UiMode::Help;
+        } else if let Some(filter) = mode.strip_prefix("filter:") {
+            app.enter_filter();
+            app.input = filter.chars().collect();
+            app.cursor = app.input.len();
+            app.filter = filter.to_owned();
+        }
     }
     if let Ok(mode) = std::env::var("NP_TUI_VISUAL") {
         app.visual_mode = match mode.trim().to_ascii_lowercase().as_str() {
@@ -857,7 +925,55 @@ where
                         app.immersive = !app.immersive;
                         draw_needed = true;
                     } else {
-                        if app.mode == UiMode::Command {
+                        if app.mode == UiMode::Help {
+                            app.mode = UiMode::Normal;
+                            draw_needed = true;
+                        } else if app.mode == UiMode::Filter {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.leave_filter(true);
+                                    draw_needed = true;
+                                }
+                                KeyCode::Enter => {
+                                    let text = app.input_text();
+                                    if let Some(command) = text.strip_prefix('!') {
+                                        app.leave_filter(true);
+                                        app.run(
+                                            command.to_owned(),
+                                            player,
+                                            library,
+                                            search.tx,
+                                            theme_ctx.api,
+                                            theme_ctx.settings,
+                                        );
+                                    } else {
+                                        app.leave_filter(false);
+                                    }
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char(character) => {
+                                    app.insert(character);
+                                    app.filter = app.input_text();
+                                    app.row_index = 0;
+                                    draw_needed = true;
+                                }
+                                KeyCode::Backspace => {
+                                    app.backspace();
+                                    app.filter = app.input_text();
+                                    app.row_index = 0;
+                                    draw_needed = true;
+                                }
+                                KeyCode::Left => {
+                                    app.left();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Right => {
+                                    app.right();
+                                    draw_needed = true;
+                                }
+                                _ => {}
+                            }
+                        } else if app.mode == UiMode::Command {
                             match key.code {
                                 KeyCode::Esc => {
                                     app.leave_command();
@@ -874,6 +990,14 @@ where
                                         theme_ctx.api,
                                         theme_ctx.settings,
                                     );
+                                    draw_needed = true;
+                                }
+                                KeyCode::Up => {
+                                    app.history_up();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Down => {
+                                    app.history_down();
                                     draw_needed = true;
                                 }
                                 KeyCode::Char(character) => {
@@ -895,6 +1019,10 @@ where
                                 _ => {}
                             }
                         } else {
+                            let now = std::time::Instant::now();
+                            if !matches!(key.code, KeyCode::Char('g')) {
+                                app.g_pending = None;
+                            }
                             match key.code {
                                 KeyCode::Tab => {
                                     app.toggle_focus();
@@ -916,11 +1044,42 @@ where
                                     }
                                     draw_needed = true;
                                 }
+                                KeyCode::Char('g') => {
+                                    if app.focus == Focus::List {
+                                        let repeated = app.g_pending.is_some_and(|at| {
+                                            now.duration_since(at)
+                                                <= std::time::Duration::from_millis(300)
+                                        });
+                                        if repeated {
+                                            app.row_index = 0;
+                                            app.g_pending = None;
+                                        } else {
+                                            app.g_pending = Some(now);
+                                        }
+                                    }
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('G') => {
+                                    if app.focus == Focus::List {
+                                        app.row_index = app.filtered_row_count().saturating_sub(1);
+                                    }
+                                    draw_needed = true;
+                                }
                                 KeyCode::Enter => {
                                     if app.focus == Focus::Library {
                                         app.focus = Focus::List;
-                                    } else {
-                                        app.status = "播放选中项留到 P2".to_owned();
+                                    } else if let Some(row) =
+                                        app.filtered_rows().get(app.row_index).cloned()
+                                        && let Some(sequence) = row.first()
+                                    {
+                                        app.run(
+                                            format!("play {sequence}"),
+                                            player,
+                                            library,
+                                            search.tx,
+                                            theme_ctx.api,
+                                            theme_ctx.settings,
+                                        );
                                     }
                                     draw_needed = true;
                                 }
@@ -937,18 +1096,75 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('/') => {
-                                    app.status = "过滤模式留到 P3".to_owned();
+                                    app.enter_filter();
                                     draw_needed = true;
                                 }
-                                KeyCode::Char('v') | KeyCode::Char('f') => {
+                                KeyCode::Char('?') => {
+                                    app.mode = UiMode::Help;
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('f') => {
                                     app.visual_mode = app.visual_mode.next();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('a') => {
+                                    if let Some(row) =
+                                        app.filtered_rows().get(app.row_index).cloned()
+                                        && let Some(title) = row.get(1)
+                                        && player.queue_add(vec![title.clone()]).is_ok()
+                                    {
+                                        app.views[2] =
+                                            capture_table(player, &**library, "queue list", "队列");
+                                        app.status = "已加入队列".to_owned();
+                                    }
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('d') => {
+                                    if app.focus == Focus::List
+                                        && app.selected_view().map(|view| view.title.as_str())
+                                            == Some("歌单")
+                                    {
+                                        if app.delete_armed {
+                                            app.delete_armed = false;
+                                            app.status = "删除确认（P3 接入）".to_owned();
+                                        } else {
+                                            app.delete_armed = true;
+                                            app.status = "再按 d 确认删除".to_owned();
+                                        }
+                                    }
                                     draw_needed = true;
                                 }
                                 KeyCode::Char(' ') => {
                                     player.toggle();
                                     draw_needed = true;
                                 }
-                                KeyCode::Char('q') => return Ok(()),
+                                KeyCode::Char('n') => {
+                                    let _ = player.next();
+                                    app.status = "下一首".to_owned();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('p') => {
+                                    let _ = player.prev();
+                                    app.status = "上一首".to_owned();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('+') | KeyCode::Char('=') => {
+                                    app.status = "音量 +5%".to_owned();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('-') => {
+                                    app.status = "音量 -5%".to_owned();
+                                    draw_needed = true;
+                                }
+                                KeyCode::Char('q') => {
+                                    if player.is_playing() && !app.quit_armed {
+                                        app.quit_armed = true;
+                                        app.status = "播放中，再按 q 确认退出".to_owned();
+                                        draw_needed = true;
+                                    } else {
+                                        return Ok(());
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -1013,7 +1229,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
 
     let player_height =
         if area.height < 24 { 6 } else { 10 }.min(area.height.saturating_sub(3).max(3));
-    let input_height = u16::from(app.mode == UiMode::Command);
+    let input_height = u16::from(matches!(app.mode, UiMode::Command | UiMode::Filter));
     let body_height = area
         .height
         .saturating_sub(1 + player_height + input_height + 1)
@@ -1058,23 +1274,22 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
 
     draw_player_strip(frame, rows[2], app, player, cover);
 
-    if app.mode == UiMode::Command {
-        let input = Paragraph::new(input_line(app))
-            .block(
-                TuiBlock::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.palette.accent))
-                    .title(" 命令 "),
-            )
-            .style(
-                Style::default()
-                    .bg(app.palette.bg.unwrap_or(Color::Reset))
-                    .fg(app.palette.fg),
-            );
+    if matches!(app.mode, UiMode::Command | UiMode::Filter) {
+        let title = if app.mode == UiMode::Filter {
+            " 过滤 "
+        } else {
+            " 命令 "
+        };
+        let _ = title;
+        let input = Paragraph::new(input_line(app)).style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        );
         frame.render_widget(input, rows[3]);
         frame.set_cursor_position((
-            rows[3].x.saturating_add(1 + input_width_before(app) as u16),
-            rows[3].y.saturating_add(1),
+            rows[3].x.saturating_add(input_width_before(app) as u16),
+            rows[3].y,
         ));
     }
 
@@ -1101,6 +1316,44 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
             .fg(app.palette.muted),
     );
     frame.render_widget(status, rows[4]);
+    if app.mode == UiMode::Help {
+        draw_help(frame, area, app);
+    }
+}
+
+fn draw_help(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(8).clamp(40, 64);
+    let height = 18.min(area.height.saturating_sub(2));
+    let overlay = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, overlay);
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.palette.accent))
+        .style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        )
+        .title(" 帮助 · 任意键关闭 ");
+    let inner = block.inner(overlay);
+    frame.render_widget(block, overlay);
+    let lines = [
+        "Space 播放/暂停   n/p 切歌   +/- 音量",
+        "Tab 切焦点   j/k 移动   gg/G 首尾",
+        "Enter 播放选中   a 入队   d 删除(需 dd)",
+        "f 视觉模式   Ctrl+F 沉浸   / 过滤",
+        ": 命令   ? 帮助   q 退出(播放中二次确认)",
+        "",
+        "Filter: Enter 确认 · Esc 清除",
+        "Command: Enter 执行 · ↑/↓ 历史 · Esc 取消",
+    ]
+    .join("\n");
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn panel_block(app: &App, title: &str, focused: bool) -> TuiBlock<'static> {
@@ -1171,7 +1424,8 @@ fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         );
         return;
     }
-    let mut widths = table_widths(&view.columns, &view.rows);
+    let rows = app.filtered_rows();
+    let mut widths = table_widths(&view.columns, &rows);
     let used: usize = widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1);
     if used < inner.width as usize {
         let flex = view
@@ -1192,7 +1446,7 @@ fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     ));
     let visible = inner.height.saturating_sub(1) as usize;
     let first = app.row_index.saturating_sub(visible.saturating_sub(1));
-    for (index, row) in view.rows.iter().enumerate().skip(first).take(visible) {
+    for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
         let selected = app.focus == Focus::List && index == app.row_index;
         let style = if selected {
             Style::default()
@@ -1431,6 +1685,9 @@ fn draw_legacy(
             .fg(app.palette.muted),
     );
     frame.render_widget(status, rows[4]);
+    if app.mode == UiMode::Help {
+        draw_help(frame, area, app);
+    }
 }
 
 fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -2288,6 +2545,41 @@ mod tests {
             terminal.backend().buffer()[(0, 0)].style().bg,
             Some(Color::Rgb(242, 239, 233))
         );
+    }
+
+    #[test]
+    fn filter_is_case_insensitive_and_handles_chinese() {
+        assert!(filter_matches(&["晴天".to_owned()], "晴"));
+        assert!(filter_matches(&["Jay Chou".to_owned()], "jay"));
+        assert!(filter_matches(&["x".to_owned()], ""));
+        assert!(!filter_matches(&["晴天".to_owned()], "稻"));
+    }
+
+    #[test]
+    fn gg_requires_two_presses_within_timeout() {
+        let mut app = App::new();
+        app.views = vec![ViewData {
+            title: "媒体库".to_owned(),
+            columns: vec!["#".to_owned()],
+            rows: vec![vec!["1".to_owned()], vec!["2".to_owned()]],
+        }];
+        app.focus = Focus::List;
+        app.row_index = 1;
+        let start = std::time::Instant::now();
+        assert!(!app.press_g(start));
+        assert_eq!(app.row_index, 1);
+        assert!(app.press_g(start + std::time::Duration::from_millis(200)));
+        assert_eq!(app.row_index, 0);
+    }
+
+    #[test]
+    fn delete_requires_double_press_flag() {
+        let mut app = App::new();
+        assert!(!app.delete_armed);
+        app.delete_armed = true;
+        assert!(app.delete_armed);
+        app.delete_armed = false;
+        assert!(!app.delete_armed);
     }
 
     #[test]
