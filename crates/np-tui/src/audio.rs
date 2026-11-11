@@ -325,6 +325,27 @@ mod tests {
     }
 
     #[test]
+    fn tone_440_meets_the_four_playback_criteria() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/accept/tone-440.wav");
+        if !path.is_file() {
+            return;
+        }
+        let audio = TuiAudio::empty();
+        let state = audio
+            .play(Some(path.to_string_lossy().into_owned()))
+            .expect("no E_AUDIO");
+        assert!(matches!(state.status, PlaybackStatus::Playing));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(
+            audio.position_ms() >= 800,
+            "position {}",
+            audio.position_ms()
+        );
+        assert_eq!(audio.source_path().as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
     fn queue_steps_and_volume_are_real() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/accept/tone.wav");
