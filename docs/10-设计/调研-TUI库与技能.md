@@ -189,3 +189,59 @@ related: [DES-007, ARCH-007]
 **已补齐**：WebTUI 用 CSS `@layer` 分层 + 主题（`@webtui/css`）；三个小众包的定位已由包自述确认。
 
 **方法论备忘**：抓 npm 网页会被 403 拦，`npm view <pkg> readme` / `npm view <pkg> description` 更稳定——以后调研 JS 生态先走这条路。
+
+---
+
+## 7. 字体实测（2026-11-11）
+
+### 7.1 先纠正一个假设
+
+我在讨论里说"中文列对不齐是因为字体宽度"——**实测证明这条对现状不成立**。
+
+`library list` 表头与首行单元格的 x 坐标：
+
+```
+表头 x: 24, 72, 614, 774
+首行 x: 24, 72, 614, 774     ← 完全一致
+```
+
+原因：我们的表格用 **CSS Grid 分列**，不是按字符数排的。**字体宽度不影响 Grid 对齐。**
+
+**2:1 字体只在这些场景才关键**：
+
+- 字符画（封面半块、ASCII 图）
+- 等宽文本块（help、代码、树形）
+- 若将来把表格改成"按字符数定列宽"（真终端式）
+
+### 7.2 本机字体宽度实测
+
+用 `canvas.measureText`，比较「晴」与「A」的宽度比：
+
+| 字体 | 比例 | 说明 |
+|---|---:|---|
+| **MS Gothic** | **2.000** | 精确 2:1（Windows 自带，日文字形） |
+| **SimSun** | **2.000** | 精确 2:1（Windows 自带，宋体） |
+| Consolas | 1.819 | 汉字略窄 |
+| Cascadia Code | 1.707 | 汉字明显窄 |
+| Sarasa / Maple / JetBrains / Noto CJK | 1.645 | **未安装，全部回落到同一 fallback**（同值即证据） |
+
+**结论**：本机**已装的**字体里，只有 `MS Gothic` 与 `SimSun` 是精确 2:1；后者是简体宋体，前者是日文字形。
+
+### 7.3 候选字体包（npm 实测体积）
+
+| 包 | 体积 | 许可证 | 备注 |
+|---|---:|---|---|
+| `sarasa-mono-web` | **2.4 MB** | MIT | 已 subset |
+| `@fontsource/maple-mono` | 3.1 MB | OFL-1.1 | fontsource 通常**只含拉丁**，需确认 |
+| `@mogeko/maple-mono-cn` | **9.5 MB** | MIT | 含中文 |
+| `@automann/maple-mono-cn` | 65 MB | OFL-1.1 | 全字重，过大 |
+| `@fontpkg/sarasa-mono-sc` | 262 MB | — | 全字重全格式，不可用于应用 |
+
+**用户提到的 `JetBrains Maple Mono` / `MiWithJBMono(Half)`**：主要在 GitHub Releases 分发（Nerd Font 补丁版），**不在 npm**；要用需自行转 woff2 并处理许可证。
+
+### 7.4 建议
+
+1. **自定义字体只用于字符画与等宽文本块**，不用于表格（Grid 已对齐）。
+2. 打包 **一套一个字重**：`sarasa-mono-web`（2.4 MB）优先；若中文覆盖不足，退 `@mogeko/maple-mono-cn`（9.5 MB）。
+3. 引入前必须验证三件事：**中文覆盖**（生僻字）、**2:1 比例**（`晴` vs `A`）、**许可证**（MIT/OFL 都可商用，但要保留声明）。
+4. Windows 上可零成本退化到 `SimSun`（2:1、简体），但宋体观感与等宽拉丁不协调——**只作兜底**。
