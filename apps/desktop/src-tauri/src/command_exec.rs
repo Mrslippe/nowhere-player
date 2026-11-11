@@ -106,18 +106,9 @@ struct TauriEventSink {
 }
 
 impl EventSink for TauriEventSink {
-    fn terminal_block(&self, block: &Block) {
-        if let Err(error) = self.app.emit("terminal:block", block) {
-            eprintln!("[cmd] emit terminal:block failed: {error}");
-        }
-    }
-
-    fn theme_changed(&self, id: &str) {
-        if let Err(error) = self
-            .app
-            .emit("theme:changed", serde_json::json!({ "id": id }))
-        {
-            eprintln!("[theme] emit theme:changed failed: {error}");
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        if let Err(error) = self.app.emit(event, payload) {
+            eprintln!("[{event}] emit failed: {error}");
         }
     }
 }
