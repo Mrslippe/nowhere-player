@@ -20,8 +20,8 @@ const SRC_DIR = path.join(SKIN_DIR, "..", "..");
 
 /** 任务卡 §6.1 的结构变量清单 + 拆分后新增的角色变量。 */
 const STRUCTURE_TOKENS = [
-  "--np-radius-card",
   "--np-radius-player",
+  "--np-radius-cover",
   "--np-radius-inner",
   "--np-radius-control",
   "--np-radius-control-sm",
@@ -177,8 +177,9 @@ describe("结构层（skin）", () => {
   });
 
   it("plain 的 D3 播放器结构：14 卡片 / 9 封面 / 56 尺寸 / 14 边距", () => {
-    expect(valueOf(plainCss, "--np-radius-card")).toBe("14px");
-    expect(valueOf(plainCss, "--np-radius-inner")).toBe("9px");
+    expect(valueOf(plainCss, "--np-radius-player")).toBe("14px");
+    expect(valueOf(plainCss, "--np-radius-cover")).toBe("8px");
+    expect(valueOf(plainCss, "--np-radius-inner")).toBe("8px");
     expect(valueOf(plainCss, "--np-player-cover")).toBe("56px");
     expect(valueOf(plainCss, "--np-player-pad")).toBe("14px");
   });
@@ -186,7 +187,6 @@ describe("结构层（skin）", () => {
   it("phosphor 的结构覆盖符合 T-0028 §6.1", () => {
     // 圆角全部归零，只有状态点是圆的。
     for (const token of [
-      "--np-radius-card",
       "--np-radius-inner",
       "--np-radius-control",
       "--np-radius-control-sm",
@@ -196,7 +196,8 @@ describe("结构层（skin）", () => {
     ]) {
       expect(valueOf(phosphorCss, token), token).toBe("0");
     }
-    expect(valueOf(phosphorCss, "--np-radius-player")).toBe("14px");
+    expect(valueOf(phosphorCss, "--np-radius-player")).toBe("0");
+    expect(valueOf(phosphorCss, "--np-radius-cover")).toBe("0");
     expect(valueOf(phosphorCss, "--np-radius-circle")).toBe("50%");
 
     // 无投影、无卡片边框；控件仍靠 1px 细线分隔。

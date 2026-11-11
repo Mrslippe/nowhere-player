@@ -247,6 +247,23 @@
   background: var(--bg-hover);
 }
 
+/* 当前播放行只在 reverse 轴下反白；只认 ▶ 标记的这一行。 */
+:root[data-structure-selection="reverse"]
+  .np-blocks-table
+  tbody
+  tr[data-current="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+:root[data-structure-selection="reverse"]
+  .np-blocks-table
+  tbody
+  tr[data-current="true"]
+  td {
+  color: var(--bg);
+}
+
 /* ── progress ───────────────────────────────────────── */
 .np-blocks-progress {
   display: flex;

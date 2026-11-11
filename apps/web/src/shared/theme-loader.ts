@@ -197,6 +197,11 @@ export function applyStructure(
   return structure;
 }
 
+/** 首屏默认结构：先写 plain 预设，主题到达后再覆盖。 */
+export function ensureDefaultStructure(root: ThemeRoot): Structure {
+  return applyStructure(root, "plain");
+}
+
 /** `theme.apply` 的回执。 */
 export interface ThemeApplyReply {
   id: string;
@@ -905,4 +910,10 @@ function readUrlTheme(): string | null {
 export function resetThemeLoader(): void {
   installed = false;
   generation = 0;
+}
+
+
+// T-0056b：首屏（主题尚未加载/加载失败）就写 plain 预设；主题 apply 后覆盖。
+if (typeof document !== "undefined") {
+  ensureDefaultStructure(document.documentElement as unknown as ThemeRoot);
 }

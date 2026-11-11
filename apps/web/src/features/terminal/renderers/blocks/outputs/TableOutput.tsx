@@ -70,8 +70,15 @@ export function TableOutput({ output }: TableOutputProps) {
           </tr>
         </thead>
         <tbody>
-          {output.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
+          {output.rows.map((row, rowIndex) => {
+            // queue list 用「▶ n」标记当前播放行；表格是静态块，不按帧重算。
+            const current = (row[0] ?? "").trimStart().startsWith("▶");
+            return (
+            <tr
+              key={rowIndex}
+              data-current={current ? "true" : undefined}
+              aria-current={current ? "true" : undefined}
+            >
               {output.columns.map((column, cellIndex) => {
                 const cell = truncateCell(row[cellIndex] ?? "");
                 const role = columnRole(column);
@@ -88,7 +95,8 @@ export function TableOutput({ output }: TableOutputProps) {
                 );
               })}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

@@ -149,7 +149,7 @@
   width: var(--np-player-cover);
   height: var(--np-player-cover);
   overflow: hidden;
-  border-radius: var(--np-radius-inner);
+  border-radius: var(--np-radius-cover);
   background-color: var(--bg-hover);
   background-size: cover;
   color: var(--fg);
@@ -587,7 +587,7 @@
   left: var(--np-player-pad);
   width: var(--np-player-cover);
   height: var(--np-player-cover);
-  border-radius: var(--np-radius-inner);
+  border-radius: var(--np-radius-cover);
 }
 
 [data-skin="plain"] .np-player-card__body {
@@ -679,7 +679,8 @@
   width: 26px;
   height: 26px;
   border: var(--np-border-control-strong);
-  border-radius: var(--np-radius-circle);
+  /* 主播放键属于“控件/按钮”，随 radius 轴；圆点只留给状态/播放头。 */
+  border-radius: var(--np-radius-control-sm);
   background: color-mix(in srgb, var(--line) 35%, transparent);
   color: var(--fg);
 }

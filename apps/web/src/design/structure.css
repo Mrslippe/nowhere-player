@@ -8,10 +8,11 @@
 
 /* ── radius：none 0 / subtle 2px / soft 现值 ─────────── */
 :root[data-structure-radius="soft"] {
-  --np-radius-card: 6px;
-  --np-radius-inner: 9px;
+  --np-radius-player: 14px;
+  --np-radius-cover: 8px;
+  --np-radius-inner: 8px;
   --np-radius-control: 8px;
-  --np-radius-control-sm: 6px;
+  --np-radius-control-sm: 8px;
   --np-radius-tag: 4px;
   --np-radius-micro: 3px;
   --np-radius-pill: 999px;
@@ -19,7 +20,8 @@
 }
 
 :root[data-structure-radius="none"] {
-  --np-radius-card: 0;
+  --np-radius-player: 0;
+  --np-radius-cover: 0;
   --np-radius-inner: 0;
   --np-radius-control: 0;
   --np-radius-control-sm: 0;
@@ -30,10 +32,11 @@
 }
 
 :root[data-structure-radius="subtle"] {
-  --np-radius-card: 2px;
-  --np-radius-inner: 2px;
-  --np-radius-control: 2px;
-  --np-radius-control-sm: 2px;
+  --np-radius-player: 6px;
+  --np-radius-cover: 4px;
+  --np-radius-inner: 4px;
+  --np-radius-control: 4px;
+  --np-radius-control-sm: 4px;
   --np-radius-tag: 2px;
   --np-radius-micro: 2px;
   --np-radius-pill: 2px;

@@ -11,11 +11,11 @@
  */
 :root {
   /* ── 圆角：按角色命名，skin 作者不用猜编号 ─────────── */
-  --np-radius-card: 18px;
-  --np-radius-player: 14px; /* 窗口卡片 */
-  --np-radius-inner: 12px; /* 卡片内的大块（封面） */
+  --np-radius-player: 14px; /* 播放器挂件；随 radius 轴 */
+  --np-radius-cover: 8px; /* 播放器封面 */
+  --np-radius-inner: 8px; /* 卡片内的大块 */
   --np-radius-control: 8px; /* 主控件：按钮、媒体块 */
-  --np-radius-control-sm: 6px; /* 小控件：图标按钮、Kbd、输入控件 */
+  --np-radius-control-sm: 8px; /* 小控件：图标按钮、Kbd、输入控件 */
   --np-radius-tag: 4px; /* 标签、评分格 */
   --np-radius-micro: 3px; /* 极小块：键帽、补全类型 */
   --np-radius-pill: 999px; /* 进度条轨道 */

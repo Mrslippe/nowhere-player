@@ -13,6 +13,7 @@ import {
   applyStructure,
   applyThemeById,
   checkSentinel,
+  ensureDefaultStructure,
   clearSelectedThemeId,
   contrastRatio,
   cssVarName,
@@ -221,6 +222,21 @@ describe("主题加载器", () => {
     expect(resolveStructure("plain", { progress: "bracket" }).progress).toBe(
       "line",
     );
+  });
+
+  it("首屏默认结构：ensureDefaultStructure 写 plain 八轴", () => {
+    const fake = fakeEnvironment();
+    ensureDefaultStructure(fake.env.root);
+    expect(fake.dataset).toMatchObject({
+      structureRadius: "soft",
+      structureBorder: "hairline",
+      structureDensity: "normal",
+      structureProgress: "line",
+      structureSelection: "bar",
+      structureLabels: "sentence",
+      structureStripe: "off",
+      structureFont: "mixed",
+    });
   });
 
   it("structure：labels=tracked，reverse+stripe 强制 off，blocks+mixed 回退 line", () => {

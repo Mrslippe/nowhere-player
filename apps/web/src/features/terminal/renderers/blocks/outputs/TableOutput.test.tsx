@@ -32,6 +32,26 @@ describe("TableOutput", () => {
     expect(html).toContain('data-role="title"');
   });
 
+  it("queue 的 ▶ 行带 data-current，其他行没有", () => {
+    const html = renderToStaticMarkup(
+      <TableOutput
+        output={{
+          type: "table",
+          columns: ["序号", "标题", "艺人", "时长"],
+          rows: [
+            ["1", "晴天", "周杰伦", "4:29"],
+            ["▶ 2", "夜航", "林一", "3:42"],
+          ],
+          selectable: true,
+        }}
+      />,
+    );
+
+    expect(html).toContain('data-current="true"');
+    expect(html).toContain('aria-current="true"');
+    expect(html.match(/data-current/g) ?? []).toHaveLength(1);
+  });
+
   it("search/queue/playlist show 的共同角色：标题吃剩余、艺人固定", () => {
     const html = renderToStaticMarkup(
       <TableOutput
