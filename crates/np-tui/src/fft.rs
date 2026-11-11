@@ -5,7 +5,20 @@ pub fn spectrum(samples: &[f32], sample_rate: u32, bands: usize) -> Vec<f32> {
     if samples.is_empty() || bands == 0 {
         return vec![0.0; bands];
     }
-    let mut values: Vec<(f32, f32)> = samples.iter().take(2048).map(|&x| (x, 0.0)).collect();
+    let mut values: Vec<(f32, f32)> = samples
+        .iter()
+        .take(2048)
+        .enumerate()
+        .map(|(index, &x)| {
+            // Hann 窗：抑制 FFT 泄漏，代价只是每样本一次乘法。
+            let window = 0.5
+                - 0.5
+                    * (2.0 * std::f32::consts::PI * index as f32
+                        / (samples.len().clamp(2, 2048) as f32 - 1.0))
+                        .cos();
+            (x * window, 0.0)
+        })
+        .collect();
     values.resize(2048, (0.0, 0.0));
     fft(&mut values);
     let bins = values.len() / 2;
@@ -24,7 +37,9 @@ pub fn spectrum(samples: &[f32], sample_rate: u32, bands: usize) -> Vec<f32> {
             let magnitude = (value.0 * value.0 + value.1 * value.1).sqrt();
             peak = peak.max(magnitude);
         }
-        *slot = (peak / 16.0).clamp(0.0, 1.0);
+        // 对数幅度：-60dB..0dB 映射到 0..1，避免线性谱全挤在左侧。
+        let db = 20.0 * (peak + 1.0e-6).log10();
+        *slot = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
     }
     out
 }
@@ -66,10 +81,13 @@ fn fft(values: &mut [(f32, f32)]) {
 }
 
 /// 把 0..=1 映射到八级字符。
+#[allow(dead_code)]
 pub fn level_char(value: f32) -> char {
-    const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let index = (value.clamp(0.0, 1.0) * 7.0).round() as usize;
-    LEVELS[index.min(7)]
+    crate::glyphs::BLOCK_LEVELS[index.min(7)]
+        .chars()
+        .next()
+        .unwrap_or(' ')
 }
 
 #[cfg(test)]
@@ -97,8 +115,14 @@ mod tests {
 
     #[test]
     fn level_char_covers_eight_steps() {
-        assert_eq!(level_char(0.0), '▁');
-        assert_eq!(level_char(1.0), '█');
+        assert_eq!(
+            level_char(0.0),
+            crate::glyphs::BLOCK_LEVELS[0].chars().next().unwrap()
+        );
+        assert_eq!(
+            level_char(1.0),
+            crate::glyphs::BLOCK_LEVELS[7].chars().next().unwrap()
+        );
         assert_ne!(level_char(0.5), level_char(0.4));
     }
 }

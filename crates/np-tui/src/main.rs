@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod audio;
 mod cover;
 mod fft;
+mod glyphs;
 mod theme;
 
 use audio::TuiAudio;
@@ -22,7 +23,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use fft::{level_char, spectrum};
+use fft::spectrum;
 use np_app::{
     Execution, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services, SettingsHandle,
     ThemeApi, complete_for, execute_with_services,
@@ -33,11 +34,38 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::Marker,
     text::{Line, Span as TuiSpan},
+    widgets::canvas::{Canvas, Line as CanvasLine},
     widgets::{Block as TuiBlock, Borders, Clear, Paragraph, Wrap},
 };
 use theme::{Palette, TuiThemeApi};
 use unicode_width::UnicodeWidthStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisualMode {
+    Spectrum,
+    Waveform,
+    Vectorscope,
+}
+
+impl VisualMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Spectrum => "频谱",
+            Self::Waveform => "波形",
+            Self::Vectorscope => "矢量",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Spectrum => Self::Waveform,
+            Self::Waveform => Self::Vectorscope,
+            Self::Vectorscope => Self::Spectrum,
+        }
+    }
+}
 
 struct App {
     input: Vec<char>,
@@ -51,7 +79,9 @@ struct App {
     panel_visible: bool,
     immersive: bool,
     spectrum: Vec<f32>,
+    waveform: Vec<f32>,
     spectrum_generation: u64,
+    visual_mode: VisualMode,
     completion: Option<np_core::Completion>,
     completion_index: usize,
     last_edit: std::time::Instant,
@@ -77,7 +107,9 @@ impl App {
             panel_visible: true,
             immersive: false,
             spectrum: vec![0.0; 16],
+            waveform: vec![0.0; 2048],
             spectrum_generation: 0,
+            visual_mode: VisualMode::Spectrum,
             completion: None,
             completion_index: 0,
             last_edit: std::time::Instant::now(),
@@ -446,7 +478,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &theme_api,
         settings.theme_id().as_deref().unwrap_or("terminal"),
     );
-
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -580,6 +611,10 @@ where
                                 player.toggle();
                                 draw_needed = true;
                             }
+                            KeyCode::Char('v') if app.input.is_empty() => {
+                                app.visual_mode = app.visual_mode.next();
+                                draw_needed = true;
+                            }
                             KeyCode::Char(character) => {
                                 app.insert(character);
                                 draw_needed = true;
@@ -650,7 +685,11 @@ fn update_spectrum(app: &mut App, player: &TuiAudio) {
     }
     let mut samples = vec![0.0f32; 2048];
     tap.latest(&mut samples);
-    app.spectrum = spectrum(&samples, tap.sample_rate(), 16);
+    let next = spectrum(&samples, tap.sample_rate(), 16);
+    for (old, new) in app.spectrum.iter_mut().zip(next) {
+        *old = *old * 0.65 + new * 0.35;
+    }
+    app.waveform = samples;
     app.spectrum_generation = tap.generation();
 }
 
@@ -730,9 +769,10 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         "Ctrl+B 显示面板"
     };
     let status = Paragraph::new(format!(
-        " {} · 主题 {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出 ",
+        " {} · 主题 {} · 视觉 {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出 ",
         app.status,
         app.theme_name,
+        app.visual_mode.label(),
         app.input.len(),
         panel_hint
     ))
@@ -757,7 +797,7 @@ fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     for (index, item) in completion.items.iter().take(5).enumerate() {
         let selected = index == app.completion_index;
-        let marker = if selected { "▸" } else { " " };
+        let marker = if selected { glyphs::SELECT } else { " " };
         let text = format!("{marker} {}  {}", item.text, item.summary);
         let style = if selected {
             Style::default()
@@ -828,13 +868,13 @@ fn draw_panel(
     let cover_height = if immersive {
         inner.height.saturating_mul(6) / 10
     } else {
-        inner.height.saturating_sub(6).clamp(2, 4)
+        inner.height.saturating_sub(8).clamp(2, 12)
     };
     let cover_area = Rect {
         x: inner.x,
         y: inner.y,
         width: if immersive {
-            inner.width.saturating_mul(6) / 10
+            inner.width.saturating_mul(40) / 100
         } else {
             inner.width
         },
@@ -857,21 +897,6 @@ fn draw_panel(
     } else {
         inner.y + cover_height
     };
-    if y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(Line::from(TuiSpan::styled(
-                app_spectrum_chars(&app.spectrum, 0.0, text_width as usize),
-                Style::default().fg(app.palette.accent),
-            ))),
-            Rect {
-                x: text_x,
-                y,
-                width: text_width,
-                height: 1,
-            },
-        );
-        y += 1;
-    }
     let title = truncate_width(player.title(), text_width as usize);
     let artist = truncate_width(player.artist(), text_width as usize);
     if y < inner.y + inner.height {
@@ -907,6 +932,19 @@ fn draw_panel(
         y += 1;
     }
 
+    let remaining = (inner.y + inner.height).saturating_sub(y);
+    let spectrum_height = remaining.saturating_sub(2).min(4);
+    if spectrum_height > 0 && text_width > 0 {
+        let area = Rect {
+            x: text_x,
+            y,
+            width: text_width,
+            height: spectrum_height,
+        };
+        draw_visual(frame, area, app, app.palette.accent);
+    }
+    y += spectrum_height;
+
     let duration = player.duration_ms().unwrap_or(0);
     let position = player.position_ms().min(duration);
     let ratio = if duration == 0 {
@@ -918,8 +956,8 @@ fn draw_panel(
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
     let progress = format!(
         "{}{}  {} / {}",
-        "▮".repeat(filled),
-        "▯".repeat(bar_width.saturating_sub(filled)),
+        glyphs::PROGRESS_DONE.repeat(filled),
+        glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled)),
         format_time(position),
         format_time(duration)
     );
@@ -941,7 +979,7 @@ fn draw_panel(
     if y < inner.y + inner.height {
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
-                "◀◀   ▶   ▶▶",
+                format!("{}   {}   {}", glyphs::PREV, glyphs::PLAY, glyphs::NEXT),
                 Style::default().fg(app.palette.accent),
             ))),
             Rect {
@@ -954,18 +992,78 @@ fn draw_panel(
     }
 }
 
-fn app_spectrum_chars(values: &[f32], threshold: f32, width: usize) -> String {
-    values
-        .iter()
-        .take(width)
-        .map(|value| {
-            if *value >= threshold {
-                level_char(*value)
-            } else {
-                ' '
+fn draw_spectrum(frame: &mut ratatui::Frame, area: Rect, values: &[f32], accent: Color) {
+    let canvas = Canvas::default()
+        .x_bounds([0.0, 16.0])
+        .y_bounds([0.0, 1.0])
+        .marker(Marker::Braille)
+        .paint(move |ctx| {
+            for index in 0..=64 {
+                let position = index as f32 / 64.0 * 15.0;
+                let low = position.floor() as usize;
+                let high = (low + 1).min(values.len().saturating_sub(1));
+                let fraction = position - low as f32;
+                let left = values.get(low).copied().unwrap_or(0.0);
+                let right = values.get(high).copied().unwrap_or(left);
+                let value = (left + (right - left) * fraction).clamp(0.0, 1.0) as f64;
+                ctx.draw(&CanvasLine {
+                    x1: position as f64,
+                    y1: 0.0,
+                    x2: position as f64,
+                    y2: value,
+                    color: accent,
+                });
             }
-        })
-        .collect()
+        });
+    frame.render_widget(canvas, area);
+}
+
+fn draw_visual(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
+    match app.visual_mode {
+        VisualMode::Spectrum => draw_spectrum(frame, area, &app.spectrum, accent),
+        VisualMode::Waveform => draw_waveform(frame, area, &app.waveform, accent),
+        VisualMode::Vectorscope => {
+            let warning = "矢量模式需要立体声样本；当前 tap 为单声道";
+            frame.render_widget(
+                Paragraph::new(Line::from(TuiSpan::styled(
+                    truncate_width(warning, area.width as usize),
+                    Style::default().fg(app.palette.muted),
+                ))),
+                area,
+            );
+        }
+    }
+}
+
+fn draw_waveform(frame: &mut ratatui::Frame, area: Rect, samples: &[f32], accent: Color) {
+    let canvas = Canvas::default()
+        .x_bounds([0.0, 64.0])
+        .y_bounds([-1.0, 1.0])
+        .marker(Marker::Braille)
+        .paint(move |ctx| {
+            let count = samples.len().max(2);
+            let mut previous: Option<(f64, f64)> = None;
+            for index in 0..=64 {
+                let sample_index = index * (count - 1) / 64;
+                let x = index as f64;
+                let y = samples
+                    .get(sample_index)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .clamp(-1.0, 1.0) as f64;
+                if let Some((x1, y1)) = previous {
+                    ctx.draw(&CanvasLine {
+                        x1,
+                        y1,
+                        x2: x,
+                        y2: y,
+                        color: accent,
+                    });
+                }
+                previous = Some((x, y));
+            }
+        });
+    frame.render_widget(canvas, area);
 }
 
 fn format_time(ms: u64) -> String {
@@ -1280,6 +1378,63 @@ mod tests {
         let compact = text.replace(' ', "");
         assert!(compact.contains("候选"), "{text}");
         assert!(compact.contains("search"), "{text}");
+    }
+
+    #[test]
+    fn waveform_mode_draws_braille_points() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new();
+        app.visual_mode = VisualMode::Waveform;
+        app.waveform = (0..2048)
+            .map(|index| ((index as f32) * 0.05).sin())
+            .collect();
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .unwrap();
+        let braille = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| {
+                let ch = cell.symbol().chars().next().unwrap_or(' ');
+                ('\u{2800}'..='\u{28FF}').contains(&ch)
+            })
+            .count();
+        assert!(braille > 4, "waveform braille cells: {braille}");
+    }
+
+    #[test]
+    fn braille_spectrum_has_more_points_than_one_block_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new();
+        app.spectrum = vec![
+            0.2, 0.8, 0.4, 1.0, 0.6, 0.3, 0.9, 0.5, 0.7, 0.1, 0.4, 0.8, 0.2, 0.6, 0.3, 0.9,
+        ];
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .unwrap();
+        let braille = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| {
+                let ch = cell.symbol().chars().next().unwrap_or(' ');
+                ('\u{2800}'..='\u{28FF}').contains(&ch)
+            })
+            .count();
+        assert!(braille > 4, "braille cells: {braille}");
     }
 
     #[test]

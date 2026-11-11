@@ -82,8 +82,19 @@ impl CoverView {
             return;
         }
         if self.state.is_none() {
-            let placeholder = ratatui::widgets::Paragraph::new("░ ░ ░\n░ ♪ ░\n░ ░ ░")
-                .style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+            let placeholder = ratatui::widgets::Paragraph::new(format!(
+                "{} {} {}\n{} {} {}\n{} {} {}",
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::NOTE,
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::COVER_FILL,
+                crate::glyphs::COVER_FILL,
+            ))
+            .style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
             let inner = Rect {
                 x: area.x,
                 y: area.y + 1,
