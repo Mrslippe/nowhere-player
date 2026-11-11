@@ -1019,7 +1019,7 @@ fn draw_panel(
             width: text_width,
             height: spectrum_height,
         };
-        draw_visual(frame, area, app, app.palette.accent);
+        draw_visual(frame, area, app, app.palette.accent, app.palette.bg);
     }
     y += spectrum_height;
 
@@ -1070,10 +1070,17 @@ fn draw_panel(
     }
 }
 
-fn draw_spectrum(frame: &mut ratatui::Frame, area: Rect, values: &[f32], accent: Color) {
+fn draw_spectrum(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    values: &[f32],
+    accent: Color,
+    background: Color,
+) {
     let canvas = Canvas::default()
         .x_bounds([0.0, 16.0])
         .y_bounds([0.0, 1.0])
+        .background_color(background)
         .marker(Marker::Braille)
         .paint(move |ctx| {
             for index in 0..=64 {
@@ -1096,13 +1103,25 @@ fn draw_spectrum(frame: &mut ratatui::Frame, area: Rect, values: &[f32], accent:
     frame.render_widget(canvas, area);
 }
 
-fn draw_visual(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
+fn draw_visual(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    accent: Color,
+    background: Option<Color>,
+) {
+    let background = background.unwrap_or(Color::Reset);
     match app.visual_mode {
-        VisualMode::Spectrum => draw_spectrum(frame, area, &app.spectrum, accent),
-        VisualMode::Waveform => draw_waveform(frame, area, &app.waveform, accent),
-        VisualMode::Vectorscope => {
-            draw_vectorscope(frame, area, &app.stereo_left, &app.stereo_right, accent)
-        }
+        VisualMode::Spectrum => draw_spectrum(frame, area, &app.spectrum, accent, background),
+        VisualMode::Waveform => draw_waveform(frame, area, &app.waveform, accent, background),
+        VisualMode::Vectorscope => draw_vectorscope(
+            frame,
+            area,
+            &app.stereo_left,
+            &app.stereo_right,
+            accent,
+            background,
+        ),
     }
 }
 
@@ -1112,10 +1131,12 @@ fn draw_vectorscope(
     left: &[f32],
     right: &[f32],
     accent: Color,
+    background: Color,
 ) {
     let canvas = Canvas::default()
         .x_bounds([-1.0, 1.0])
         .y_bounds([-1.0, 1.0])
+        .background_color(background)
         .marker(Marker::Braille)
         .paint(move |ctx| {
             // 45° reference line; no signal / mono source naturally lies here.
@@ -1150,10 +1171,17 @@ fn draw_vectorscope(
     frame.render_widget(canvas, area);
 }
 
-fn draw_waveform(frame: &mut ratatui::Frame, area: Rect, samples: &[f32], accent: Color) {
+fn draw_waveform(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    samples: &[f32],
+    accent: Color,
+    background: Color,
+) {
     let canvas = Canvas::default()
         .x_bounds([0.0, 64.0])
         .y_bounds([-1.0, 1.0])
+        .background_color(background)
         .marker(Marker::Braille)
         .paint(move |ctx| {
             let count = samples.len().max(2);
