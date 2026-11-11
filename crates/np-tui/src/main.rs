@@ -12,7 +12,10 @@ mod audio;
 mod cover;
 mod fft;
 mod glyphs;
+mod launcher;
 mod theme;
+#[cfg(windows)]
+mod tray;
 
 use audio::TuiAudio;
 use cover::CoverView;
@@ -93,6 +96,8 @@ struct App {
     search_id: u64,
     search_pending: bool,
     no_color_ignored: bool,
+    #[cfg(windows)]
+    tray_rx: Option<std::sync::mpsc::Receiver<tray::TrayAction>>,
     palette: Palette,
     theme_id: String,
     theme_name: String,
@@ -124,6 +129,8 @@ impl App {
             search_id: 0,
             search_pending: false,
             no_color_ignored: false,
+            #[cfg(windows)]
+            tray_rx: None,
             palette: Palette::terminal(),
             theme_id: "terminal".to_owned(),
             theme_name: "跟随终端".to_owned(),
@@ -223,6 +230,34 @@ impl App {
                 self.status = format!("主题加载失败：{}，已回退内置 dark", error.message);
             }
         }
+    }
+
+    #[cfg(windows)]
+    fn poll_tray(&mut self, player: &mut TuiAudio) -> bool {
+        let Some(rx) = &self.tray_rx else {
+            return false;
+        };
+        while let Ok(action) = rx.try_recv() {
+            match action {
+                tray::TrayAction::Show => tray::focus_console(),
+                tray::TrayAction::Toggle => {
+                    player.toggle();
+                    self.status = if player.is_playing() {
+                        "托盘：继续播放".to_owned()
+                    } else {
+                        "托盘：已暂停".to_owned()
+                    };
+                }
+                tray::TrayAction::Next => {
+                    self.status = "托盘：队列为空".to_owned();
+                }
+                tray::TrayAction::HotkeyFailed => {
+                    self.status = "全局热键注册失败（可能被占用）".to_owned();
+                }
+                tray::TrayAction::Quit => return true,
+            }
+        }
+        false
     }
 
     fn refresh_completion(&mut self, player: &dyn PlayerApi) -> bool {
@@ -466,7 +501,13 @@ fn tui_data_dir() -> PathBuf {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if !launcher::is_tty() {
+        let _ = launcher::relaunch_from_explorer();
+        return Ok(());
+    }
     let started = std::time::Instant::now();
+    let _ = launcher::install_fragment();
+    let fallback = std::env::var_os(launcher::FALLBACK_ENV).is_some();
     let data_dir = tui_data_dir();
     let config_dir = data_dir.join("config");
     let cache_dir = data_dir.join("cache");
@@ -491,6 +532,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.no_color_ignored = no_color;
     if no_color {
         app.status = "检测到 NO_COLOR，已忽略（保留彩色主题）".to_owned();
+    }
+    if fallback {
+        app.status = "未找到 wt，已用 conhost，封面降级为字符".to_owned();
+    }
+    #[cfg(windows)]
+    {
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
+        tray::spawn(tray_tx);
+        app.tray_rx = Some(tray_rx);
     }
     app.load_theme(
         &theme_api,
@@ -596,6 +646,10 @@ where
                 app.search_pending = false;
                 draw_needed = true;
             }
+        }
+        #[cfg(windows)]
+        if app.poll_tray(player) {
+            return Ok(());
         }
         if app.refresh_completion(player) || cover.poll() {
             draw_needed = true;
