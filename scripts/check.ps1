@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# 全量门禁：前端 typecheck / build / test，再 Rust fmt / clippy / test。
+# 全量门禁：Rust fmt / clippy / test（Web 前端已移除）。
 # 用法：pwsh scripts/check.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -20,16 +20,6 @@ function Invoke-CheckStep {
         exit 1
     }
     Write-Host "[ OK ] $Name"
-}
-
-# 前端先跑：apps/desktop 的 generate_context! 需要 apps/web/dist 已存在。
-if (Test-Path -LiteralPath 'apps/web/package.json') {
-    Invoke-CheckStep 'pnpm -C apps/web typecheck' { pnpm -C apps/web typecheck }
-    Invoke-CheckStep 'pnpm -C apps/web build' { pnpm -C apps/web build }
-    Invoke-CheckStep 'pnpm -C apps/web test' { pnpm -C apps/web test }
-} else {
-    Write-Host ''
-    Write-Host '[SKIP] apps/web/package.json 不存在，跳过前端检查'
 }
 
 Invoke-CheckStep 'cargo fmt --all -- --check' { cargo fmt --all -- --check }

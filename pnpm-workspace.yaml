@@ -1,6 +1,0 @@
-packages:
-  - "apps/*"
-
-# pnpm 11 默认拦截依赖构建脚本；esbuild 是 vite 7 的依赖，需要 postinstall 校验平台二进制。
-allowBuilds:
-  esbuild: true
