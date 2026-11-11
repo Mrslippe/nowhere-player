@@ -811,6 +811,22 @@ fn capture_table(
     view
 }
 
+fn log_singleton(acquired: bool) {
+    let path = std::env::temp_dir().join("nowhere-tui-launch.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            file,
+            "singleton: {}",
+            if acquired { "acquired" } else { "secondary" }
+        );
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let selftest = std::env::var("NP_TUI_SELFTEST")
         .ok()
@@ -818,6 +834,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if selftest.is_none() && !launcher::is_tty() {
         let _ = launcher::relaunch_from_explorer();
         return Ok(());
+    }
+    // bootstrap 之后再取单实例锁：父进程不能持有锁再拉子进程。
+    if selftest.is_none() {
+        let acquired = instance::acquire();
+        log_singleton(acquired);
+        if !acquired {
+            std::process::exit(0);
+        }
     }
     let started = std::time::Instant::now();
     if selftest.is_none() {
