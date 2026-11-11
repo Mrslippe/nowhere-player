@@ -62,6 +62,21 @@ impl CoverView {
         &self.protocol
     }
 
+    /// 主动收工作线程的编码结果；返回是否有更新。
+    pub fn poll(&mut self) -> bool {
+        let Some(rx) = &self.rx else {
+            return false;
+        };
+        let mut updated = false;
+        while let Ok(response) = rx.try_recv() {
+            if let Some(state) = &mut self.state {
+                let _ = state.update_resized_protocol(response);
+                updated = true;
+            }
+        }
+        updated
+    }
+
     pub fn render(&mut self, area: Rect, frame: &mut ratatui::Frame) {
         if area.width < 2 || area.height < 2 {
             return;
@@ -79,17 +94,6 @@ impl CoverView {
             return;
         }
 
-        // Drain any completed encoding before drawing; the worker may still be
-        // resizing the next request.
-        if let Some(rx) = &self.rx {
-            while let Ok(response) = rx.try_recv() {
-                let _ = self
-                    .state
-                    .as_mut()
-                    .expect("state")
-                    .update_resized_protocol(response);
-            }
-        }
         if area.as_size() != self.last_area {
             self.last_area = area.as_size();
         }

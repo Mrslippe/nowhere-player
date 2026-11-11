@@ -23,7 +23,7 @@ use crossterm::terminal::{
 };
 use fft::{level_char, spectrum};
 use np_app::{
-    Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services,
+    Execution, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services, complete_for,
     execute_with_services,
 };
 use np_core::{Block, BlockStatus, Output, Span, SpanColor, Tone};
@@ -68,6 +68,12 @@ struct App {
     immersive: bool,
     spectrum: Vec<f32>,
     spectrum_generation: u64,
+    completion: Option<np_core::Completion>,
+    completion_index: usize,
+    last_edit: std::time::Instant,
+    history_nav: bool,
+    search_id: u64,
+    search_pending: bool,
 }
 
 impl App {
@@ -85,6 +91,12 @@ impl App {
             immersive: false,
             spectrum: vec![0.0; 16],
             spectrum_generation: 0,
+            completion: None,
+            completion_index: 0,
+            last_edit: std::time::Instant::now(),
+            history_nav: false,
+            search_id: 0,
+            search_pending: false,
         }
     }
 
@@ -96,6 +108,9 @@ impl App {
         self.input.insert(self.cursor, character);
         self.cursor += 1;
         self.history_cursor = None;
+        self.history_nav = false;
+        self.last_edit = std::time::Instant::now();
+        self.completion = None;
     }
 
     fn backspace(&mut self) {
@@ -103,6 +118,9 @@ impl App {
             self.cursor -= 1;
             self.input.remove(self.cursor);
             self.history_cursor = None;
+            self.history_nav = false;
+            self.last_edit = std::time::Instant::now();
+            self.completion = None;
         }
     }
 
@@ -124,6 +142,8 @@ impl App {
             .history_cursor
             .map_or(self.history.len() - 1, |index| index.saturating_sub(1));
         self.history_cursor = Some(next);
+        self.history_nav = true;
+        self.completion = None;
         self.input = self.history[next].chars().collect();
         self.cursor = self.input.len();
     }
@@ -134,16 +154,96 @@ impl App {
         };
         if index + 1 >= self.history.len() {
             self.history_cursor = None;
+            self.history_nav = false;
             self.input.clear();
             self.cursor = 0;
         } else {
             self.history_cursor = Some(index + 1);
+            self.history_nav = true;
+            self.completion = None;
             self.input = self.history[index + 1].chars().collect();
             self.cursor = self.input.len();
         }
     }
 
-    fn run(&mut self, input: String, player: &dyn PlayerApi, library: &dyn LibraryApi) {
+    fn refresh_completion(&mut self, player: &dyn PlayerApi) -> bool {
+        if self.input.is_empty() {
+            self.completion = None;
+            return false;
+        }
+        if self.history_nav {
+            return self.completion.take().is_some();
+        }
+        if self.last_edit.elapsed() < std::time::Duration::from_millis(80) {
+            return false;
+        }
+        let completion = complete_for(player, &self.input_text(), self.cursor);
+        let changed = self
+            .completion
+            .as_ref()
+            .map(|old| old.items.len() != completion.items.len())
+            .unwrap_or(false);
+        self.completion = if completion.items.is_empty() {
+            None
+        } else {
+            Some(completion)
+        };
+        self.completion_index = 0;
+        changed
+    }
+
+    fn move_completion(&mut self, down: bool) -> bool {
+        let Some(completion) = &self.completion else {
+            return false;
+        };
+        let len = completion.items.len();
+        if len == 0 {
+            return false;
+        }
+        if down {
+            self.completion_index = (self.completion_index + 1) % len;
+        } else {
+            self.completion_index = (self.completion_index + len - 1) % len;
+        }
+        true
+    }
+
+    fn accept_completion(&mut self) -> bool {
+        let Some(completion) = self.completion.take() else {
+            return false;
+        };
+        let Some(item) = completion.items.get(self.completion_index) else {
+            return false;
+        };
+        let start = completion.replace_start.min(self.input.len());
+        let end = completion.replace_end.min(self.input.len());
+        self.input.splice(start..end, item.text.chars());
+        self.cursor = start + item.text.chars().count();
+        self.history_nav = false;
+        self.last_edit = std::time::Instant::now();
+        true
+    }
+
+    fn upsert_block(&mut self, block: Block) {
+        if let Some(existing) = self
+            .blocks
+            .iter_mut()
+            .find(|existing| existing.id == block.id)
+        {
+            *existing = block;
+        } else {
+            self.blocks.push(block);
+        }
+        self.auto_scroll = true;
+    }
+
+    fn run(
+        &mut self,
+        input: String,
+        player: &dyn PlayerApi,
+        library: &Arc<LibraryHandle>,
+        tx: &std::sync::mpsc::Sender<(u64, Block)>,
+    ) {
         if input.trim().is_empty() {
             return;
         }
@@ -153,9 +253,55 @@ impl App {
         self.history_cursor = None;
         self.status = format!("执行：{input}");
         let block_id = format!("tui-{}", now_millis());
+
+        if let Ok(Some(parsed)) = np_core::command::parse(&input)
+            && parsed.spec.name == "search"
+            && let Ok(options) = np_app::SearchOptions::parse(&parsed)
+            && !options.local
+        {
+            self.search_id += 1;
+            self.search_pending = true;
+            let search_id = self.search_id;
+            let template = if options.up.is_some() || options.mid.is_some() {
+                np_app::up_started_block(&block_id, &input, options.up.as_deref().unwrap_or("mid"))
+            } else {
+                np_app::search_started_block(&block_id, &input, &options.keyword)
+            };
+            self.upsert_block(template.clone());
+            self.status = "搜索中…（输入行仍可编辑）".to_owned();
+            let online = library.online();
+            let library = Arc::clone(library);
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let emit = move |block: &Block| {
+                    let _ = tx.send((search_id, block.clone()));
+                };
+                if options.up.is_some() || options.mid.is_some() {
+                    np_app::run_up_search(
+                        &options,
+                        &*online,
+                        &*library,
+                        &emit,
+                        &template,
+                        &np_app::now_millis,
+                    );
+                } else {
+                    np_app::run_online_search_with_options(
+                        &options,
+                        &*online,
+                        &*library,
+                        &emit,
+                        &template,
+                        &np_app::now_millis,
+                    );
+                }
+            });
+            return;
+        }
+
         let execution = execute_with_services(
             player,
-            library,
+            &**library,
             Services::default(),
             &block_id,
             &input,
@@ -169,13 +315,11 @@ impl App {
                     done.status_label(),
                     done.duration_ms.unwrap_or(0)
                 );
-                self.blocks.push(*done);
-                self.auto_scroll = true;
+                self.upsert_block(*done);
             }
             Execution::Accepted { running } => {
                 self.status = "后台任务已受理".to_owned();
-                self.blocks.push(*running);
-                self.auto_scroll = true;
+                self.upsert_block(*running);
             }
         }
     }
@@ -205,29 +349,51 @@ fn now_millis() -> u64 {
         })
 }
 
+fn resolve_cover(player: &TuiAudio, library: &Arc<LibraryHandle>) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("NP_TUI_COVER") {
+        return Some(PathBuf::from(path));
+    }
+    let track = library
+        .track_by_path(player.source_path()?.to_str()?)
+        .ok()
+        .flatten()?;
+    let key = track.cover_key?;
+    let dir = library.covers_dir();
+    let path = dir.join(format!("{key}.jpg"));
+    path.is_file().then_some(path)
+}
+
+fn tui_data_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("NP_TUI_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+    let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let bench = root.join("tmp/bench");
+    let copied = root.join("tmp/np-tui-data");
+    if bench.join("library.db").is_file() && !copied.join("library.db").is_file() {
+        let _ = std::fs::create_dir_all(&copied);
+        let _ = std::fs::copy(bench.join("library.db"), copied.join("library.db"));
+    }
+    if copied.is_dir() {
+        copied
+    } else {
+        std::env::temp_dir().join("nowhere-tui")
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = std::time::Instant::now();
-    let data_dir = std::env::var_os("NP_TUI_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let local = std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join("tmp/bench");
-            if local.is_dir() {
-                local
-            } else {
-                std::env::temp_dir().join("nowhere-tui")
-            }
-        });
+    let data_dir = tui_data_dir();
     let config_dir = data_dir.join("config");
     let cache_dir = data_dir.join("cache");
     std::fs::create_dir_all(&config_dir)?;
     std::fs::create_dir_all(&cache_dir)?;
-    let library = LibraryHandle::with_paths(Paths {
+    let library = Arc::new(LibraryHandle::with_paths(Paths {
         config_dir,
         cache_dir,
         data_dir,
-    });
+    }));
+    let (search_tx, search_rx) = std::sync::mpsc::channel();
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
 
@@ -236,15 +402,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let cover_path = std::env::var_os("NP_TUI_COVER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/cover.jpg"));
-    let mut cover = CoverView::load(&cover_path);
+    let cover_path = resolve_cover(&player, &library);
+    let mut cover = cover_path
+        .as_deref()
+        .map(CoverView::load)
+        .unwrap_or_else(CoverView::empty);
     terminal.draw(|frame| draw(frame, &mut app, &player, &mut cover))?;
     if let Ok(path) = std::env::var("NP_TUI_STARTUP_FILE") {
         std::fs::write(path, started.elapsed().as_millis().to_string())?;
     }
-    let result = run(&mut terminal, &mut app, &mut player, &mut cover, &library);
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &mut player,
+        &mut cover,
+        &library,
+        &search_tx,
+        &search_rx,
+    );
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -261,19 +436,32 @@ fn run<B: Backend>(
     app: &mut App,
     player: &mut TuiAudio,
     cover: &mut CoverView,
-    library: &dyn LibraryApi,
+    library: &Arc<LibraryHandle>,
+    search_tx: &std::sync::mpsc::Sender<(u64, Block)>,
+    search_rx: &std::sync::mpsc::Receiver<(u64, Block)>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: std::error::Error + 'static,
 {
     let mut draw_needed = true;
     loop {
+        while let Ok((search_id, block)) = search_rx.try_recv() {
+            if search_id == app.search_id {
+                app.upsert_block(block);
+                app.status = "搜索完成".to_owned();
+                app.search_pending = false;
+                draw_needed = true;
+            }
+        }
+        if app.refresh_completion(player) || cover.poll() {
+            draw_needed = true;
+        }
         if draw_needed {
             update_spectrum(app, player);
             terminal.draw(|frame| draw(frame, app, player, cover))?;
             draw_needed = false;
         }
-        let timeout = if player.is_playing() {
+        let timeout = if player.is_playing() || app.search_pending || !app.input.is_empty() {
             std::time::Duration::from_millis(50)
         } else {
             std::time::Duration::from_millis(500)
@@ -294,7 +482,10 @@ where
                     } else {
                         match key.code {
                             KeyCode::Esc => {
-                                if app.immersive {
+                                if app.completion.is_some() {
+                                    app.completion = None;
+                                    draw_needed = true;
+                                } else if app.immersive {
                                     app.immersive = false;
                                     draw_needed = true;
                                 } else {
@@ -302,9 +493,15 @@ where
                                 }
                             }
                             KeyCode::Enter => {
+                                app.completion = None;
                                 let input = app.input_text();
-                                app.run(input, player, library);
+                                app.run(input, player, library, search_tx);
                                 draw_needed = true;
+                            }
+                            KeyCode::Tab => {
+                                if app.accept_completion() {
+                                    draw_needed = true;
+                                }
                             }
                             KeyCode::Char(' ') if app.input.is_empty() => {
                                 player.toggle();
@@ -327,11 +524,19 @@ where
                                 draw_needed = true;
                             }
                             KeyCode::Up => {
-                                app.history_up();
+                                if app.completion.is_some() {
+                                    app.move_completion(false);
+                                } else {
+                                    app.history_up();
+                                }
                                 draw_needed = true;
                             }
                             KeyCode::Down => {
-                                app.history_down();
+                                if app.completion.is_some() {
+                                    app.move_completion(true);
+                                } else {
+                                    app.history_down();
+                                }
                                 draw_needed = true;
                             }
                             KeyCode::PageUp => {
@@ -383,6 +588,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         .constraints([
             Constraint::Length(1),
             Constraint::Min(5),
+            Constraint::Length(6),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
@@ -413,6 +619,8 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         draw_output(frame, rows[1], app);
     }
 
+    draw_completion(frame, rows[2], app);
+
     let input = Paragraph::new(input_line(app))
         .block(
             TuiBlock::default()
@@ -421,13 +629,13 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
                 .title(" 输入命令 "),
         )
         .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg));
-    frame.render_widget(input, rows[2]);
+    frame.render_widget(input, rows[3]);
 
-    let cursor_x = rows[2]
+    let cursor_x = rows[3]
         .x
         .saturating_add(1)
         .saturating_add(input_width_before(app) as u16);
-    let cursor_y = rows[2].y.saturating_add(1);
+    let cursor_y = rows[3].y.saturating_add(1);
     frame.set_cursor_position((cursor_x, cursor_y));
 
     let panel_hint = if app.panel_visible {
@@ -442,7 +650,44 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         panel_hint
     ))
     .style(Style::default().bg(PALETTE.bg).fg(PALETTE.muted));
-    frame.render_widget(status, rows[3]);
+    frame.render_widget(status, rows[4]);
+}
+
+fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(PALETTE.muted))
+        .title(" 候选 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(completion) = &app.completion else {
+        return;
+    };
+    let mut lines = Vec::new();
+    for (index, item) in completion.items.iter().take(5).enumerate() {
+        let selected = index == app.completion_index;
+        let marker = if selected { "▸" } else { " " };
+        let text = format!("{marker} {}  {}", item.text, item.summary);
+        let style = if selected {
+            Style::default()
+                .bg(PALETTE.fg)
+                .fg(PALETTE.bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(PALETTE.fg)
+        };
+        lines.push(Line::from(TuiSpan::styled(
+            truncate_width(&text, inner.width as usize),
+            style,
+        )));
+    }
+    if let Some(item) = completion.items.get(app.completion_index) {
+        lines.push(Line::from(TuiSpan::styled(
+            truncate_width(&item.usage, inner.width as usize),
+            Style::default().fg(PALETTE.muted),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_output(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -488,10 +733,7 @@ fn draw_panel(
     let cover_height = if immersive {
         inner.height.saturating_mul(6) / 10
     } else {
-        (inner.width / 2)
-            .min(8)
-            .min(inner.height.saturating_sub(8))
-            .max(4)
+        inner.height.saturating_sub(6).clamp(2, 4)
     };
     let cover_area = Rect {
         x: inner.x,
@@ -520,6 +762,21 @@ fn draw_panel(
     } else {
         inner.y + cover_height
     };
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Line::from(TuiSpan::styled(
+                app_spectrum_chars(&app.spectrum, 0.0, text_width as usize),
+                Style::default().fg(PALETTE.accent),
+            ))),
+            Rect {
+                x: text_x,
+                y,
+                width: text_width,
+                height: 1,
+            },
+        );
+        y += 1;
+    }
     let title = truncate_width(player.title(), text_width as usize);
     let artist = truncate_width(player.artist(), text_width as usize);
     if y < inner.y + inner.height {
@@ -551,28 +808,6 @@ fn draw_panel(
             },
         );
         y += 1;
-    }
-
-    // Spectrum: one char per band, several rows so it reads as bars.
-    let spectrum_rows = 4u16.min(inner.height / 4).max(1);
-    if y < inner.y + inner.height {
-        for row in 0..spectrum_rows {
-            let threshold = 1.0 - row as f32 / spectrum_rows.max(1) as f32;
-            let text: String = app_spectrum_chars(&app.spectrum, threshold, inner.width as usize);
-            frame.render_widget(
-                Paragraph::new(Line::from(TuiSpan::styled(
-                    text,
-                    Style::default().fg(PALETTE.accent),
-                ))),
-                Rect {
-                    x: text_x,
-                    y,
-                    width: text_width,
-                    height: 1,
-                },
-            );
-            y += 1;
-        }
     }
 
     let duration = player.duration_ms().unwrap_or(0);
@@ -890,6 +1125,65 @@ mod tests {
     }
 
     #[test]
+    fn block_upsert_replaces_same_id() {
+        let mut app = App::new();
+        let running = Block {
+            id: "same".to_owned(),
+            input: "search".to_owned(),
+            started_at: 0,
+            duration_ms: None,
+            status: BlockStatus::Running,
+            outputs: vec![],
+            footer: None,
+            schema_version: 1,
+            actions: None,
+        };
+        let done = Block {
+            status: BlockStatus::Done,
+            ..running.clone()
+        };
+        app.upsert_block(running);
+        app.upsert_block(done);
+        assert_eq!(app.blocks.len(), 1);
+        assert_eq!(app.blocks[0].status, BlockStatus::Done);
+    }
+
+    #[test]
+    fn test_backend_renders_completion_area() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::new();
+        app.completion = Some(np_core::Completion {
+            replace_start: 0,
+            replace_end: 3,
+            items: vec![np_core::CompletionItem {
+                text: "search".to_owned(),
+                kind: np_core::CompletionKind::Command,
+                summary: "搜索".to_owned(),
+                usage: "search [关键词]".to_owned(),
+            }],
+        });
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("候选"), "{text}");
+        assert!(compact.contains("search"), "{text}");
+    }
+
+    #[test]
     fn test_backend_renders_title_and_input() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -907,6 +1201,37 @@ mod tests {
         let compact = rendered.replace(' ', "");
         assert!(compact.contains("NowherePlayer"), "{rendered}");
         assert!(compact.contains("输入命令"), "{rendered}");
+    }
+
+    #[test]
+    fn tab_accepts_highlighted_completion() {
+        let mut app = App::new();
+        app.input = "sea".chars().collect();
+        app.cursor = 3;
+        app.completion = Some(np_core::Completion {
+            replace_start: 0,
+            replace_end: 3,
+            items: vec![np_core::CompletionItem {
+                text: "search".to_owned(),
+                kind: np_core::CompletionKind::Command,
+                summary: "搜索".to_owned(),
+                usage: "search [关键词]".to_owned(),
+            }],
+        });
+        assert!(app.accept_completion());
+        assert_eq!(app.input_text(), "search");
+        assert_eq!(app.cursor, 6);
+    }
+
+    #[test]
+    fn history_navigation_suppresses_completion() {
+        let mut app = App::new();
+        app.history = vec!["help".to_owned()];
+        app.history_up();
+        let audio = TuiAudio::empty();
+        app.refresh_completion(&audio);
+        assert!(app.completion.is_none());
+        assert_eq!(app.input_text(), "help");
     }
 
     #[test]

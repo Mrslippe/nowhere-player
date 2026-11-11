@@ -12,6 +12,7 @@ pub struct TuiAudio {
     title: String,
     artist: String,
     duration_ms: Option<u64>,
+    source_path: Option<PathBuf>,
 }
 
 impl TuiAudio {
@@ -39,6 +40,7 @@ impl TuiAudio {
                     title,
                     artist,
                     duration_ms,
+                    source_path: Some(path),
                 }
             }
             Err(_) => Self::empty(),
@@ -53,6 +55,7 @@ impl TuiAudio {
             title: "未播放".to_owned(),
             artist: "Nowhere Player".to_owned(),
             duration_ms: None,
+            source_path: None,
         }
     }
 
@@ -87,6 +90,10 @@ impl TuiAudio {
 
     pub fn tap(&self) -> Option<&SampleTapHandle> {
         self.tap.as_ref()
+    }
+
+    pub fn source_path(&self) -> Option<&std::path::Path> {
+        self.source_path.as_deref()
     }
 
     pub fn toggle(&mut self) {
