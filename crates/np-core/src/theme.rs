@@ -89,6 +89,231 @@ impl Skin {
     }
 }
 
+macro_rules! structure_axis {
+    ($name:ident, [$($variant:ident => $text:literal),+ $(,)?]) => {
+        /// 结构轴取值；未知字符串由 [`parse_axis`] 回落并告警。
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "lowercase")]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            /// 大小写不敏感解析；未知值返回 `None`。
+            pub fn parse(value: &str) -> Option<Self> {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    $($text => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            /// 写进主题 JSON / DOM 属性的规范值。
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text),+
+                }
+            }
+        }
+
+        impl Axis for $name {
+            fn parse_axis_value(value: &str) -> Option<Self> {
+                Self::parse(value)
+            }
+
+            fn as_str(self) -> &'static str {
+                self.as_str()
+            }
+        }
+    };
+}
+
+structure_axis!(Radius, [None => "none", Subtle => "subtle", Soft => "soft"]);
+structure_axis!(Border, [None => "none", Hairline => "hairline", Box => "box"]);
+structure_axis!(Density, [Compact => "compact", Normal => "normal", Relaxed => "relaxed"]);
+structure_axis!(Progress, [Line => "line", Blocks => "blocks", Bracket => "bracket"]);
+structure_axis!(Selection, [Bar => "bar", Reverse => "reverse", Bg => "bg"]);
+structure_axis!(Labels, [Sentence => "sentence", Tracked => "tracked"]);
+structure_axis!(Stripe, [Off => "off", On => "on"]);
+structure_axis!(Font, [Mixed => "mixed", Mono => "mono"]);
+
+/// 内部通用轴接口；公开结构体只暴露具体枚举。
+trait Axis: Copy {
+    fn parse_axis_value(value: &str) -> Option<Self>;
+    fn as_str(self) -> &'static str;
+}
+
+/// 用户可覆盖的 8 个结构轴；全部 `None` 时完全按 skin 预设。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Structure {
+    /// 卡片/控件/弹层圆角。
+    pub radius: Option<Radius>,
+    /// 边框。
+    pub border: Option<Border>,
+    /// 行高与 cell padding。
+    pub density: Option<Density>,
+    /// 进度条形态。
+    pub progress: Option<Progress>,
+    /// 选中行形态。
+    pub selection: Option<Selection>,
+    /// 表头/字段名大小写。
+    pub labels: Option<Labels>,
+    /// 表格隔行底色。
+    pub stripe: Option<Stripe>,
+    /// 界面字体。
+    pub font: Option<Font>,
+}
+
+/// 补全后的结构值：8 轴都有值，可直接写 DOM / 导出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedStructure {
+    pub radius: Radius,
+    pub border: Border,
+    pub density: Density,
+    pub progress: Progress,
+    pub selection: Selection,
+    pub labels: Labels,
+    pub stripe: Stripe,
+    pub font: Font,
+}
+
+impl ResolvedStructure {
+    /// 每个 skin 的既有观感，显式化成 8 个值。
+    ///
+    /// `plain` / `phosphor` 这两组值就是 T-0056 的零变化基线。
+    pub fn preset(skin: Skin) -> Self {
+        match skin {
+            Skin::Plain => Self {
+                radius: Radius::Soft,
+                border: Border::Hairline,
+                density: Density::Normal,
+                progress: Progress::Line,
+                selection: Selection::Bar,
+                labels: Labels::Sentence,
+                stripe: Stripe::Off,
+                font: Font::Mixed,
+            },
+            Skin::Phosphor => Self {
+                radius: Radius::None,
+                border: Border::None,
+                density: Density::Compact,
+                progress: Progress::Line,
+                selection: Selection::Bg,
+                labels: Labels::Sentence,
+                stripe: Stripe::Off,
+                font: Font::Mono,
+            },
+        }
+    }
+}
+
+impl Structure {
+    /// 缺项按 skin 补全，并执行轴间互斥；不收集 warning。
+    pub fn resolve(&self, skin: Skin) -> ResolvedStructure {
+        self.resolve_with_warnings(skin, &mut Vec::new())
+    }
+
+    /// 补全并执行语义约束：
+    /// - `selection=reverse` 与 `stripe=on` 互斥，stripe 强制 off；
+    /// - `progress=blocks/bracket` 需要等宽字体，`font=mixed` 时回退 line。
+    pub fn resolve_with_warnings(
+        &self,
+        skin: Skin,
+        warnings: &mut Vec<String>,
+    ) -> ResolvedStructure {
+        let defaults = ResolvedStructure::preset(skin);
+        let font = self.font.unwrap_or(defaults.font);
+        let mut progress = self.progress.unwrap_or(defaults.progress);
+        let selection = self.selection.unwrap_or(defaults.selection);
+        let mut stripe = self.stripe.unwrap_or(defaults.stripe);
+
+        if matches!(progress, Progress::Blocks | Progress::Bracket) && font == Font::Mixed {
+            progress = Progress::Line;
+            warnings.push("structure.progress 需要 font=mono，已回落 line".to_owned());
+        }
+        if selection == Selection::Reverse && stripe == Stripe::On {
+            stripe = Stripe::Off;
+            warnings.push("structure.stripe=on 与 selection=reverse 互斥，已强制 off".to_owned());
+        }
+
+        ResolvedStructure {
+            radius: self.radius.unwrap_or(defaults.radius),
+            border: self.border.unwrap_or(defaults.border),
+            density: self.density.unwrap_or(defaults.density),
+            progress,
+            selection,
+            labels: self.labels.unwrap_or(defaults.labels),
+            stripe,
+            font,
+        }
+    }
+}
+
+/// 主题 JSON 里的 `structure`：字段全是字符串，非法值由 [`parse_axis`] 回落。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RawStructure {
+    pub radius: Option<String>,
+    pub border: Option<String>,
+    pub density: Option<String>,
+    pub progress: Option<String>,
+    pub selection: Option<String>,
+    pub labels: Option<String>,
+    pub stripe: Option<String>,
+    pub font: Option<String>,
+}
+
+fn parse_axis<T: Axis>(
+    name: &str,
+    raw: Option<String>,
+    fallback: T,
+    warnings: &mut Vec<String>,
+) -> T {
+    match raw {
+        None => fallback,
+        Some(value) => T::parse_axis_value(&value).unwrap_or_else(|| {
+            warnings.push(format!(
+                "structure.{name} 非法值（{value}），已回落 {}",
+                fallback.as_str()
+            ));
+            fallback
+        }),
+    }
+}
+
+fn parse_structure(
+    raw: Option<RawStructure>,
+    skin: Skin,
+    warnings: &mut Vec<String>,
+) -> ResolvedStructure {
+    let preset = ResolvedStructure::preset(skin);
+    let Some(raw) = raw else {
+        return preset;
+    };
+    let requested = Structure {
+        radius: Some(parse_axis("radius", raw.radius, preset.radius, warnings)),
+        border: Some(parse_axis("border", raw.border, preset.border, warnings)),
+        density: Some(parse_axis("density", raw.density, preset.density, warnings)),
+        progress: Some(parse_axis(
+            "progress",
+            raw.progress,
+            preset.progress,
+            warnings,
+        )),
+        selection: Some(parse_axis(
+            "selection",
+            raw.selection,
+            preset.selection,
+            warnings,
+        )),
+        labels: Some(parse_axis("labels", raw.labels, preset.labels, warnings)),
+        stripe: Some(parse_axis("stripe", raw.stripe, preset.stripe, warnings)),
+        font: Some(parse_axis("font", raw.font, preset.font, warnings)),
+    };
+    requested.resolve_with_warnings(skin, warnings)
+}
+
 /// 14 个颜色 token 的完整集合；`Default` 就是 graphite（内置默认值）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,6 +438,8 @@ pub struct RawTheme {
     pub contract: Option<u32>,
     /// 皮肤名（字符串，未知值回落 `plain`）。
     pub skin: Option<String>,
+    /// 可选结构轴（缺项按 skin 预设补全）。
+    pub structure: Option<RawStructure>,
     /// 颜色 token 表（未知键忽略，非法值跳过）。
     pub tokens: Option<BTreeMap<String, String>>,
 }
@@ -229,6 +456,8 @@ pub struct ThemeSpec {
     pub contract: u32,
     /// 结构皮肤。
     pub skin: Skin,
+    /// 补全后的 8 个结构轴（导出时写完整值）。
+    pub structure: ResolvedStructure,
     /// 完整颜色 token（缺项已补默认值）。
     pub tokens: ThemeTokens,
     /// 加载时产生的告警（未知 skin、非法颜色等），不阻止应用。
@@ -287,6 +516,7 @@ impl ThemeSpec {
             }),
         };
 
+        let structure = parse_structure(raw.structure, skin, &mut warnings);
         let defaults = Self::default().tokens;
         let mut tokens = ThemeTokens::default();
         for (key, value) in raw.tokens.unwrap_or_default() {
@@ -310,6 +540,7 @@ impl ThemeSpec {
             name,
             contract,
             skin,
+            structure,
             tokens,
             warnings,
         })
@@ -329,6 +560,27 @@ impl ThemeSpec {
             "  \"skin\": {},\n",
             json_string(self.skin.as_str())
         ));
+        out.push_str("  \"structure\": {\n");
+        let structure = [
+            ("radius", self.structure.radius.as_str()),
+            ("border", self.structure.border.as_str()),
+            ("density", self.structure.density.as_str()),
+            ("progress", self.structure.progress.as_str()),
+            ("selection", self.structure.selection.as_str()),
+            ("labels", self.structure.labels.as_str()),
+            ("stripe", self.structure.stripe.as_str()),
+            ("font", self.structure.font.as_str()),
+        ];
+        let last_structure = structure.len().saturating_sub(1);
+        for (index, (name, value)) in structure.iter().enumerate() {
+            let suffix = if index == last_structure { "" } else { "," };
+            out.push_str(&format!(
+                "    {}: {}{suffix}\n",
+                json_string(name),
+                json_string(value)
+            ));
+        }
+        out.push_str("  },\n");
         out.push_str("  \"tokens\": {\n");
         let last = THEME_TOKEN_NAMES.len().saturating_sub(1);
         for (index, name) in THEME_TOKEN_NAMES.iter().enumerate() {
@@ -354,6 +606,7 @@ impl Default for ThemeSpec {
             name: "石墨".to_owned(),
             contract: THEME_CONTRACT,
             skin: Skin::Plain,
+            structure: ResolvedStructure::preset(Skin::Plain),
             tokens: ThemeTokens::default(),
             warnings: Vec::new(),
         }
@@ -528,6 +781,7 @@ impl BuiltinTheme {
             name: self.name.to_owned(),
             contract: THEME_CONTRACT,
             skin: self.skin,
+            structure: ResolvedStructure::preset(self.skin),
             tokens,
             warnings: Vec::new(),
         }
@@ -920,5 +1174,165 @@ mod tests {
             Some(Skin::Plain)
         );
         assert!(BuiltinTheme::find("nope").is_none());
+    }
+
+    #[test]
+    fn missing_structure_uses_plain_preset() {
+        let spec = parse(r##"{"id":"x","contract":1,"skin":"plain"}"##).expect("plain");
+        assert_eq!(spec.structure, ResolvedStructure::preset(Skin::Plain));
+        assert_eq!(spec.structure.radius, Radius::Soft);
+        assert_eq!(spec.structure.border, Border::Hairline);
+        assert_eq!(spec.structure.font, Font::Mixed);
+    }
+
+    #[test]
+    fn missing_structure_uses_phosphor_preset() {
+        let spec = parse(r##"{"id":"x","contract":1,"skin":"phosphor"}"##).expect("phosphor");
+        assert_eq!(spec.structure, ResolvedStructure::preset(Skin::Phosphor));
+        assert_eq!(spec.structure.radius, Radius::None);
+        assert_eq!(spec.structure.selection, Selection::Bg);
+        assert_eq!(spec.structure.font, Font::Mono);
+    }
+
+    #[test]
+    fn structure_radius_axis_is_parsed() {
+        let spec =
+            parse(r##"{"id":"x","contract":1,"structure":{"radius":"none"}}"##).expect("radius");
+        assert_eq!(spec.structure.radius, Radius::None);
+    }
+
+    #[test]
+    fn structure_border_axis_is_parsed() {
+        let spec =
+            parse(r##"{"id":"x","contract":1,"structure":{"border":"box"}}"##).expect("border");
+        assert_eq!(spec.structure.border, Border::Box);
+    }
+
+    #[test]
+    fn structure_density_axis_is_parsed() {
+        let spec = parse(r##"{"id":"x","contract":1,"structure":{"density":"relaxed"}}"##)
+            .expect("density");
+        assert_eq!(spec.structure.density, Density::Relaxed);
+    }
+
+    #[test]
+    fn structure_progress_axis_is_parsed() {
+        let spec =
+            parse(r##"{"id":"x","contract":1,"structure":{"font":"mono","progress":"blocks"}}"##)
+                .expect("progress");
+        assert_eq!(spec.structure.progress, Progress::Blocks);
+    }
+
+    #[test]
+    fn structure_selection_axis_is_parsed() {
+        let spec = parse(r##"{"id":"x","contract":1,"structure":{"selection":"reverse"}}"##)
+            .expect("selection");
+        assert_eq!(spec.structure.selection, Selection::Reverse);
+    }
+
+    #[test]
+    fn structure_labels_axis_is_parsed() {
+        let spec =
+            parse(r##"{"id":"x","contract":1,"structure":{"labels":"tracked"}}"##).expect("labels");
+        assert_eq!(spec.structure.labels, Labels::Tracked);
+    }
+
+    #[test]
+    fn structure_stripe_axis_is_parsed() {
+        let spec =
+            parse(r##"{"id":"x","contract":1,"structure":{"stripe":"on"}}"##).expect("stripe");
+        assert_eq!(spec.structure.stripe, Stripe::On);
+    }
+
+    #[test]
+    fn structure_font_axis_is_parsed() {
+        let spec = parse(r##"{"id":"x","contract":1,"structure":{"font":"mono"}}"##).expect("font");
+        assert_eq!(spec.structure.font, Font::Mono);
+    }
+
+    #[test]
+    fn reverse_selection_forces_stripe_off_with_warning() {
+        let spec =
+            parse(r##"{"id":"x","contract":1,"structure":{"selection":"reverse","stripe":"on"}}"##)
+                .expect("reverse");
+        assert_eq!(spec.structure.selection, Selection::Reverse);
+        assert_eq!(spec.structure.stripe, Stripe::Off);
+        assert!(
+            spec.warnings
+                .iter()
+                .any(|warning| warning.contains("selection=reverse"))
+        );
+    }
+
+    #[test]
+    fn bracket_with_mixed_font_falls_back_to_line_with_warning() {
+        let spec = parse(r##"{"id":"x","contract":1,"structure":{"progress":"bracket"}}"##)
+            .expect("bracket");
+        assert_eq!(spec.structure.progress, Progress::Line);
+        assert!(
+            spec.warnings
+                .iter()
+                .any(|warning| warning.contains("font=mono"))
+        );
+    }
+
+    #[test]
+    fn invalid_structure_values_fall_back_with_warnings() {
+        let spec = parse(
+            r##"{"id":"x","contract":1,"skin":"plain","structure":{"radius":"round","border":"solid","density":"wide","progress":"bar","selection":"line","labels":"lower","stripe":"yes","font":"serif"}}"##,
+        )
+        .expect("invalid structure must not fail the theme");
+
+        assert_eq!(spec.structure, ResolvedStructure::preset(Skin::Plain));
+        assert_eq!(
+            spec.warnings
+                .iter()
+                .filter(|warning| warning.starts_with("structure."))
+                .count(),
+            8
+        );
+    }
+
+    #[test]
+    fn blocks_with_mixed_font_falls_back_to_line() {
+        let spec = parse(r##"{"id":"x","contract":1,"structure":{"progress":"blocks"}}"##)
+            .expect("blocks");
+        assert_eq!(spec.structure.progress, Progress::Line);
+        assert!(
+            spec.warnings
+                .iter()
+                .any(|warning| warning.contains("font=mono"))
+        );
+    }
+
+    #[test]
+    fn export_contains_resolved_structure_and_round_trips() {
+        let spec = parse(
+            r##"{"id":"x","contract":1,"skin":"plain","structure":{"radius":"none","labels":"tracked"}}"##,
+        )
+        .expect("structure");
+        let json = spec.to_json_pretty();
+        assert!(json.contains("\"structure\""));
+        assert!(json.contains("\"radius\": \"none\""));
+        assert!(json.contains("\"border\": \"hairline\""));
+        assert!(json.contains("\"labels\": \"tracked\""));
+        assert!(json.contains("\"font\": \"mixed\""));
+
+        let reparsed = parse(&json).expect("round trip");
+        assert_eq!(reparsed.structure, spec.structure);
+    }
+
+    #[test]
+    fn structure_resolve_keeps_skin_defaults_for_missing_axes() {
+        let requested = Structure {
+            radius: Some(Radius::Soft),
+            ..Structure::default()
+        };
+        let resolved = requested.resolve(Skin::Phosphor);
+        assert_eq!(resolved.radius, Radius::Soft);
+        assert_eq!(resolved.border, Border::None);
+        assert_eq!(resolved.density, Density::Compact);
+        assert_eq!(resolved.selection, Selection::Bg);
+        assert_eq!(resolved.font, Font::Mono);
     }
 }
