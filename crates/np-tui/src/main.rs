@@ -553,6 +553,13 @@ impl App {
                 self.upsert_block(*running);
             }
         }
+        if let Ok(Some(parsed)) = np_core::command::parse(&input) {
+            if parsed.spec.name == "queue" {
+                self.views[2] = capture_table(player, &**library, "queue list", "队列");
+            } else if parsed.spec.name == "playlist" {
+                self.views[3] = capture_table(player, &**library, "playlist list", "歌单");
+            }
+        }
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "theme"
             && parsed.subcommand.map(|sub| sub.name) == Some("set")
@@ -680,9 +687,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
     app.no_color_ignored = no_color;
-    if no_color {
-        app.status = "检测到 NO_COLOR，已忽略（保留彩色主题）".to_owned();
-    }
     if fallback {
         app.status = "未找到 wt，已用 conhost，封面降级为字符".to_owned();
     } else if let Some(warning) = launcher::font_warning() {
@@ -1167,7 +1171,18 @@ fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         );
         return;
     }
-    let widths = table_widths(&view.columns, &view.rows);
+    let mut widths = table_widths(&view.columns, &view.rows);
+    let used: usize = widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1);
+    if used < inner.width as usize {
+        let flex = view
+            .columns
+            .iter()
+            .position(|column| column == "标题")
+            .unwrap_or(1.min(widths.len().saturating_sub(1)));
+        if flex < widths.len() {
+            widths[flex] += inner.width as usize - used;
+        }
+    }
     let mut lines = Vec::new();
     lines.push(Line::styled(
         format_row(&view.columns, &widths),

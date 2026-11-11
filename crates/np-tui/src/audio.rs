@@ -4,6 +4,7 @@ use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
 use np_core::{PlaybackMode, PlaybackState, PlaybackStatus, QueueView};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 pub struct TuiAudio {
     player: Option<Player>,
@@ -13,6 +14,7 @@ pub struct TuiAudio {
     artist: String,
     duration_ms: Option<u64>,
     source_path: Option<PathBuf>,
+    queue: Mutex<QueueView>,
 }
 
 impl TuiAudio {
@@ -41,6 +43,10 @@ impl TuiAudio {
                     artist,
                     duration_ms,
                     source_path: Some(path),
+                    queue: Mutex::new(QueueView {
+                        tracks: Vec::new(),
+                        index: None,
+                    }),
                 }
             }
             Err(_) => Self::empty(),
@@ -56,6 +62,10 @@ impl TuiAudio {
             artist: "Nowhere Player".to_owned(),
             duration_ms: None,
             source_path: None,
+            queue: Mutex::new(QueueView {
+                tracks: Vec::new(),
+                index: None,
+            }),
         }
     }
 
@@ -109,6 +119,13 @@ impl TuiAudio {
         }
     }
 
+    fn queue_view(&self) -> QueueView {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     fn state(&self) -> PlaybackState {
         PlaybackState {
             status: if self.playing {
@@ -124,8 +141,8 @@ impl TuiAudio {
             volume: 1.0,
             mode: PlaybackMode::default(),
             error: None,
-            queue_length: None,
-            queue_index: None,
+            queue_length: Some(self.queue_view().tracks.len()),
+            queue_index: self.queue_view().index,
         }
     }
 
@@ -186,18 +203,51 @@ impl PlayerApi for TuiAudio {
         Ok(self.state())
     }
     fn queue_list(&self) -> Result<QueueView, CmdError> {
-        Ok(Self::empty_queue())
+        Ok(self.queue_view())
     }
-    fn queue_add(&self, _paths: Vec<String>) -> Result<QueueView, CmdError> {
-        self.queue_list()
+    fn queue_add(&self, paths: Vec<String>) -> Result<QueueView, CmdError> {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.tracks.extend(paths);
+        if queue.index.is_none() && !queue.tracks.is_empty() {
+            queue.index = Some(0);
+        }
+        Ok(queue.clone())
     }
-    fn queue_remove(&self, _index: usize) -> Result<QueueView, CmdError> {
-        self.queue_list()
+    fn queue_remove(&self, index: usize) -> Result<QueueView, CmdError> {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if index < queue.tracks.len() {
+            queue.tracks.remove(index);
+        }
+        queue.index = if queue.tracks.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        Ok(queue.clone())
     }
     fn queue_clear(&self) -> Result<QueueView, CmdError> {
-        self.queue_list()
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.tracks.clear();
+        queue.index = None;
+        Ok(queue.clone())
     }
-    fn queue_jump(&self, _index: usize) -> Result<QueueView, CmdError> {
-        self.queue_list()
+    fn queue_jump(&self, index: usize) -> Result<QueueView, CmdError> {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if index < queue.tracks.len() {
+            queue.index = Some(index);
+        }
+        Ok(queue.clone())
     }
 }
