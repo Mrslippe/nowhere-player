@@ -23,10 +23,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use np_core::command::{Completion, complete, parse, registry};
 use np_core::{
-    Block, BlockAction, BlockStatus, Output, ParseError, Parsed, PlaybackMode, PlaybackState,
-    PlayerError, PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION, SettingValue, Settings,
-    SettingsWarning, Span, ThemeApplyReply, ThemeError, ThemeListEntry, ThemeSource,
-    validate_setting,
+    Block, BlockAction, BlockStatus, BuiltinTheme, Output, ParseError, Parsed, PlaybackMode,
+    PlaybackState, PlayerError, PlayerErrorCode, QueueView, RepeatMode, SCHEMA_VERSION,
+    SettingValue, Settings, SettingsWarning, Span, ThemeApplyReply, ThemeError, ThemeListEntry,
+    ThemeSource, validate_setting,
 };
 use np_library::{
     CoverCacheUsage, Database, LibraryError, NewPlaylistItem, Playlist, PlaylistItem,
@@ -2495,6 +2495,9 @@ impl Executor<'_> {
                                 ThemeSource::User => "用户".to_owned(),
                             },
                             entry.skin.as_str().to_owned(),
+                            BuiltinTheme::find(&entry.id)
+                                .map(|theme| theme.structure.summary())
+                                .unwrap_or_else(|| "自定义".to_owned()),
                         ]
                     })
                     .collect();
@@ -2508,6 +2511,7 @@ impl Executor<'_> {
                                 "名称".to_owned(),
                                 "来源".to_owned(),
                                 "skin".to_owned(),
+                                "结构".to_owned(),
                             ],
                             rows,
                             selectable: true,
@@ -10831,6 +10835,49 @@ mod tests {
     }
 
     #[test]
+    fn theme_list_shows_tui_structure_summary() {
+        let dir = TestDir::new("theme-list-tui");
+        let settings = settings_for(&dir);
+        let api = FakeApi::new();
+        let library = FakeLibraryApi::new();
+        let theme = FakeTheme {
+            entries: vec![
+                ThemeListEntry {
+                    id: "tui-block".to_owned(),
+                    name: "TUI 块面".to_owned(),
+                    skin: np_core::theme::Skin::Plain,
+                    source: ThemeSource::Builtin,
+                },
+                ThemeListEntry {
+                    id: "tui-wire".to_owned(),
+                    name: "TUI 线框".to_owned(),
+                    skin: np_core::theme::Skin::Plain,
+                    source: ThemeSource::Builtin,
+                },
+                ThemeListEntry {
+                    id: "tui-paper".to_owned(),
+                    name: "TUI 票据".to_owned(),
+                    skin: np_core::theme::Skin::Plain,
+                    source: ThemeSource::Builtin,
+                },
+            ],
+            apply: Ok(theme_reply("tui-block")),
+            export: Ok(ThemeExportTarget {
+                path: "/themes/tui-block.json".to_owned(),
+                created: true,
+            }),
+            broadcasts: Mutex::new(Vec::new()),
+        };
+
+        let block = done_with_services(&api, &library, &settings, &theme, "theme list");
+        let (columns, rows) = table_of_block(&block);
+        assert_eq!(columns.last().copied(), Some("结构"));
+        assert_eq!(rows[0][5], "块面/紧凑/反白");
+        assert_eq!(rows[1][5], "线框/紧凑/底色");
+        assert_eq!(rows[2][5], "票据/常规/反白");
+    }
+
+    #[test]
     fn theme_list_marks_current_and_sources() {
         let dir = TestDir::new("theme-list");
         let settings = settings_for(&dir);
@@ -10848,10 +10895,12 @@ mod tests {
         assert_eq!(rows[0][0], "");
         assert_eq!(rows[0][1], "graphite");
         assert_eq!(rows[0][3], "内置");
+        assert_eq!(rows[0][5], "圆角/常规/侧条");
         assert_eq!(rows[1][0], "●");
         assert_eq!(rows[1][1], "mine");
         assert_eq!(rows[1][3], "用户");
         assert_eq!(rows[1][4], "phosphor");
+        assert_eq!(rows[1][5], "自定义");
     }
 
     #[test]
