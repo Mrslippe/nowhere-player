@@ -176,19 +176,8 @@ pub fn install_fragment() -> std::io::Result<FragmentStatus> {
 }
 
 fn focus_mode_enabled() -> bool {
-    let data_dir = std::env::var_os("NP_TUI_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let local = std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join("tmp/np-tui-data");
-            if local.is_dir() {
-                local
-            } else {
-                std::env::temp_dir().join("nowhere-tui")
-            }
-        });
-    SettingsHandle::load(data_dir.join("config"))
+    let dirs = crate::app_dirs::app_dirs();
+    SettingsHandle::load(dirs.config)
         .get_bool("tui.focusMode")
         .unwrap_or(false)
 }

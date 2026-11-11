@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod app_dirs;
 mod audio;
 mod cover;
 mod fft;
@@ -310,11 +311,12 @@ impl App {
     }
 
     fn load_views(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
-        self.views = vec![
-            capture_table(player, library, "library list --limit=200", "媒体库"),
-            capture_table(player, library, "queue list", "队列"),
-            capture_table(player, library, "playlist list", "歌单"),
-        ];
+        // library list 必须最后执行：它会设置 np-app 的 active_listing，
+        // 否则 Enter 的 play <n> 会解析到 queue/playlist 的空列表。
+        let queue = capture_table(player, library, "queue list", "队列");
+        let playlist = capture_table(player, library, "playlist list", "歌单");
+        let library_view = capture_table(player, library, "library list --limit=200", "媒体库");
+        self.views = vec![library_view, queue, playlist];
         self.views.insert(
             1,
             ViewData {
@@ -669,24 +671,6 @@ fn resolve_cover(player: &TuiAudio, library: &Arc<LibraryHandle>) -> Option<Path
     path.is_file().then_some(path)
 }
 
-fn tui_data_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("NP_TUI_DATA_DIR") {
-        return PathBuf::from(path);
-    }
-    let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let bench = root.join("tmp/bench");
-    let copied = root.join("tmp/np-tui-data");
-    if bench.join("library.db").is_file() && !copied.join("library.db").is_file() {
-        let _ = std::fs::create_dir_all(&copied);
-        let _ = std::fs::copy(bench.join("library.db"), copied.join("library.db"));
-    }
-    if copied.is_dir() {
-        copied
-    } else {
-        std::env::temp_dir().join("nowhere-tui")
-    }
-}
-
 fn filter_matches(row: &[String], filter: &str) -> bool {
     let filter = filter.trim().to_lowercase();
     filter.is_empty() || row.iter().any(|cell| cell.to_lowercase().contains(&filter))
@@ -756,11 +740,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = std::time::Instant::now();
     let _ = launcher::install_fragment();
     let fallback = std::env::var_os(launcher::FALLBACK_ENV).is_some();
-    let data_dir = tui_data_dir();
-    let config_dir = data_dir.join("config");
-    let cache_dir = data_dir.join("cache");
-    std::fs::create_dir_all(&config_dir)?;
-    std::fs::create_dir_all(&cache_dir)?;
+    let dirs = app_dirs::app_dirs();
+    let first_run = dirs.first_run;
+    std::fs::create_dir_all(&dirs.config)?;
+    std::fs::create_dir_all(&dirs.cache)?;
+    let config_dir = dirs.config;
+    let cache_dir = dirs.cache;
+    let data_dir = dirs.data;
     let settings = SettingsHandle::load(config_dir.clone());
     let theme_api = TuiThemeApi::new(config_dir.join("themes"));
     let library = Arc::new(LibraryHandle::with_paths(Paths {
@@ -777,6 +763,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
+    if first_run {
+        app.status = "首次运行：用 library add <目录> 添加音乐".to_owned();
+    }
     app.no_color_ignored = no_color;
     if fallback {
         app.status = "未找到 wt，已用 conhost，封面降级为字符".to_owned();
@@ -1440,10 +1429,10 @@ fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let view = app.selected_view();
-    let title = format!(
-        " {} ",
-        view.map(|view| view.title.as_str()).unwrap_or("条目")
-    );
+    let title = match view {
+        Some(view) => format!(" {} · {} ", view.title, view.rows.len()),
+        None => " 条目 ".to_owned(),
+    };
     let block = panel_block(app, &title, app.focus == Focus::List);
     let inner = block.inner(area);
     frame.render_widget(block, area);
