@@ -22,8 +22,8 @@ use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Manager, State};
 
 use crate::command_exec::{
-    CmdErrorPayload, EventObserver, LibraryApi, LibraryHandle, LibraryObserver, MAX_SEARCH_RESULTS,
-    NoopLibraryObserver, ScanAcceptedReply, emit_block, scan_started_block,
+    CmdErrorPayload, LibraryApi, LibraryHandle, LibraryObserver, MAX_SEARCH_RESULTS,
+    NoopLibraryObserver, ScanAcceptedReply, emit_block, event_observer_for_app, scan_started_block,
 };
 use crate::player_actor::PlayerHandle;
 
@@ -150,11 +150,7 @@ pub(crate) fn library_scan(
         Some(block_id) => {
             // 与 cmd.exec 一样，先推 running 再启动线程，避免 done 抢跑。
             emit_block(&app, &scan_started_block(block_id, "library scan", full));
-            Arc::new(EventObserver::for_app(
-                app.clone(),
-                block_id.clone(),
-                "library scan".to_owned(),
-            ))
+            event_observer_for_app(app.clone(), block_id.clone(), "library scan".to_owned())
         }
         None => Arc::new(NoopLibraryObserver),
     };

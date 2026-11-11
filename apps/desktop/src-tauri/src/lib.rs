@@ -54,14 +54,16 @@ pub fn run() {
             // actor 线程在此启动；`Player` 由线程内部惰性创建。
             app.manage(player_actor::PlayerHandle::spawn(app.handle().clone())?);
             // 媒体库连接与扫描任务延迟到首次使用时打开；这里只记路径。
-            let db_path = app.path().app_data_dir()?.join("library.db");
+            let data_dir = app.path().app_data_dir()?;
             // 在线音频缓存放系统缓存目录（不随备份同步）；旧 app_data/streams 会失效。
-            let cache_root = app.path().app_cache_dir()?;
+            let cache_dir = app.path().app_cache_dir()?;
             // settings.json 在 config 目录；setup 先读一次，供主题恢复与音源开关使用。
             let config_dir = app.path().app_config_dir()?;
-            app.manage(command_exec::LibraryHandle::with_config_dir(
-                db_path, cache_root, config_dir,
-            ));
+            app.manage(command_exec::LibraryHandle::with_paths(np_app::Paths {
+                config_dir,
+                cache_dir,
+                data_dir,
+            }));
             let handle = app.handle();
             windows::create_player(handle)?;
             shortcut::register(handle);

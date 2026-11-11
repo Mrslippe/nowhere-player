@@ -2478,16 +2478,29 @@ dependencies = [
 name = "nowhere-desktop"
 version = "0.0.0"
 dependencies = [
+ "np-app",
  "np-audio",
  "np-core",
  "np-library",
  "np-sources",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
+]
+
+[[package]]
+name = "np-app"
+version = "0.0.0"
+dependencies = [
+ "np-core",
+ "np-library",
+ "np-sources",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
