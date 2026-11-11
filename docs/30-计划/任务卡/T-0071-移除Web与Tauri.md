@@ -99,3 +99,44 @@ crates/np-tui/src/**
 | 2 | `Cargo.toml` workspace members 残留 tauri 依赖 | 删完 `cargo tree` 全仓 grep 一次 `tauri` |
 | 3 | git 历史里的文件仍占体积 | **不做** history rewrite（风险高、收益低），只在文档里说明 |
 | 4 | 单实例缺失导致双击开两个 | 本卡记录，下一卡实现 |
+
+---
+
+## 7. 追加授权：`np-core` 与 Web 解绑（2026-11-12 夜间）
+
+**批次 5 首次尝试失败**，根因：`np-core` 编译期引用了 `apps/web` 的两个文件。
+
+### 7.1 要解的两处
+
+| 位置 | 用途 | 处理 |
+|---|---|---|
+| `crates/np-core/src/theme.rs:1255` | 测试辅助 `css_block()` 读 `themes.css`，用于校验 Rust 调色板与 CSS 不漂移 | **删除该辅助与其全部测试**（CSS 已不存在，无对象可校） |
+| `crates/np-core/src/terminal/tests.rs:7` | `include_str!` 读 `terminal-demo.json` 做往返测试 | **把 fixture 复制到 `crates/np-core/tests/fixtures/`**，改指向新路径 |
+
+### 7.2 追加授权路径（**仅限以下改动**）
+
+```
+crates/np-core/src/theme.rs          ← 只删 css_block 与相关测试
+crates/np-core/src/terminal/tests.rs ← 只改 include 路径
+crates/np-core/tests/fixtures/**     ← 新增（复制 fixture）
+```
+
+### 7.3 硬约束
+
+1. **不许改任何序列化/解析逻辑**——只删测试、搬 fixture；
+2. 删掉的测试若覆盖"调色板正确性"，**保留断言但改为直接断言常量值**（不要连带删掉验证能力）；
+3. 注释里提到 `apps/web` 的地方**改成描述性文字**（如"内置调色板"），不再指向已删除路径；
+4. `cargo test -p np-core` 全绿，**测试数只减不增到异常**（删 CSS 对比测试导致的减少是预期的，报告具体数字）。
+
+### 7.4 完成后再执行删除
+
+顺序：
+
+```
+1. np-core 解绑 → cargo test --workspace 绿
+2. git add -A && commit（解绑本身）
+3. 删 apps/web → 跑门禁
+4. 删 apps/desktop + JS 工具链 → 跑门禁
+5. 清理 check 脚本与 CI
+6. 真机：双击 → 播放 → 搜索
+```
