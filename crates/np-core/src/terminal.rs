@@ -2,7 +2,7 @@
 //!
 //! 命令层只产出结构化值，呈现由渲染器决定；因此这里不含 HTML、ANSI 转义或布局信息。
 //! 序列化形状即 IPC 契约（`camelCase` 字段名），前端手工镜像见
-//! `apps/web/src/shared/terminal-model.ts`，改动须同步两侧。
+//! 内置终端模型，改动须同步两侧。
 //!
 //! 兼容策略：未知字段被忽略；未知 `Output.type` 降级为 `text` + `[unsupported]`；
 //! 未知 `status` 降级为 `pending`；未知语义色降级为默认前景色（`null`）。

@@ -4,7 +4,7 @@ use super::*;
 
 const DEMO_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../apps/web/src/shared/fixtures/terminal-demo.json"
+    "/tests/fixtures/terminal-demo.json"
 ));
 
 fn sample_block() -> Block {

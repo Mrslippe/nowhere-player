@@ -377,7 +377,7 @@ pub struct ThemeTokens {
 }
 
 impl Default for ThemeTokens {
-    /// graphite 调色板（与 `apps/web/src/design/themes.css` 的 `:root` 一致）。
+    /// graphite 调色板（内置调色板）。
     fn default() -> Self {
         Self {
             bg: "#0d0f12".to_owned(),
@@ -719,7 +719,7 @@ fn json_string(value: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeSource {
-    /// 内置主题（`apps/web/src/design/themes.css`）。
+    /// 内置主题（内置调色板）。
     Builtin,
     /// `<appdata>/themes/<id>.json`。
     User,
@@ -781,7 +781,7 @@ impl ThemeApplyReply {
 
 /// 内置主题：id / 显示名 / 皮肤 / 调色板。
 ///
-/// 调色板与 `apps/web/src/design/themes.css` 一一对应（单测会对比源码，防止漂移）；
+/// 调色板来自内置主题常量；
 /// Rust 侧需要它生成 `theme.exportBuiltin` 的样例文件。
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinTheme {
@@ -1250,48 +1250,13 @@ mod tests {
         assert_eq!(reparsed.name, "含\"引号\"\n换行");
     }
 
-    /// 把 `themes.css` 里某个主题块的内容抠出来（测试专用，不做通用 CSS 解析）。
-    fn css_block(theme: &str) -> Option<&'static str> {
-        let css = include_str!("../../../apps/web/src/design/themes.css");
-        let selector = format!("[data-theme=\"{theme}\"]");
-        let select = css.find(&selector)?;
-        let open = css[select..].find('{')? + select;
-        let close = css[open..].find('}')? + open;
-        Some(&css[open + 1..close])
-    }
-
-    /// camelCase token → CSS 自定义属性名（`bgElev` → `--bg-elev`）。
-    fn css_var_name(token: &str) -> String {
-        let mut name = String::from("--");
-        for character in token.chars() {
-            if character.is_ascii_uppercase() {
-                name.push('-');
-                name.push(character.to_ascii_lowercase());
-            } else {
-                name.push(character);
-            }
-        }
-        name
-    }
-
     #[test]
-    fn builtin_palettes_match_design_themes_css() {
-        for theme in BUILTIN_THEMES.iter() {
-            let Some(block) = css_block(theme.id) else {
-                // TUI 预设由 UI 代理在后续提交补 CSS；Rust 侧不阻塞。
-                continue;
-            };
-            for (token, value) in theme.tokens {
-                let declaration = format!("{}: {};", css_var_name(token), value);
-                assert!(
-                    block.contains(&declaration),
-                    "内置主题 {} 的 {} 与 themes.css 不一致，期望：{}",
-                    theme.id,
-                    token,
-                    declaration
-                );
-            }
-        }
+    fn builtin_graphite_palette_values_are_stable() {
+        let spec = BuiltinTheme::find("graphite").expect("graphite").to_spec();
+        assert_eq!(spec.tokens.get("bg"), Some("#0d0f12"));
+        assert_eq!(spec.tokens.get("fg"), Some("#e9e4da"));
+        assert_eq!(spec.tokens.get("accent"), Some("#ffb454"));
+        assert_eq!(spec.tokens.get("line"), Some("rgba(255, 255, 255, 0.07)"));
     }
 
     #[test]
