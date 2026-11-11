@@ -10758,6 +10758,7 @@ mod tests {
             skin: np_core::theme::Skin::Plain,
             source: ThemeSource::Builtin,
             tokens: np_core::theme::ThemeTokens::default(),
+            structure: np_core::theme::Structure::default().resolve(np_core::theme::Skin::Plain),
             warnings: Vec::new(),
         }
     }

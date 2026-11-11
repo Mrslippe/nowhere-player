@@ -725,6 +725,8 @@ pub struct ThemeApplyReply {
     pub source: ThemeSource,
     /// 完整颜色 token（缺项已补默认值）。
     pub tokens: ThemeTokens,
+    /// 补全后的 8 个结构轴（前端据此写 data-structure-*）。
+    pub structure: ResolvedStructure,
     /// 加载告警（不阻止应用）。
     pub warnings: Vec<String>,
 }
@@ -738,6 +740,7 @@ impl ThemeApplyReply {
             skin: spec.skin,
             source,
             tokens: spec.tokens,
+            structure: spec.structure,
             warnings: spec.warnings,
         }
     }
