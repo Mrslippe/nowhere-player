@@ -893,6 +893,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => 0,
         };
     }
+    if std::env::var_os("NP_TUI_IMMERSIVE").is_some() {
+        app.immersive = true;
+    }
     if let Ok(mode) = std::env::var("NP_TUI_MODE") {
         if mode.trim() == "help" {
             app.mode = UiMode::Help;
@@ -1365,7 +1368,9 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Esc => {
-                                    if app.focus == Focus::List {
+                                    if app.immersive {
+                                        app.immersive = false;
+                                    } else if app.focus == Focus::List {
                                         app.focus = Focus::Library;
                                     } else {
                                         return Ok(());
@@ -1546,18 +1551,21 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
     );
     frame.render_widget(title, rows[0]);
 
-    if area.width < 80 {
-        draw_list(frame, rows[1], app);
+    if app.immersive {
+        draw_player_strip(frame, rows[1].union(rows[2]), app, player, cover);
     } else {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(22), Constraint::Min(20)])
-            .split(rows[1]);
-        draw_library(frame, columns[0], app);
-        draw_list(frame, columns[1], app);
+        if area.width < 80 {
+            draw_list(frame, rows[1], app);
+        } else {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(22), Constraint::Min(20)])
+                .split(rows[1]);
+            draw_library(frame, columns[0], app);
+            draw_list(frame, columns[1], app);
+        }
+        draw_player_strip(frame, rows[2], app, player, cover);
     }
-
-    draw_player_strip(frame, rows[2], app, player, cover);
 
     if matches!(app.mode, UiMode::Command | UiMode::Filter) {
         let title = if app.mode == UiMode::Filter {
@@ -1578,9 +1586,17 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         ));
     }
 
-    let hint = match (app.focus, app.mode) {
-        (Focus::Library, _) => "j/k 切视图 · Enter 进入列表 · Tab 切焦点 · : 命令 · q 退出",
-        (Focus::List, _) => "j/k 移动 · Enter 播放 · Tab 切焦点 · : 命令 · q 退出",
+    let hint = if app.immersive {
+        "Ctrl+F 退出沉浸 · Space 播放/暂停 · n/p 切歌 · +/- 音量 · Esc 返回"
+    } else {
+        match (app.focus, app.mode) {
+            (Focus::Library, _) => {
+                "j/k 切视图 · Enter 进入列表 · Tab 切焦点 · / 过滤 · : 命令 · ? 帮助 · q 退出"
+            }
+            (Focus::List, _) => {
+                "j/k 移动 · Enter 播放 · a 入队 · d 删除(需 dd) · f 视觉 · Tab 切焦点 · / 过滤 · : 命令 · ? 帮助"
+            }
+        }
     };
     let status = Paragraph::new(format!(
         " {} · {} · {} · NO_COLOR {}",
@@ -1783,7 +1799,11 @@ fn draw_player_strip(
     if inner.height == 0 || inner.width == 0 {
         return;
     }
-    let cover_width = inner.width.min(24);
+    let cover_width = if app.immersive {
+        inner.width.min(44)
+    } else {
+        inner.width.min(24)
+    };
     let cover_area = Rect {
         x: inner.x,
         y: inner.y,
