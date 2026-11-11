@@ -92,6 +92,7 @@ struct App {
     history_nav: bool,
     search_id: u64,
     search_pending: bool,
+    no_color_ignored: bool,
     palette: Palette,
     theme_id: String,
     theme_name: String,
@@ -122,6 +123,7 @@ impl App {
             history_nav: false,
             search_id: 0,
             search_pending: false,
+            no_color_ignored: false,
             palette: Palette::terminal(),
             theme_id: "terminal".to_owned(),
             theme_name: "跟随终端".to_owned(),
@@ -478,11 +480,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         data_dir,
     }));
     let (search_tx, search_rx) = std::sync::mpsc::channel();
-    // TUI 的颜色是产品语义的一部分；某些宿主环境会带 NO_COLOR=1，
-    // 那会让 Ratatui/Crossterm 把所有主题色降级成终端默认色。
-    crossterm::style::Colored::set_ansi_color_disabled(false);
+    // NO_COLOR 是用户级约定。音乐播放器的彩色主题是核心体验，
+    // 所以这里选择“忽略但明确告知”，而不是静默强制或退化成全单色。
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    if no_color {
+        crossterm::style::Colored::set_ansi_color_disabled(false);
+    }
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
+    app.no_color_ignored = no_color;
+    if no_color {
+        app.status = "检测到 NO_COLOR，已忽略（保留彩色主题）".to_owned();
+    }
     app.load_theme(
         &theme_api,
         settings.theme_id().as_deref().unwrap_or("terminal"),
@@ -814,13 +823,19 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
     } else {
         "Ctrl+B 显示面板"
     };
+    let no_color_notice = if app.no_color_ignored {
+        " · NO_COLOR 已忽略"
+    } else {
+        ""
+    };
     let status = Paragraph::new(format!(
-        " {} · 主题 {} · 视觉 {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出 ",
+        " {} · 主题 {} · 视觉 {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出{} ",
         app.status,
         app.theme_name,
         app.visual_mode.label(),
         app.input.len(),
-        panel_hint
+        panel_hint,
+        no_color_notice
     ))
     .style(
         Style::default()
@@ -914,7 +929,7 @@ fn draw_panel(
     let cover_height = if immersive {
         inner.height.saturating_mul(6) / 10
     } else {
-        inner.height.saturating_sub(8).clamp(2, 12)
+        inner.height.saturating_sub(10).clamp(2, 8)
     };
     let cover_area = Rect {
         x: inner.x,
