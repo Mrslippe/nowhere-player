@@ -88,11 +88,18 @@ enum UiMode {
     Help,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrackRef {
+    Local(PathBuf),
+    Remote { source: String, id: String },
+}
+
 #[derive(Debug, Clone, Default)]
 struct ViewData {
     title: String,
     columns: Vec<String>,
     rows: Vec<Vec<String>>,
+    refs: Vec<TrackRef>,
 }
 
 struct App {
@@ -314,6 +321,7 @@ impl App {
                 title: "搜索结果".to_owned(),
                 columns: Vec::new(),
                 rows: Vec::new(),
+                refs: Vec::new(),
             },
         );
         self.view_index = 0;
@@ -702,6 +710,7 @@ fn capture_table(
         title: title.to_owned(),
         columns: Vec::new(),
         rows: Vec::new(),
+        refs: Vec::new(),
     };
     if let Execution::Blocks { done, .. } = execution {
         for output in done.outputs {
@@ -711,6 +720,30 @@ fn capture_table(
                 break;
             }
         }
+    }
+    if command.starts_with("library") {
+        view.refs = library
+            .library_listing()
+            .into_iter()
+            .map(|track| {
+                if track.kind == "local" {
+                    TrackRef::Local(PathBuf::from(track.path))
+                } else {
+                    TrackRef::Remote {
+                        source: track.source,
+                        id: track.source_id,
+                    }
+                }
+            })
+            .collect();
+    } else if command.starts_with("queue")
+        && let Ok(queue) = player.queue_list()
+    {
+        view.refs = queue
+            .tracks
+            .into_iter()
+            .map(|path| TrackRef::Local(PathBuf::from(path)))
+            .collect();
     }
     view
 }
@@ -1149,11 +1182,15 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('+') | KeyCode::Char('=') => {
-                                    app.status = "音量 +5%".to_owned();
+                                    let volume = (player.volume() + 0.05).clamp(0.0, 1.0);
+                                    let _ = PlayerApi::volume(player, volume);
+                                    app.status = format!("音量 {}%", (volume * 100.0).round());
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('-') => {
-                                    app.status = "音量 -5%".to_owned();
+                                    let volume = (player.volume() - 0.05).clamp(0.0, 1.0);
+                                    let _ = PlayerApi::volume(player, volume);
+                                    app.status = format!("音量 {}%", (volume * 100.0).round());
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('q') => {
@@ -1817,8 +1854,8 @@ fn draw_panel(
     } else {
         inner.y + cover_height
     };
-    let title = truncate_width(player.title(), text_width as usize);
-    let artist = truncate_width(player.artist(), text_width as usize);
+    let title = truncate_width(&player.title(), text_width as usize);
+    let artist = truncate_width(&player.artist(), text_width as usize);
     if y < inner.y + inner.height {
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
@@ -2548,6 +2585,13 @@ mod tests {
     }
 
     #[test]
+    fn same_title_different_paths_are_distinct_trackrefs() {
+        let a = TrackRef::Local(PathBuf::from("/music/a/same.wav"));
+        let b = TrackRef::Local(PathBuf::from("/music/b/same.wav"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn filter_is_case_insensitive_and_handles_chinese() {
         assert!(filter_matches(&["晴天".to_owned()], "晴"));
         assert!(filter_matches(&["Jay Chou".to_owned()], "jay"));
@@ -2562,6 +2606,7 @@ mod tests {
             title: "媒体库".to_owned(),
             columns: vec!["#".to_owned()],
             rows: vec![vec!["1".to_owned()], vec!["2".to_owned()]],
+            refs: Vec::new(),
         }];
         app.focus = Focus::List;
         app.row_index = 1;
@@ -2590,11 +2635,13 @@ mod tests {
                 title: "媒体库".to_owned(),
                 columns: vec!["A".to_owned()],
                 rows: vec![vec!["lib".to_owned()]],
+                refs: Vec::new(),
             },
             ViewData {
                 title: "队列".to_owned(),
                 columns: vec!["A".to_owned()],
                 rows: vec![vec!["queue".to_owned()]],
+                refs: Vec::new(),
             },
         ];
         assert_eq!(app.selected_view().unwrap().rows[0][0], "lib");
@@ -2614,6 +2661,7 @@ mod tests {
             title: "媒体库".to_owned(),
             columns: vec!["#".to_owned(), "标题".to_owned()],
             rows: vec![vec!["1".to_owned(), "晴天".to_owned()]],
+            refs: Vec::new(),
         }];
         let audio = TuiAudio::empty();
         let mut cover = CoverView::empty();
