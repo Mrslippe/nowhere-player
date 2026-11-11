@@ -3250,6 +3250,7 @@ dependencies = [
  "np-core",
  "ratatui",
  "ratatui-image",
+ "serde_json",
  "unicode-width",
 ]
 

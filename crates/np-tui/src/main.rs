@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod audio;
 mod cover;
 mod fft;
+mod theme;
 
 use audio::TuiAudio;
 use cover::CoverView;
@@ -23,8 +24,8 @@ use crossterm::terminal::{
 };
 use fft::{level_char, spectrum};
 use np_app::{
-    Execution, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services, complete_for,
-    execute_with_services,
+    Execution, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services, SettingsHandle,
+    ThemeApi, complete_for, execute_with_services,
 };
 use np_core::{Block, BlockStatus, Output, Span, SpanColor, Tone};
 use ratatui::{
@@ -33,27 +34,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span as TuiSpan},
-    widgets::{Block as TuiBlock, Borders, Paragraph, Wrap},
+    widgets::{Block as TuiBlock, Borders, Clear, Paragraph, Wrap},
 };
+use theme::{Palette, TuiThemeApi};
 use unicode_width::UnicodeWidthStr;
-
-/// 最小 dark 调色板（T-0060 §1.3）。
-#[derive(Debug, Clone, Copy)]
-struct Palette {
-    bg: Color,
-    fg: Color,
-    muted: Color,
-    accent: Color,
-    danger: Color,
-}
-
-const PALETTE: Palette = Palette {
-    bg: Color::Rgb(0x0d, 0x0f, 0x12),
-    fg: Color::Rgb(0xe9, 0xe4, 0xda),
-    muted: Color::Rgb(0x7d, 0x7c, 0x78),
-    accent: Color::Rgb(0xff, 0xb4, 0x54),
-    danger: Color::Rgb(0xff, 0x8b, 0x7d),
-};
 
 struct App {
     input: Vec<char>,
@@ -74,6 +58,9 @@ struct App {
     history_nav: bool,
     search_id: u64,
     search_pending: bool,
+    palette: Palette,
+    theme_id: String,
+    theme_name: String,
 }
 
 impl App {
@@ -97,6 +84,9 @@ impl App {
             history_nav: false,
             search_id: 0,
             search_pending: false,
+            palette: Palette::terminal(),
+            theme_id: "terminal".to_owned(),
+            theme_name: "跟随终端".to_owned(),
         }
     }
 
@@ -163,6 +153,35 @@ impl App {
             self.completion = None;
             self.input = self.history[index + 1].chars().collect();
             self.cursor = self.input.len();
+        }
+    }
+
+    fn apply_theme_reply(&mut self, reply: np_core::theme::ThemeApplyReply) {
+        if reply.id == "terminal" {
+            self.palette = Palette::terminal();
+        } else {
+            let (palette, warnings) = Palette::from_tokens(&reply.tokens);
+            self.palette = palette;
+            if let Some(warning) = warnings.first() {
+                self.status = format!("主题告警：{warning}");
+            }
+        }
+        self.theme_id = reply.id;
+        self.theme_name = reply.name;
+        if let Some(warning) = reply.warnings.first() {
+            self.status = format!("主题告警：{warning}");
+        }
+    }
+
+    fn load_theme(&mut self, theme: &dyn ThemeApi, id: &str) {
+        match theme.apply(id) {
+            Ok(reply) => self.apply_theme_reply(reply),
+            Err(error) => {
+                self.palette = Palette::default_dark();
+                self.theme_id = "graphite".to_owned();
+                self.theme_name = "石墨".to_owned();
+                self.status = format!("主题加载失败：{}，已回退内置 dark", error.message);
+            }
         }
     }
 
@@ -255,6 +274,8 @@ impl App {
         player: &dyn PlayerApi,
         library: &Arc<LibraryHandle>,
         tx: &std::sync::mpsc::Sender<(u64, Block)>,
+        theme: &dyn ThemeApi,
+        settings: &SettingsHandle,
     ) {
         if input.trim().is_empty() {
             return;
@@ -314,7 +335,11 @@ impl App {
         let execution = execute_with_services(
             player,
             &**library,
-            Services::default(),
+            Services {
+                settings: Some(settings),
+                theme: Some(theme),
+                ..Services::default()
+            },
             &block_id,
             &input,
             Arc::new(NoopLibraryObserver),
@@ -333,6 +358,13 @@ impl App {
                 self.status = "后台任务已受理".to_owned();
                 self.upsert_block(*running);
             }
+        }
+        if let Ok(Some(parsed)) = np_core::command::parse(&input)
+            && parsed.spec.name == "theme"
+            && parsed.subcommand.map(|sub| sub.name) == Some("set")
+            && let Some(id) = settings.theme_id()
+        {
+            self.load_theme(theme, &id);
         }
     }
 }
@@ -400,6 +432,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache_dir = data_dir.join("cache");
     std::fs::create_dir_all(&config_dir)?;
     std::fs::create_dir_all(&cache_dir)?;
+    let settings = SettingsHandle::load(config_dir.clone());
+    let theme_api = TuiThemeApi::new(config_dir.join("themes"));
     let library = Arc::new(LibraryHandle::with_paths(Paths {
         config_dir,
         cache_dir,
@@ -408,6 +442,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (search_tx, search_rx) = std::sync::mpsc::channel();
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
+    app.load_theme(
+        &theme_api,
+        settings.theme_id().as_deref().unwrap_or("terminal"),
+    );
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -429,8 +467,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut player,
         &mut cover,
         &library,
-        &search_tx,
-        &search_rx,
+        SearchContext {
+            tx: &search_tx,
+            rx: &search_rx,
+        },
+        ThemeContext {
+            api: &theme_api,
+            settings: &settings,
+        },
     );
     disable_raw_mode()?;
     execute!(
@@ -443,21 +487,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+struct ThemeContext<'a> {
+    api: &'a dyn ThemeApi,
+    settings: &'a SettingsHandle,
+}
+
+struct SearchContext<'a> {
+    tx: &'a std::sync::mpsc::Sender<(u64, Block)>,
+    rx: &'a std::sync::mpsc::Receiver<(u64, Block)>,
+}
+
 fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     player: &mut TuiAudio,
     cover: &mut CoverView,
     library: &Arc<LibraryHandle>,
-    search_tx: &std::sync::mpsc::Sender<(u64, Block)>,
-    search_rx: &std::sync::mpsc::Receiver<(u64, Block)>,
+    search: SearchContext<'_>,
+    theme_ctx: ThemeContext<'_>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: std::error::Error + 'static,
 {
     let mut draw_needed = true;
     loop {
-        while let Ok((search_id, block)) = search_rx.try_recv() {
+        while let Ok((search_id, block)) = search.rx.try_recv() {
             if search_id == app.search_id {
                 app.upsert_block(block);
                 app.status = "搜索完成".to_owned();
@@ -507,7 +561,14 @@ where
                             KeyCode::Enter => {
                                 app.completion = None;
                                 let input = app.input_text();
-                                app.run(input, player, library, search_tx);
+                                app.run(
+                                    input,
+                                    player,
+                                    library,
+                                    search.tx,
+                                    theme_ctx.api,
+                                    theme_ctx.settings,
+                                );
                                 draw_needed = true;
                             }
                             KeyCode::Tab => {
@@ -595,6 +656,11 @@ fn update_spectrum(app: &mut App, player: &TuiAudio) {
 
 fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mut CoverView) {
     let area = frame.area();
+    if let Some(bg) = app.palette.bg {
+        frame.render_widget(TuiBlock::default().style(Style::default().bg(bg)), area);
+    } else {
+        frame.render_widget(Clear, area);
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -610,12 +676,16 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         TuiSpan::styled(
             " Nowhere Player ",
             Style::default()
-                .fg(PALETTE.accent)
+                .fg(app.palette.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         TuiSpan::raw("  TUI 骨架"),
     ]))
-    .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg));
+    .style(
+        Style::default()
+            .bg(app.palette.bg.unwrap_or(Color::Reset))
+            .fg(app.palette.fg),
+    );
     frame.render_widget(title, rows[0]);
 
     if app.immersive {
@@ -637,10 +707,14 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         .block(
             TuiBlock::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(PALETTE.accent))
+                .border_style(Style::default().fg(app.palette.accent))
                 .title(" 输入命令 "),
         )
-        .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg));
+        .style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        );
     frame.render_widget(input, rows[3]);
 
     let cursor_x = rows[3]
@@ -656,19 +730,24 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         "Ctrl+B 显示面板"
     };
     let status = Paragraph::new(format!(
-        " {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出 ",
+        " {} · 主题 {} · 输入 {} 字 · ↑↓ 历史 · Enter 执行 · {} · Ctrl+F 沉浸 · Esc 退出 ",
         app.status,
+        app.theme_name,
         app.input.len(),
         panel_hint
     ))
-    .style(Style::default().bg(PALETTE.bg).fg(PALETTE.muted));
+    .style(
+        Style::default()
+            .bg(app.palette.bg.unwrap_or(Color::Reset))
+            .fg(app.palette.muted),
+    );
     frame.render_widget(status, rows[4]);
 }
 
 fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let block = TuiBlock::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(PALETTE.muted))
+        .border_style(Style::default().fg(app.palette.line))
         .title(" 候选 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -682,11 +761,11 @@ fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         let text = format!("{marker} {}  {}", item.text, item.summary);
         let style = if selected {
             Style::default()
-                .bg(PALETTE.fg)
-                .fg(PALETTE.bg)
+                .bg(app.palette.fg)
+                .fg(app.palette.bg.unwrap_or(Color::Reset))
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(PALETTE.fg)
+            Style::default().fg(app.palette.fg)
         };
         lines.push(Line::from(TuiSpan::styled(
             truncate_width(&text, inner.width as usize),
@@ -696,7 +775,7 @@ fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     if let Some(item) = completion.items.get(app.completion_index) {
         lines.push(Line::from(TuiSpan::styled(
             truncate_width(&item.usage, inner.width as usize),
-            Style::default().fg(PALETTE.muted),
+            Style::default().fg(app.palette.muted),
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -715,10 +794,14 @@ fn draw_output(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .block(
             TuiBlock::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(PALETTE.muted))
+                .border_style(Style::default().fg(app.palette.line))
                 .title(" 输出 "),
         )
-        .style(Style::default().bg(PALETTE.bg).fg(PALETTE.fg))
+        .style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        )
         .wrap(Wrap { trim: false })
         .scroll((app.scroll, 0));
     frame.render_widget(output, area);
@@ -734,7 +817,7 @@ fn draw_panel(
 ) {
     let block = TuiBlock::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(PALETTE.muted))
+        .border_style(Style::default().fg(app.palette.line))
         .title(format!(" 播放 · {} ", cover.protocol()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -778,7 +861,7 @@ fn draw_panel(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 app_spectrum_chars(&app.spectrum, 0.0, text_width as usize),
-                Style::default().fg(PALETTE.accent),
+                Style::default().fg(app.palette.accent),
             ))),
             Rect {
                 x: text_x,
@@ -795,7 +878,9 @@ fn draw_panel(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 title,
-                Style::default().fg(PALETTE.fg).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(app.palette.fg)
+                    .add_modifier(Modifier::BOLD),
             ))),
             Rect {
                 x: text_x,
@@ -810,7 +895,7 @@ fn draw_panel(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 artist,
-                Style::default().fg(PALETTE.muted),
+                Style::default().fg(app.palette.muted),
             ))),
             Rect {
                 x: text_x,
@@ -842,7 +927,7 @@ fn draw_panel(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 progress,
-                Style::default().fg(PALETTE.fg),
+                Style::default().fg(app.palette.fg),
             ))),
             Rect {
                 x: text_x,
@@ -857,7 +942,7 @@ fn draw_panel(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 "◀◀   ▶   ▶▶",
-                Style::default().fg(PALETTE.accent),
+                Style::default().fg(app.palette.accent),
             ))),
             Rect {
                 x: text_x,
@@ -920,13 +1005,13 @@ fn input_line(app: &App) -> Line<'static> {
         " ".to_owned()
     };
     Line::from(vec![
-        TuiSpan::styled("› ", Style::default().fg(PALETTE.accent)),
+        TuiSpan::styled("› ", Style::default().fg(app.palette.accent)),
         TuiSpan::raw(before),
         TuiSpan::styled(
             cursor_char,
             Style::default()
-                .bg(PALETTE.fg)
-                .fg(PALETTE.bg)
+                .bg(app.palette.fg)
+                .fg(app.palette.bg.unwrap_or(Color::Reset))
                 .add_modifier(Modifier::BOLD),
         ),
         TuiSpan::raw(after),
@@ -941,30 +1026,30 @@ fn all_lines(app: &App) -> Vec<Line<'static>> {
         }
         if !block.input.is_empty() {
             lines.push(Line::from(vec![
-                TuiSpan::styled("› ", Style::default().fg(PALETTE.accent)),
+                TuiSpan::styled("› ", Style::default().fg(app.palette.accent)),
                 TuiSpan::raw(block.input.clone()),
             ]));
         }
         for output in &block.outputs {
-            output_lines(output, &mut lines);
+            output_lines(output, &mut lines, &app.palette);
         }
         if let Some(footer) = &block.footer {
             lines.push(Line::styled(
                 footer.clone(),
-                Style::default().fg(PALETTE.muted),
+                Style::default().fg(app.palette.muted),
             ));
         }
     }
     if lines.is_empty() {
         lines.push(Line::styled(
             "输入 help 或 library list --limit=10 开始",
-            Style::default().fg(PALETTE.muted),
+            Style::default().fg(app.palette.muted),
         ));
     }
     lines
 }
 
-fn span_style(span: &Span, tone: Option<Tone>) -> Style {
+fn span_style(span: &Span, tone: Option<Tone>, palette_ref: &Palette) -> Style {
     let mut style = Style::default();
     if span.bold {
         style = style.add_modifier(Modifier::BOLD);
@@ -973,32 +1058,34 @@ fn span_style(span: &Span, tone: Option<Tone>) -> Style {
         style = style.add_modifier(Modifier::ITALIC);
     }
     if span.dim {
-        style = style.fg(PALETTE.muted);
+        style = style.fg(palette_ref.muted);
     }
     let color = span.color.map(|color| match color {
-        SpanColor::Accent => PALETTE.accent,
-        SpanColor::Danger => PALETTE.danger,
-        SpanColor::Warn => PALETTE.accent,
-        SpanColor::Success => PALETTE.fg,
-        SpanColor::Muted => PALETTE.muted,
+        SpanColor::Accent => palette_ref.accent,
+        SpanColor::Danger => palette_ref.danger,
+        SpanColor::Warn => palette_ref.accent,
+        SpanColor::Success => palette_ref.fg,
+        SpanColor::Muted => palette_ref.muted,
     });
     let tone = tone.map(|tone| match tone {
-        Tone::Accent => PALETTE.accent,
-        Tone::Danger => PALETTE.danger,
-        Tone::Warn => PALETTE.accent,
-        Tone::Success => PALETTE.fg,
-        Tone::Muted => PALETTE.muted,
+        Tone::Accent => palette_ref.accent,
+        Tone::Danger => palette_ref.danger,
+        Tone::Warn => palette_ref.accent,
+        Tone::Success => palette_ref.fg,
+        Tone::Muted => palette_ref.muted,
     });
-    style.fg(color.or(tone).unwrap_or(PALETTE.fg))
+    style.fg(color.or(tone).unwrap_or(palette_ref.fg))
 }
 
-fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>) {
+fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, palette_ref: &Palette) {
     match output {
         Output::Text { spans, tone } => {
             lines.push(Line::from(
                 spans
                     .iter()
-                    .map(|span| TuiSpan::styled(span.text.clone(), span_style(span, *tone)))
+                    .map(|span| {
+                        TuiSpan::styled(span.text.clone(), span_style(span, *tone, palette_ref))
+                    })
                     .collect::<Vec<_>>(),
             ));
         }
@@ -1010,7 +1097,7 @@ fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>) {
             lines.push(Line::styled(
                 format_row(columns, &widths),
                 Style::default()
-                    .fg(PALETTE.accent)
+                    .fg(palette_ref.accent)
                     .add_modifier(Modifier::BOLD),
             ));
             lines.push(Line::styled(
@@ -1019,7 +1106,7 @@ fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>) {
                     .map(|width| "─".repeat(*width))
                     .collect::<Vec<_>>()
                     .join("  "),
-                Style::default().fg(PALETTE.muted),
+                Style::default().fg(palette_ref.muted),
             ));
             for row in rows {
                 lines.push(Line::raw(format_row(row, &widths)));
@@ -1033,12 +1120,12 @@ fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>) {
         } => {
             lines.push(Line::styled(
                 format!("错误 {code} · {message}"),
-                Style::default().fg(PALETTE.danger),
+                Style::default().fg(palette_ref.danger),
             ));
             if let Some(hint) = hint {
                 lines.push(Line::styled(
                     hint.clone(),
-                    Style::default().fg(PALETTE.muted),
+                    Style::default().fg(palette_ref.muted),
                 ));
             }
         }
@@ -1048,7 +1135,7 @@ fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>) {
                 line.push_str(" · ");
                 line.push_str(suggestion);
             }
-            lines.push(Line::styled(line, Style::default().fg(PALETTE.muted)));
+            lines.push(Line::styled(line, Style::default().fg(palette_ref.muted)));
         }
         Output::Progress {
             label,
@@ -1063,13 +1150,13 @@ fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>) {
             };
             lines.push(Line::styled(
                 format!("{label}  {percent}%  {current}/{total} {unit}"),
-                Style::default().fg(PALETTE.accent),
+                Style::default().fg(palette_ref.accent),
             ));
         }
         Output::Media { kind, .. } => {
             lines.push(Line::styled(
                 format!("[媒体 {kind:?}]"),
-                Style::default().fg(PALETTE.muted),
+                Style::default().fg(palette_ref.muted),
             ));
         }
     }
@@ -1196,6 +1283,26 @@ mod tests {
     }
 
     #[test]
+    fn paper_theme_fills_background_in_buffer() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new();
+        let theme = TuiThemeApi::new(std::env::temp_dir().join("np-tui-paper-buffer"));
+        app.load_theme(&theme, "tui-paper");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(0, 0)].style().bg,
+            Some(Color::Rgb(242, 239, 233))
+        );
+    }
+
+    #[test]
     fn test_backend_renders_title_and_input() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -1224,6 +1331,31 @@ mod tests {
             "{:?}",
             completion.items
         );
+    }
+
+    #[test]
+    fn settings_file_is_read_as_theme_id() {
+        let dir = std::env::temp_dir().join(format!("np-tui-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"theme.id":"tui-paper"}"#).unwrap();
+        let settings = SettingsHandle::load(dir.clone());
+        assert_eq!(settings.theme_id().as_deref(), Some("tui-paper"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_switch_updates_palette_without_restart() {
+        let dir = std::env::temp_dir().join(format!("np-tui-theme-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let api = TuiThemeApi::new(dir);
+        let mut app = App::new();
+        app.load_theme(&api, "tui-paper");
+        assert_eq!(app.palette.bg, Some(Color::Rgb(242, 239, 233)));
+        assert_eq!(app.theme_id, "tui-paper");
+        app.load_theme(&api, "terminal");
+        assert!(app.palette.bg.is_none());
+        assert_eq!(app.theme_id, "terminal");
     }
 
     #[test]
@@ -1267,6 +1399,7 @@ mod tests {
                 selectable: true,
             },
             &mut lines,
+            &Palette::terminal(),
         );
         assert_eq!(lines.len(), 3);
         assert!(
