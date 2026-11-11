@@ -135,14 +135,15 @@
   --np-density-line-dense: 1.5;
 }
 
-/* ── progress：字符块依赖等宽，font=mixed 时回退 line ── */
+/* ── progress：分段背景，长度就是进度 ───────────────── */
 .np-progress__glyphs {
   display: none;
 }
 
 /*
- * 这条选择器故意要求 font=mono：blocks / bracket 是等宽字形，
- * font=mixed 下会乱码，必须回退现有 line 进度条。
+ * blocks / bracket 只允许在 font=mono 下出现；mixed 回退现有 line。
+ * 注意：这里用分段背景而不是字符文本——文本的可见宽度与 track 无关，
+ * 会变成“进度标签”；背景分段天然铺满 track，填充宽度 = progress × 100%。
  */
 :root[data-structure-progress="blocks"][data-structure-font="mono"]
   .np-progress:not([data-indeterminate="true"]),
@@ -172,62 +173,63 @@
   inset: 0;
   display: block;
   overflow: visible;
-  color: var(--fg-faint);
+  /* 未填充：暗一档的同款分段。 */
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--fg-faint) 0 6px,
+    transparent 6px 8px
+  );
+}
+
+:root[data-structure-progress="blocks"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__glyphs::before,
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__glyphs::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(var(--np-progress, 0) * 100%);
+  /* 填充：与轨道同一分段，宽度直接吃 progress。 */
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--fg-muted) 0 6px,
+    transparent 6px 8px
+  );
+  content: "";
+}
+
+/*
+ * bracket：两端各一个括号，分段仍然铺满中间。
+ * 左括号用 track 的 ::before，右括号用 glyph 层的 ::after——track 的
+ * ::after 是播放器琥珀播放头，绝不能被这里占用。
+ */
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])::before,
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__glyphs::after {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  color: var(--fg-muted);
   font-family: var(--np-font-mono);
   font-size: var(--fs-11);
-  font-variant-numeric: tabular-nums;
   line-height: 1;
-  white-space: pre;
-}
-
-:root[data-structure-progress="blocks"][data-structure-font="mono"]
-  .np-progress__glyphs::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max-content;
-  height: auto;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  content: "▱▱▱▱▱▱▱▱▱▱";
-}
-
-:root[data-structure-progress="blocks"][data-structure-font="mono"]
-  .np-progress__glyphs::after {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max-content;
-  height: auto;
-  line-height: 1;
-  color: var(--fg-muted);
-  transform: translate(-50%, -50%);
-  content: "▰▰▰▰▰▰▰▰▰▰";
-  clip-path: inset(0 calc((1 - var(--np-progress)) * 100%) 0 0);
+  transform: translateY(-50%);
 }
 
 :root[data-structure-progress="bracket"][data-structure-font="mono"]
-  .np-progress__glyphs::before {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max-content;
-  height: auto;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  content: "[▱▱▱▱▱▱▱▱]";
+  .np-progress:not([data-indeterminate="true"])::before {
+  left: 0;
+  content: "[";
 }
 
 :root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
   .np-progress__glyphs::after {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: max-content;
-  height: auto;
-  line-height: 1;
-  color: var(--fg-muted);
-  transform: translate(-50%, -50%);
-  content: "[▰▰▰▰▰▰▰▰]";
-  clip-path: inset(0 calc((1 - var(--np-progress)) * 100%) 0 0);
+  right: 0;
+  content: "]";
 }

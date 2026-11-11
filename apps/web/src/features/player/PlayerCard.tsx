@@ -240,6 +240,7 @@ export function PlayerCard({
     >
       <div
         className="np-player-card__cover"
+        data-placeholder={showCoverImage ? undefined : "true"}
         style={{ backgroundImage: coverBackground(coverSeed) }}
       >
         {showCoverImage ? (

@@ -581,6 +581,11 @@
   box-shadow: var(--np-shadow-window);
 }
 
+/* T-0057c：亮色纸张上的无封面占位偏暖；真实封面和深色主题不受影响。 */
+:root[data-scheme="light"] .np-player-card__cover[data-placeholder="true"] {
+  filter: sepia(0.28) saturate(0.9) hue-rotate(-14deg);
+}
+
 [data-skin="plain"] .np-player-card__cover {
   position: absolute;
   top: var(--np-player-pad);
