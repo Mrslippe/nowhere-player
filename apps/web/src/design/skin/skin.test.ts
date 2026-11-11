@@ -21,6 +21,7 @@ const SRC_DIR = path.join(SKIN_DIR, "..", "..");
 /** 任务卡 §6.1 的结构变量清单 + 拆分后新增的角色变量。 */
 const STRUCTURE_TOKENS = [
   "--np-radius-card",
+  "--np-radius-player",
   "--np-radius-inner",
   "--np-radius-control",
   "--np-radius-control-sm",
@@ -195,6 +196,7 @@ describe("结构层（skin）", () => {
     ]) {
       expect(valueOf(phosphorCss, token), token).toBe("0");
     }
+    expect(valueOf(phosphorCss, "--np-radius-player")).toBe("14px");
     expect(valueOf(phosphorCss, "--np-radius-circle")).toBe("50%");
 
     // 无投影、无卡片边框；控件仍靠 1px 细线分隔。
@@ -277,7 +279,7 @@ describe("结构层（skin）", () => {
       expect(px % 8, token).toBe(0);
     }
 
-    expect(valueOf(tokensCss, "--np-row-height")).toBe("28px");
+    expect(valueOf(tokensCss, "--np-row-height")).toBe("26px");
     expect(valueOf(tokensCss, "--np-table-header-line")).toBe("2px");
   });
 

@@ -91,6 +91,112 @@ export interface ThemeListEntry {
   source: ThemeSource;
 }
 
+/** T-0056：8 个结构轴。属性名与枚举值是公共契约，不得改名。 */
+export interface Structure {
+  radius: "none" | "subtle" | "soft";
+  border: "none" | "hairline" | "box";
+  density: "compact" | "normal" | "relaxed";
+  progress: "line" | "blocks" | "bracket";
+  selection: "bar" | "reverse" | "bg";
+  labels: "sentence" | "tracked";
+  stripe: "off" | "on";
+  font: "mixed" | "mono";
+}
+
+/** 两套 skin 的完整结构预设（T-0056 §2.3）。 */
+export const SKIN_STRUCTURE: Record<Skin, Structure> = {
+  plain: {
+    radius: "soft",
+    border: "hairline",
+    density: "normal",
+    progress: "line",
+    selection: "bar",
+    labels: "sentence",
+    stripe: "off",
+    font: "mixed",
+  },
+  phosphor: {
+    radius: "none",
+    border: "none",
+    density: "compact",
+    progress: "line",
+    selection: "bg",
+    labels: "sentence",
+    stripe: "off",
+    font: "mono",
+  },
+};
+
+const STRUCTURE_VALUES: {
+  [K in keyof Structure]: readonly Structure[K][];
+} = {
+  radius: ["none", "subtle", "soft"],
+  border: ["none", "hairline", "box"],
+  density: ["compact", "normal", "relaxed"],
+  progress: ["line", "blocks", "bracket"],
+  selection: ["bar", "reverse", "bg"],
+  labels: ["sentence", "tracked"],
+  stripe: ["off", "on"],
+  font: ["mixed", "mono"],
+};
+
+/** 非法/缺省值逐轴回落到该 skin 的预设，不整主题失败。 */
+export function resolveStructure(
+  skin: Skin,
+  input?: unknown,
+): Structure {
+  const preset = SKIN_STRUCTURE[skin];
+  if (typeof input !== "object" || input === null) {
+    return { ...preset };
+  }
+  const raw = input as Record<string, unknown>;
+  const resolved: Structure = { ...preset };
+  for (const axis of Object.keys(STRUCTURE_VALUES) as Array<keyof Structure>) {
+    const value = raw[axis];
+    if (
+      typeof value === "string" &&
+      (STRUCTURE_VALUES[axis] as readonly string[]).includes(value)
+    ) {
+      resolved[axis] = value as never;
+    }
+  }
+
+  // 轴间互斥（T-0056 §11）：一行不能同时有反白和斑马纹。
+  if (resolved.selection === "reverse" && resolved.stripe === "on") {
+    resolved.stripe = "off";
+  }
+  // 字符块进度依赖等宽字体；mixed 下回退细线，避免方块字形乱码。
+  if (resolved.progress !== "line" && resolved.font !== "mono") {
+    resolved.progress = "line";
+  }
+
+  return resolved;
+}
+
+const STRUCTURE_DATASET: Record<keyof Structure, string> = {
+  radius: "structureRadius",
+  border: "structureBorder",
+  density: "structureDensity",
+  progress: "structureProgress",
+  selection: "structureSelection",
+  labels: "structureLabels",
+  stripe: "structureStripe",
+  font: "structureFont",
+};
+
+/** 把解析后的 8 轴写到 `<html>`；CSS 只认这些属性。 */
+export function applyStructure(
+  root: ThemeRoot,
+  skin: Skin,
+  input?: unknown,
+): Structure {
+  const structure = resolveStructure(skin, input);
+  for (const axis of Object.keys(STRUCTURE_DATASET) as Array<keyof Structure>) {
+    root.dataset[STRUCTURE_DATASET[axis]] = structure[axis];
+  }
+  return structure;
+}
+
 /** `theme.apply` 的回执。 */
 export interface ThemeApplyReply {
   id: string;
@@ -98,6 +204,7 @@ export interface ThemeApplyReply {
   skin: Skin;
   source: ThemeSource;
   tokens: ThemeTokens;
+  structure?: unknown;
   warnings: string[];
 }
 
@@ -227,6 +334,7 @@ export function applyTheme(theme: ThemeApplyReply, env: ThemeEnvironment): strin
 
   env.root.dataset.skin = theme.skin === "phosphor" ? "phosphor" : "plain";
   env.root.dataset.theme = theme.id;
+  applyStructure(env.root, env.root.dataset.skin as Skin, theme.structure);
   // 四套主题都是暗色（DES-001）；同步 color-scheme，滚动条/表单控件跟随。
   env.root.style.setProperty("color-scheme", "dark");
 
@@ -242,6 +350,7 @@ export function resetToGraphite(env: ThemeEnvironment): void {
   clearInlineTheme(env);
   env.root.dataset.theme = "graphite";
   env.root.dataset.skin = "plain";
+  applyStructure(env.root, "plain");
   env.root.style.setProperty("color-scheme", "dark");
 }
 

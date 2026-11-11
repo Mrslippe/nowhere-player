@@ -43,6 +43,8 @@ export function ProgressBar({
       aria-valuenow={indeterminate ? undefined : Math.round(clamped * 100)}
     >
       <div className="np-progress__indicator" />
+      {/* 结构轴 progress=blocks/bracket 用；默认 line 下被 CSS 隐藏。 */}
+      <span className="np-progress__glyphs" aria-hidden="true" />
     </div>
   );
 }

@@ -12,6 +12,8 @@ import "./motion.css";
 import "./skin/base.css";
 import "./skin/plain.css";
 import "./skin/phosphor.css";
+// T-0056：8 个结构轴只按 <html data-structure-*> 切分支。
+import "./structure.css";
 
 import { installThemePersistence } from "../shared/theme";
 

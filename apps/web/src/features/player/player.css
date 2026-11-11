@@ -108,7 +108,7 @@
   padding: var(--sp-4);
   overflow: hidden;
   border: var(--np-border-card);
-  border-radius: var(--np-radius-card);
+  border-radius: var(--np-radius-player);
   background: var(--bg-elev);
   box-shadow: var(--np-shadow-card);
   user-select: none;
@@ -125,7 +125,7 @@
   z-index: 10;
   box-sizing: border-box;
   padding: 1px;
-  border-radius: var(--np-radius-card);
+  border-radius: var(--np-radius-player);
   background: var(--np-border-window);
   content: "";
   pointer-events: none;
@@ -575,7 +575,7 @@
   display: block;
   padding: 0;
   border: 0;
-  border-radius: var(--np-radius-card);
+  border-radius: var(--np-radius-player);
   background: var(--bg-elev);
   /* 原先的 1px 内高光已并入 ::after 的渐变窗口边，不再叠一条顶边。 */
   box-shadow: var(--np-shadow-window);

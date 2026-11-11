@@ -1,0 +1,201 @@
+/*
+ * T-0056：结构轴（8 个）的 CSS 分支。
+ *
+ * 只按 <html data-structure-*> 切分支；不写组件 JS 判断。
+ * 本文件只覆盖与默认预设不同的差异项，保证 plain / phosphor 的预设
+ * 渲染保持原样。
+ */
+
+/* ── radius：none 0 / subtle 2px / soft 现值 ─────────── */
+:root[data-structure-radius="soft"] {
+  --np-radius-card: 6px;
+  --np-radius-inner: 9px;
+  --np-radius-control: 8px;
+  --np-radius-control-sm: 6px;
+  --np-radius-tag: 4px;
+  --np-radius-micro: 3px;
+  --np-radius-pill: 999px;
+  --np-radius-circle: 50%;
+}
+
+:root[data-structure-radius="none"] {
+  --np-radius-card: 0;
+  --np-radius-inner: 0;
+  --np-radius-control: 0;
+  --np-radius-control-sm: 0;
+  --np-radius-tag: 0;
+  --np-radius-micro: 0;
+  --np-radius-pill: 0;
+  --np-radius-circle: 50%;
+}
+
+:root[data-structure-radius="subtle"] {
+  --np-radius-card: 2px;
+  --np-radius-inner: 2px;
+  --np-radius-control: 2px;
+  --np-radius-control-sm: 2px;
+  --np-radius-tag: 2px;
+  --np-radius-micro: 2px;
+  --np-radius-pill: 2px;
+  --np-radius-circle: 50%;
+}
+
+/* ── font：mono 时 UI 也用等宽 ───────────────────────── */
+:root[data-structure-font="mono"] {
+  --np-font-ui: var(--np-font-mono);
+}
+
+:root[data-structure-font="mixed"] {
+  --np-font-ui: var(--font-ui);
+}
+
+/* ── labels：tracked 只影响表头/字段名，不影响正文 ──── */
+:root[data-structure-labels="tracked"] .np-blocks-table th {
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+/* ── stripe：表格隔行 ───────────────────────────────── */
+:root[data-structure-stripe="on"] .np-blocks-table tbody tr:nth-child(even) {
+  background: var(--bg-elev);
+}
+
+/* ── selection：bar 现值 / reverse 反白 / bg 仅底色 ─── */
+:root[data-structure-selection="reverse"] .np-lab__completion-item[data-active="true"] {
+  background: var(--fg);
+  box-shadow: none;
+  color: var(--bg);
+}
+
+:root[data-structure-selection="reverse"]
+  .np-lab__completion-item[data-active="true"]
+  .np-lab__completion-text,
+:root[data-structure-selection="reverse"]
+  .np-lab__completion-item[data-active="true"]
+  .np-lab__completion-kind,
+:root[data-structure-selection="reverse"]
+  .np-lab__completion-item[data-active="true"]
+  .np-lab__completion-summary,
+:root[data-structure-selection="reverse"]
+  .np-lab__completion-item[data-active="true"]
+  .np-lab__completion-usage {
+  color: var(--bg);
+}
+
+/*
+ * bg 只覆盖 plain 的自定义组合；phosphor 预设本来就是 bg，但当前视觉
+ * 仍沿用既有候选左条（零变化），没有另造一层。
+ */
+:root[data-structure-selection="bg"]
+  .np-lab__completion-item[data-active="true"] {
+  background: var(--bg-hover);
+  box-shadow: none;
+}
+
+/* ── border：只作用于块与表格，不套窗口边 ──────────── */
+:root[data-structure-border="box"] .np-blocks-item,
+:root[data-structure-border="box"] .np-blocks-table-wrap {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+:root[data-structure-border="box"] .np-blocks-table th {
+  border-bottom: 1px solid var(--line-strong);
+}
+
+:root[data-structure-border="none"] .np-blocks-item,
+:root[data-structure-border="none"] .np-blocks-table-wrap {
+  box-shadow: none;
+}
+
+:root[data-structure-border="none"] .np-blocks-table th {
+  border-bottom: 0;
+}
+
+/* ── density：compact 20 / normal 26 / relaxed 30 ───── */
+:root[data-structure-density="compact"] {
+  --np-row-height: 20px;
+  --np-density-line: 1.5;
+  --np-density-line-dense: 1.35;
+}
+
+:root[data-structure-density="normal"] {
+  --np-row-height: 26px;
+}
+
+:root[data-structure-density="relaxed"] {
+  --np-row-height: 30px;
+  --np-density-line: 1.7;
+  --np-density-line-dense: 1.5;
+}
+
+/* ── progress：字符块依赖等宽，font=mixed 时回退 line ── */
+.np-progress__glyphs {
+  display: none;
+}
+
+/*
+ * 这条选择器故意要求 font=mono：blocks / bracket 是等宽字形，
+ * font=mixed 下会乱码，必须回退现有 line 进度条。
+ */
+:root[data-structure-progress="blocks"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"]),
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"]) {
+  height: auto;
+  min-height: var(--np-density-line-dense);
+  background: none;
+}
+
+:root[data-structure-progress="blocks"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__indicator,
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__indicator {
+  display: none;
+}
+
+:root[data-structure-progress="blocks"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__glyphs,
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress:not([data-indeterminate="true"])
+  .np-progress__glyphs {
+  position: relative;
+  display: inline-block;
+  color: var(--fg-faint);
+  font-family: var(--np-font-mono);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: pre;
+}
+
+:root[data-structure-progress="blocks"][data-structure-font="mono"]
+  .np-progress__glyphs::before {
+  content: "▱▱▱▱▱▱▱▱▱▱";
+}
+
+:root[data-structure-progress="blocks"][data-structure-font="mono"]
+  .np-progress__glyphs::after {
+  position: absolute;
+  inset: 0;
+  color: var(--fg-muted);
+  content: "▰▰▰▰▰▰▰▰▰▰";
+  clip-path: inset(0 calc((1 - var(--np-progress)) * 100%) 0 0);
+}
+
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress__glyphs::before {
+  content: "[▱▱▱▱▱▱▱▱]";
+}
+
+:root[data-structure-progress="bracket"][data-structure-font="mono"]
+  .np-progress__glyphs::after {
+  position: absolute;
+  inset: 0;
+  color: var(--fg-muted);
+  content: "[▰▰▰▰▰▰▰▰]";
+  clip-path: inset(0 calc((1 - var(--np-progress)) * 100%) 0 0);
+}

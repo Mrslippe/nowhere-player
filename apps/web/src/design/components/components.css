@@ -171,7 +171,8 @@
 .np-progress__indicator {
   width: 100%;
   height: 100%;
-  background: var(--accent);
+  /* 进度是状态，不是信号；琥珀只留给播放头/状态点。 */
+  background: var(--fg-muted);
   transform-origin: left center;
   transform: scaleX(var(--np-progress, 0));
   transition: transform var(--np-dur-base) var(--np-ease-linear);

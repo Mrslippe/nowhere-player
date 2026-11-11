@@ -10,6 +10,7 @@ import {
   THEME_TOKEN_NAMES,
   SENTINEL_DELAY_MS,
   MIN_CONTRAST_RATIO,
+  applyStructure,
   applyThemeById,
   checkSentinel,
   clearSelectedThemeId,
@@ -20,6 +21,7 @@ import {
   isThemeApplyReply,
   isThemeColor,
   listThemes,
+  resolveStructure,
   loadSelectedThemeId,
   resetThemeLoader,
   saveSelectedThemeId,
@@ -168,6 +170,72 @@ describe("主题加载器", () => {
     expect(fake.dataset.theme).toBe("my-theme");
     // 14 个 token 全写进去。
     expect(THEME_TOKEN_NAMES.every((token) => fake.style.has(cssVarName(token)))).toBe(true);
+    // T-0056：缺省 structure 按 plain 预设补全，8 个属性齐全。
+    expect(fake.dataset).toMatchObject({
+      structureRadius: "soft",
+      structureBorder: "hairline",
+      structureDensity: "normal",
+      structureProgress: "line",
+      structureSelection: "bar",
+      structureLabels: "sentence",
+      structureStripe: "off",
+      structureFont: "mixed",
+    });
+  });
+
+  it("structure：合法值覆盖、非法轴逐项回落 skin 预设", () => {
+    const fake = fakeEnvironment();
+    applyStructure(fake.env.root, "phosphor", {
+      radius: "soft",
+      border: "box",
+      density: "bogus",
+      selection: "reverse",
+    });
+
+    expect(fake.dataset).toMatchObject({
+      structureRadius: "soft",
+      structureBorder: "box",
+      structureDensity: "compact",
+      structureProgress: "line",
+      structureSelection: "reverse",
+      structureLabels: "sentence",
+      structureStripe: "off",
+      structureFont: "mono",
+    });
+  });
+
+  it("structure：非法输入整体回落，不抛错", () => {
+    const fake = fakeEnvironment();
+    const resolved = applyStructure(fake.env.root, "plain", "not-an-object");
+
+    expect(resolved).toMatchObject({
+      radius: "soft",
+      border: "hairline",
+      density: "normal",
+      font: "mixed",
+    });
+    expect(
+      resolveStructure("plain", { progress: "bracket", font: "mono" }).progress,
+    ).toBe("bracket");
+    // 默认 font=mixed 时，字符块进度按规则回退 line。
+    expect(resolveStructure("plain", { progress: "bracket" }).progress).toBe(
+      "line",
+    );
+  });
+
+  it("structure：labels=tracked，reverse+stripe 强制 off，blocks+mixed 回退 line", () => {
+    expect(resolveStructure("plain", { labels: "tracked" }).labels).toBe("tracked");
+    // 旧值 upper 已作废，按非法回落。
+    expect(resolveStructure("plain", { labels: "upper" }).labels).toBe("sentence");
+    expect(
+      resolveStructure("plain", { selection: "reverse", stripe: "on" }).stripe,
+    ).toBe("off");
+    expect(
+      resolveStructure("plain", { progress: "blocks", font: "mixed" }).progress,
+    ).toBe("line");
+    expect(
+      resolveStructure("plain", { progress: "blocks", font: "mono" }).progress,
+    ).toBe("blocks");
   });
 
   it("切换主题清理上一份残留，非法颜色跳过而不是写脏值", async () => {

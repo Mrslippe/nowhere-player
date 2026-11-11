@@ -7,6 +7,7 @@
  */
 [data-skin="plain"] {
   --np-radius-card: 14px;
+  --np-radius-player: 14px;
   --np-radius-inner: 9px;
   --np-radius-control: 8px;
   --np-radius-control-sm: 6px;
