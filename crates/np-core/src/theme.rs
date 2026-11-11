@@ -831,7 +831,7 @@ impl BuiltinTheme {
     }
 }
 
-/// 四个内置主题（顺序不敏感；`theme.list` 会按 id 排序）。
+/// 七个内置主题（原有四个 + 三个 TUI 预设；`theme.list` 会按 id 排序）。
 pub static BUILTIN_THEMES: [BuiltinTheme; 7] = [
     BuiltinTheme {
         id: "graphite",
@@ -1350,14 +1350,24 @@ mod tests {
             let spec = theme.to_spec();
             let json = spec.to_json_pretty();
             for key in [
-                "radius", "border", "density", "progress", "selection", "labels", "stripe",
+                "radius",
+                "border",
+                "density",
+                "progress",
+                "selection",
+                "labels",
+                "stripe",
                 "font",
             ] {
                 assert!(json.contains(&format!("\"{key}\"")), "{id} missing {key}");
             }
             let reparsed = parse(&json).expect("TUI export round trip");
             assert_eq!(reparsed.structure, spec.structure, "{id}");
-            assert!(reparsed.warnings.is_empty(), "{id}: {:?}", reparsed.warnings);
+            assert!(
+                reparsed.warnings.is_empty(),
+                "{id}: {:?}",
+                reparsed.warnings
+            );
 
             let reply = ThemeApplyReply::from_builtin(theme);
             assert_eq!(reply.structure, spec.structure, "{id} apply reply");

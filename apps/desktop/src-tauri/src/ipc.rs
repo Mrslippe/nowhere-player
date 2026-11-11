@@ -598,7 +598,18 @@ mod tests {
         let entries = list_themes(&dir);
 
         let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
-        assert_eq!(ids, ["amber", "graphite", "ice", "phosphor"]);
+        assert_eq!(
+            ids,
+            [
+                "amber",
+                "graphite",
+                "ice",
+                "phosphor",
+                "tui-block",
+                "tui-paper",
+                "tui-wire"
+            ]
+        );
 
         let graphite = entries
             .iter()
