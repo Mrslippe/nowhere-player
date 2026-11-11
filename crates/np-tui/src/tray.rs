@@ -14,6 +14,7 @@ pub enum TrayAction {
     Show,
     Toggle,
     Next,
+    Prev,
     Quit,
     HotkeyFailed,
 }
@@ -73,12 +74,27 @@ fn run(sender: Sender<TrayAction>) {
     let manager = GlobalHotKeyManager::new().ok();
     let mut hotkeys = Vec::new();
     if let Some(manager) = &manager {
-        for (code, action) in [
-            (Code::Space, TrayAction::Toggle),
-            (Code::ArrowLeft, TrayAction::Next),
-            (Code::ArrowRight, TrayAction::Next),
+        for (code, modifiers, action) in [
+            (
+                Code::Space,
+                Some(Modifiers::CONTROL | Modifiers::ALT),
+                TrayAction::Toggle,
+            ),
+            (
+                Code::ArrowLeft,
+                Some(Modifiers::CONTROL | Modifiers::ALT),
+                TrayAction::Prev,
+            ),
+            (
+                Code::ArrowRight,
+                Some(Modifiers::CONTROL | Modifiers::ALT),
+                TrayAction::Next,
+            ),
+            (Code::MediaPlayPause, None, TrayAction::Toggle),
+            (Code::MediaTrackNext, None, TrayAction::Next),
+            (Code::MediaTrackPrevious, None, TrayAction::Prev),
         ] {
-            let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), code);
+            let hotkey = HotKey::new(modifiers, code);
             if manager.register(hotkey).is_err() {
                 let _ = sender.send(TrayAction::HotkeyFailed);
             } else {

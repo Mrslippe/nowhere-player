@@ -14,8 +14,10 @@ mod audio;
 mod cover;
 mod fft;
 mod glyphs;
+mod instance;
 mod launcher;
 mod osc;
+mod startup;
 mod theme;
 #[cfg(windows)]
 mod tray;
@@ -313,9 +315,14 @@ impl App {
                         "托盘：已暂停".to_owned()
                     };
                 }
-                tray::TrayAction::Next => {
-                    self.status = "托盘：队列为空".to_owned();
-                }
+                tray::TrayAction::Next => match player.next() {
+                    Ok(_) => self.status = "媒体键：下一首".to_owned(),
+                    Err(error) => self.status = format!("下一首失败：{}", error.message),
+                },
+                tray::TrayAction::Prev => match player.prev() {
+                    Ok(_) => self.status = "媒体键：上一首".to_owned(),
+                    Err(error) => self.status = format!("上一首失败：{}", error.message),
+                },
                 tray::TrayAction::HotkeyFailed => {
                     self.status = "全局热键注册失败（可能被占用）".to_owned();
                 }
@@ -689,6 +696,13 @@ impl App {
             }
         }
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
+            && parsed.spec.name == "config"
+            && let Some(enabled) = settings.get_bool("startup.enabled")
+            && let Err(error) = startup::set_enabled(enabled)
+        {
+            self.status = format!("自启设置失败：{error}");
+        }
+        if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "theme"
             && parsed.subcommand.map(|sub| sub.name) == Some("set")
             && let Some(id) = settings.theme_id()
@@ -818,6 +832,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache_dir = dirs.cache;
     let data_dir = dirs.data;
     let settings = SettingsHandle::load(config_dir.clone());
+    if let Some(enabled) = settings.get_bool("startup.enabled") {
+        let _ = startup::set_enabled(enabled);
+    }
     let theme_api = TuiThemeApi::new(config_dir.join("themes"));
     let library = Arc::new(LibraryHandle::with_paths(Paths {
         config_dir,
