@@ -16,12 +16,14 @@ mod theme;
 
 use audio::TuiAudio;
 use cover::CoverView;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode,
 };
 use fft::spectrum;
 use np_app::{
@@ -494,7 +496,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        SetCursorStyle::SteadyBlock
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let cover_path = resolve_cover(&player, &library);
@@ -502,7 +509,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .map(CoverView::load)
         .unwrap_or_else(CoverView::empty);
-    terminal.draw(|frame| draw(frame, &mut app, &player, &mut cover))?;
+    draw_synced(&mut terminal, &mut app, &player, &mut cover)?;
     if let Ok(path) = std::env::var("NP_TUI_STARTUP_FILE") {
         std::fs::write(path, started.elapsed().as_millis().to_string())?;
     }
@@ -542,6 +549,23 @@ struct SearchContext<'a> {
     rx: &'a std::sync::mpsc::Receiver<(u64, Block)>,
 }
 
+fn draw_synced<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    player: &TuiAudio,
+    cover: &mut CoverView,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: std::error::Error + 'static,
+{
+    execute!(io::stdout(), BeginSynchronizedUpdate)?;
+    let result = terminal.draw(|frame| draw(frame, app, player, cover));
+    let end = execute!(io::stdout(), EndSynchronizedUpdate);
+    result?;
+    end?;
+    Ok(())
+}
+
 fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -569,11 +593,14 @@ where
         }
         if draw_needed {
             update_spectrum(app, player);
-            terminal.draw(|frame| draw(frame, app, player, cover))?;
+            draw_synced(terminal, app, player, cover)?;
             draw_needed = false;
         }
-        let timeout = if player.is_playing() || app.search_pending || !app.input.is_empty() {
-            std::time::Duration::from_millis(66)
+        let timeout = if app.search_pending || !app.input.is_empty() {
+            std::time::Duration::from_millis(50)
+        } else if player.is_playing() {
+            // 12fps: Braille + truecolor 下 CPU 超过 2.8% 时按卡降帧。
+            std::time::Duration::from_millis(83)
         } else {
             std::time::Duration::from_millis(500)
         };
@@ -1519,6 +1546,42 @@ mod tests {
             })
             .count();
         assert!(braille > 4, "braille cells: {braille}");
+    }
+
+    #[test]
+    fn cursor_show_sequence_is_once_per_frame() {
+        use ratatui::Terminal;
+        use ratatui::backend::CrosstermBackend;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        crossterm::style::Colored::set_ansi_color_disabled(false);
+        let sink = Sink(Arc::new(Mutex::new(Vec::new())));
+        let mut terminal = Terminal::new(CrosstermBackend::new(sink.clone())).unwrap();
+        let mut app = App::new();
+        let audio = TuiAudio::empty();
+        let mut cover = CoverView::empty();
+        for _ in 0..20 {
+            terminal
+                .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+                .unwrap();
+        }
+        let bytes = sink.0.lock().unwrap().clone();
+        let text = String::from_utf8_lossy(&bytes);
+        // Baseline: 20 frames -> 20 show-cursor sequences. At 20fps that is 20/s;
+        // at 12fps it is 12/s. C (skip unchanged) is intentionally not applied yet.
+        assert_eq!(text.matches("\x1b[?25h").count(), 20);
     }
 
     #[test]
