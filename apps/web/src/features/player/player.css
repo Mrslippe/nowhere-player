@@ -679,8 +679,8 @@
   width: 26px;
   height: 26px;
   border: var(--np-border-control-strong);
-  /* 主播放键属于“控件/按钮”，随 radius 轴；圆点只留给状态/播放头。 */
-  border-radius: var(--np-radius-control-sm);
+  /* 主播放键是特殊控件：soft 保持圆形，subtle/none 随轴。 */
+  border-radius: var(--np-radius-play);
   background: color-mix(in srgb, var(--line) 35%, transparent);
   color: var(--fg);
 }

@@ -12,6 +12,7 @@
 :root {
   /* ── 圆角：按角色命名，skin 作者不用猜编号 ─────────── */
   --np-radius-player: 14px; /* 播放器挂件；随 radius 轴 */
+  --np-radius-play: 50%; /* 主播放键 soft 保持圆形 */
   --np-radius-cover: 8px; /* 播放器封面 */
   --np-radius-inner: 8px; /* 卡片内的大块 */
   --np-radius-control: 8px; /* 主控件：按钮、媒体块 */

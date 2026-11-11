@@ -9,6 +9,7 @@
 /* ── radius：none 0 / subtle 2px / soft 现值 ─────────── */
 :root[data-structure-radius="soft"] {
   --np-radius-player: 14px;
+  --np-radius-play: 50%;
   --np-radius-cover: 8px;
   --np-radius-inner: 8px;
   --np-radius-control: 8px;
@@ -21,6 +22,7 @@
 
 :root[data-structure-radius="none"] {
   --np-radius-player: 0;
+  --np-radius-play: 0;
   --np-radius-cover: 0;
   --np-radius-inner: 0;
   --np-radius-control: 0;
@@ -33,6 +35,7 @@
 
 :root[data-structure-radius="subtle"] {
   --np-radius-player: 6px;
+  --np-radius-play: 4px;
   --np-radius-cover: 4px;
   --np-radius-inner: 4px;
   --np-radius-control: 4px;

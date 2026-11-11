@@ -21,6 +21,7 @@ const SRC_DIR = path.join(SKIN_DIR, "..", "..");
 /** 任务卡 §6.1 的结构变量清单 + 拆分后新增的角色变量。 */
 const STRUCTURE_TOKENS = [
   "--np-radius-player",
+  "--np-radius-play",
   "--np-radius-cover",
   "--np-radius-inner",
   "--np-radius-control",
@@ -178,6 +179,7 @@ describe("结构层（skin）", () => {
 
   it("plain 的 D3 播放器结构：14 卡片 / 9 封面 / 56 尺寸 / 14 边距", () => {
     expect(valueOf(plainCss, "--np-radius-player")).toBe("14px");
+    expect(valueOf(plainCss, "--np-radius-play")).toBe("50%");
     expect(valueOf(plainCss, "--np-radius-cover")).toBe("8px");
     expect(valueOf(plainCss, "--np-radius-inner")).toBe("8px");
     expect(valueOf(plainCss, "--np-player-cover")).toBe("56px");
@@ -197,6 +199,7 @@ describe("结构层（skin）", () => {
       expect(valueOf(phosphorCss, token), token).toBe("0");
     }
     expect(valueOf(phosphorCss, "--np-radius-player")).toBe("0");
+    expect(valueOf(phosphorCss, "--np-radius-play")).toBe("0");
     expect(valueOf(phosphorCss, "--np-radius-cover")).toBe("0");
     expect(valueOf(phosphorCss, "--np-radius-circle")).toBe("50%");
 

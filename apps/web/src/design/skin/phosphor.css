@@ -8,6 +8,7 @@
 [data-skin="phosphor"] {
   /* 圆角全部归零；状态点仍是圆的，否则错误/加载标记会变成方块。 */
   --np-radius-player: 0;
+  --np-radius-play: 0;
   --np-radius-cover: 0;
   --np-radius-inner: 0;
   --np-radius-control: 0;
