@@ -32,9 +32,11 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode,
 };
 use fft::spectrum;
+use np_app::SearchHit;
 use np_app::{
-    Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, Paths, PlayerApi, Services,
-    SettingsHandle, ThemeApi, complete_for, execute_with_services,
+    Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, Paths, PlaybackTarget, PlayerApi,
+    Services, SettingsHandle, ThemeApi, complete_for, execute_with_services, online_play_hit,
+    online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus, Output, Span, SpanColor, Tone};
 use ratatui::{
@@ -103,6 +105,17 @@ struct ViewData {
     refs: Vec<TrackRef>,
 }
 
+struct RemotePlayback {
+    tx: std::sync::mpsc::Sender<String>,
+}
+
+impl PlaybackTarget for RemotePlayback {
+    fn play_path(&self, path: &str) -> Result<np_core::PlaybackState, np_app::CmdError> {
+        let _ = self.tx.send(path.to_owned());
+        Ok(np_core::PlaybackState::default())
+    }
+}
+
 struct App {
     input: Vec<char>,
     cursor: usize,
@@ -138,6 +151,7 @@ struct App {
     g_pending: Option<std::time::Instant>,
     quit_armed: bool,
     delete_armed: bool,
+    remote_tx: Option<std::sync::mpsc::Sender<String>>,
     views: Vec<ViewData>,
     view_index: usize,
     row_index: usize,
@@ -180,6 +194,7 @@ impl App {
             g_pending: None,
             quit_armed: false,
             delete_armed: false,
+            remote_tx: None,
             views: Vec::new(),
             view_index: 0,
             row_index: 0,
@@ -347,6 +362,23 @@ impl App {
 
     fn filtered_row_count(&self) -> usize {
         self.filtered_rows().len()
+    }
+
+    fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
+        let refs = library
+            .search_hits()
+            .into_iter()
+            .map(|hit| match hit {
+                SearchHit::Local(track) => TrackRef::Local(PathBuf::from(track.path)),
+                SearchHit::Online(track) => TrackRef::Remote {
+                    source: track.source.as_str().to_owned(),
+                    id: track.source_id,
+                },
+            })
+            .collect();
+        if let Some(view) = self.views.get_mut(1) {
+            view.refs = refs;
+        }
     }
 
     fn press_g(&mut self, now: std::time::Instant) -> bool {
@@ -589,6 +621,39 @@ impl App {
             return;
         }
 
+        if let Ok(Some(parsed)) = np_core::command::parse(&input)
+            && let Some((index, track)) = online_play_hit(
+                &parsed,
+                library.active_listing().as_ref(),
+                &library.search_hits(),
+            )
+            && let Some(remote_tx) = self.remote_tx.clone()
+        {
+            self.search_id += 1;
+            let search_id = self.search_id;
+            let template = online_play_started_block(&block_id, &input, index, &track);
+            self.upsert_block(template.clone());
+            self.status = "准备中…（下载后自动播放）".to_owned();
+            let online = library.online();
+            let tx = tx.clone();
+            let target = RemotePlayback { tx: remote_tx };
+            std::thread::spawn(move || {
+                let emit = |block: &Block| {
+                    let _ = tx.send((search_id, block.clone()));
+                };
+                run_online_play(
+                    &track,
+                    index,
+                    &*online,
+                    &target,
+                    &emit,
+                    &template,
+                    &np_app::now_millis,
+                );
+            });
+            return;
+        }
+
         let execution = execute_with_services(
             player,
             &**library,
@@ -763,6 +828,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut player = TuiAudio::from_env();
     let mut app = App::new();
+    let (remote_tx, remote_rx) = std::sync::mpsc::channel();
+    app.remote_tx = Some(remote_tx);
     if first_run {
         app.status = "首次运行：用 library add <目录> 添加音乐".to_owned();
     }
@@ -846,6 +913,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SearchContext {
             tx: &search_tx,
             rx: &search_rx,
+            play_rx: &remote_rx,
         },
         ThemeContext {
             api: &theme_api,
@@ -872,6 +940,7 @@ struct ThemeContext<'a> {
 struct SearchContext<'a> {
     tx: &'a std::sync::mpsc::Sender<(u64, Block)>,
     rx: &'a std::sync::mpsc::Receiver<(u64, Block)>,
+    play_rx: &'a std::sync::mpsc::Receiver<String>,
 }
 
 fn draw_synced<B: Backend>(
@@ -908,10 +977,18 @@ where
         while let Ok((search_id, block)) = search.rx.try_recv() {
             if search_id == app.search_id {
                 app.upsert_block(block);
+                app.refresh_search_refs(&**library);
                 app.status = "搜索完成".to_owned();
                 app.search_pending = false;
                 draw_needed = true;
             }
+        }
+        while let Ok(path) = search.play_rx.try_recv() {
+            match player.play(Some(path)) {
+                Ok(_) => app.status = "播放中".to_owned(),
+                Err(error) => app.status = error.message.clone(),
+            }
+            draw_needed = true;
         }
         #[cfg(windows)]
         if app.poll_tray(player) {
@@ -2585,6 +2662,16 @@ mod tests {
             terminal.backend().buffer()[(0, 0)].style().bg,
             Some(Color::Rgb(242, 239, 233))
         );
+    }
+
+    #[test]
+    fn remote_play_target_hands_the_prepared_path_to_the_ui() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let target = RemotePlayback { tx };
+        target
+            .play_path("C:/cache/remote.bin")
+            .expect("queue remote path");
+        assert_eq!(rx.try_recv().as_deref(), Ok("C:/cache/remote.bin"));
     }
 
     #[test]
