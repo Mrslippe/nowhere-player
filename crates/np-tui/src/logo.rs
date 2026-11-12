@@ -56,9 +56,26 @@ pub(crate) const GLYPH_W: Glyph = glyph(
         "██║ █╗ ██║",
         "██║███╗██║",
         "╚███╔███╔╝",
-        "╚══╝╚══╝",
+        " ╚══╝╚══╝",
     ],
     10,
+);
+
+/// D：左侧平直、右侧弧形；自然宽度 8。
+///
+/// 产品 NOWHERE logo 不引用 D；`spikes/logo-font` 通过 `#[path]` 共用本文件，
+/// 会在 `--glyph D` 时使用。这里的 `allow` 只针对这种跨 crate 的 include。
+#[allow(dead_code)]
+pub(crate) const GLYPH_D: Glyph = glyph(
+    [
+        "██████╗",
+        "██╔══██╗",
+        "██║  ██║",
+        "██║  ██║",
+        "██████╔╝",
+        "╚═════╝",
+    ],
+    8,
 );
 
 pub(crate) const GLYPH_H: Glyph = glyph(
@@ -100,6 +117,23 @@ pub(crate) const GLYPH_R: Glyph = glyph(
 pub(crate) const GLYPHS: [Glyph; 7] = [
     GLYPH_N, GLYPH_O, GLYPH_W, GLYPH_H, GLYPH_E, GLYPH_R, GLYPH_E,
 ];
+
+/// 按字母取单字字形；供字体实验台的 `--glyph` 预览。
+///
+/// 产品侧不调用；见 [`GLYPH_D`] 的说明。
+#[allow(dead_code)]
+pub(crate) fn glyph_for(letter: char) -> Option<Glyph> {
+    match letter.to_ascii_uppercase() {
+        'N' => Some(GLYPH_N),
+        'O' => Some(GLYPH_O),
+        'W' => Some(GLYPH_W),
+        'H' => Some(GLYPH_H),
+        'E' => Some(GLYPH_E),
+        'R' => Some(GLYPH_R),
+        'D' => Some(GLYPH_D),
+        _ => None,
+    }
+}
 
 /// 把一行自然形状右补空格到槽位宽度。
 ///
@@ -194,6 +228,48 @@ mod tests {
             GLYPH_O.rows[5].starts_with(' '),
             "O bottom must start with a space"
         );
+    }
+
+    /// W 底行也有前导空格；少了它，底部两个 V 会整体左移。
+    #[test]
+    fn w_keeps_bottom_curve_alignment() {
+        assert_eq!(
+            GLYPH_W.rows,
+            [
+                "██╗    ██╗",
+                "██║    ██║",
+                "██║ █╗ ██║",
+                "██║███╗██║",
+                "╚███╔███╔╝",
+                " ╚══╝╚══╝",
+            ]
+        );
+        assert_eq!(GLYPH_W.width, 10);
+        assert!(
+            GLYPH_W.rows[5].starts_with(' '),
+            "W bottom must start with a space"
+        );
+    }
+
+    /// D 的第一版：左侧平直，右侧弧线；宽度 8，6 行自然形状。
+    #[test]
+    fn d_keeps_flat_left_stem() {
+        assert_eq!(
+            GLYPH_D.rows,
+            [
+                "██████╗",
+                "██╔══██╗",
+                "██║  ██║",
+                "██║  ██║",
+                "██████╔╝",
+                "╚═════╝",
+            ]
+        );
+        assert_eq!(GLYPH_D.width, 8);
+        for row in GLYPH_D.rows {
+            assert!(!row.starts_with(' '), "D left edge must be flat: {row:?}");
+        }
+        assert_eq!(glyph_for('d').map(|glyph| glyph.width), Some(8));
     }
 
     /// 数据层不允许用行尾空格“预对齐”；对齐是合成器的职责。

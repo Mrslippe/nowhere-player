@@ -72,21 +72,24 @@ const FONTS: &[FontChoice] = &[
 #[derive(Debug, Default)]
 struct Args {
     font: Option<String>,
+    glyph: Option<char>,
     print: bool,
     help: bool,
 }
 
 struct App {
     font: Option<String>,
+    glyph: Option<char>,
     status: String,
     guide: bool,
     quit: bool,
 }
 
 impl App {
-    fn new(font: Option<String>) -> Self {
+    fn new(font: Option<String>, glyph: Option<char>) -> Self {
         Self {
             font,
+            glyph,
             status: "1–5/0 选字体 · g 标尺 · w 写 fragment · r 新窗口 · q 退出".to_owned(),
             guide: true,
             quit: false,
@@ -97,12 +100,26 @@ impl App {
         self.font.as_deref().unwrap_or("终端默认")
     }
 
+    fn target_label(&self) -> String {
+        match self.glyph {
+            Some(glyph) => format!("单字 {glyph}"),
+            None => "NOWHERE".to_owned(),
+        }
+    }
+
+    fn art(&self, width: u16) -> String {
+        match self.glyph.and_then(logo::glyph_for) {
+            Some(glyph) => logo::compose(&[glyph]).join("\n"),
+            None => logo::splash_art(width),
+        }
+    }
+
     fn select(&mut self, key: char) {
         let Some(choice) = FONTS.iter().find(|choice| choice.key == key) else {
             return;
         };
         self.font = choice.face.map(str::to_owned);
-        match write_fragment(self.font.as_deref()) {
+        match write_fragment(self.font.as_deref(), self.glyph) {
             Ok(path) => {
                 self.status = format!(
                     "已写 {} · 按 r 打开新窗口（若 profile 不存在，先关闭所有 WT 再试）",
@@ -123,10 +140,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if args.print {
-        print_logo(args.font.as_deref());
+        print_logo(args.font.as_deref(), args.glyph);
         return Ok(());
     }
-    run_tui(App::new(args.font))
+    run_tui(App::new(args.font, args.glyph))
 }
 
 fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
@@ -136,6 +153,21 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--help" | "-h" => args.help = true,
             "--print" => args.print = true,
+            "--glyph" => {
+                let value = iter.next().ok_or("--glyph 需要一个字母，例如 D")?;
+                let mut chars = value.chars();
+                let glyph = chars
+                    .next()
+                    .ok_or("--glyph 需要一个字母，例如 D")?
+                    .to_ascii_uppercase();
+                if chars.next().is_some() {
+                    return Err("--glyph 只接受一个字母".into());
+                }
+                if logo::glyph_for(glyph).is_none() {
+                    return Err(format!("暂无字形：{glyph}（N/O/W/H/E/R/D）").into());
+                }
+                args.glyph = Some(glyph);
+            }
             "--font" => {
                 let value = iter.next().ok_or("--font 需要一个字体名")?;
                 args.font = if value == "default" || value == "终端默认" {
@@ -156,24 +188,36 @@ fn print_help() {
     println!("用法：");
     println!("  cargo run --release                 交互预览");
     println!("  cargo run --release -- --print      只打印 logo / 网格宽度");
+    println!("  cargo run --release -- --glyph D    单字预览（N/O/W/H/E/R/D）");
     println!("  cargo run --release -- --font \"Sarasa Mono CL\"");
     println!();
     println!("交互键：1–5/0 选字体，g 标尺，w 写 fragment，r 新窗口，q 退出。");
 }
 
-fn print_logo(font: Option<&str>) {
-    let width = 80;
-    let art = logo::splash_art(width);
+fn print_logo(font: Option<&str>, glyph: Option<char>) {
+    let art = match glyph.and_then(logo::glyph_for) {
+        Some(glyph) => logo::compose(&[glyph]).join("\n"),
+        None => logo::splash_art(80),
+    };
+    let widths: Vec<usize> = art.lines().map(UnicodeWidthStr::width).collect();
+    let art_width = widths.iter().copied().max().unwrap_or(0);
+    let (tens, units) = ruler(art_width);
     println!("font: {}", font.unwrap_or("终端默认"));
+    println!(
+        "target: {}",
+        glyph
+            .map(|glyph| format!("单字 {glyph}"))
+            .unwrap_or_else(|| "NOWHERE".to_owned())
+    );
     println!("rows:");
     for line in art.lines() {
         println!("  {:>2}  {line}", UnicodeWidthStr::width(line));
     }
-    println!(
-        "art_width: {}",
-        art.lines().map(UnicodeWidthStr::width).max().unwrap_or(0)
-    );
+    println!("row_widths: {widths:?}");
+    println!("art_width: {art_width}");
     println!();
+    println!("{tens}");
+    println!("{units}");
     println!("{art}");
 }
 
@@ -194,7 +238,7 @@ fn run_tui(mut app: App) -> Result<(), Box<dyn std::error::Error>> {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
                     KeyCode::Char('g') => app.guide = !app.guide,
-                    KeyCode::Char('w') => match write_fragment(app.font.as_deref()) {
+                    KeyCode::Char('w') => match write_fragment(app.font.as_deref(), app.glyph) {
                         Ok(path) => app.status = format!("已写 {}", path.display()),
                         Err(error) => app.status = format!("写 fragment 失败：{error}"),
                     },
@@ -236,7 +280,7 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
         return;
     }
 
-    let art = logo::splash_art(inner.width);
+    let art = app.art(inner.width);
     let widths: Vec<usize> = art.lines().map(UnicodeWidthStr::width).collect();
     let distinct: HashSet<usize> = widths.iter().copied().collect();
     let art_width = widths.iter().copied().max().unwrap_or(0);
@@ -254,7 +298,10 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            format!("grid: {grid_state} · {art_width} cols"),
+            format!(
+                "grid: {grid_state} · {art_width} cols · {}",
+                app.target_label()
+            ),
             ruler_style,
         )),
         Line::from(""),
@@ -314,7 +361,7 @@ fn ruler(width: usize) -> (String, String) {
     (tens, units)
 }
 
-fn write_fragment(face: Option<&str>) -> io::Result<PathBuf> {
+fn write_fragment(face: Option<&str>, glyph: Option<char>) -> io::Result<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA 未设置"))?;
@@ -323,6 +370,9 @@ fn write_fragment(face: Option<&str>) -> io::Result<PathBuf> {
     let mut commandline = format!("\"{}\"", exe.display());
     if let Some(face) = face {
         commandline.push_str(&format!(" --font \"{face}\""));
+    }
+    if let Some(glyph) = glyph {
+        commandline.push_str(&format!(" --glyph {glyph}"));
     }
     let font_line = face
         .map(|face| {

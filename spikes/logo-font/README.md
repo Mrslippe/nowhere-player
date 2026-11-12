@@ -15,7 +15,8 @@
 - N 为了“每行等宽”，在上三行内部多塞了空格，导致上三行 10 列、下三行 9 列；
 - 旧的等宽测试只统计尾随空格，没有发现内部空格改变了字形；
 - 旧 N 内部空格导致总宽 68；修 N 后 67；
-- 但 O 的自然形状也是 9 列（不是 10；顶行 ` ██████╗`、底行 ` ╚═════╝` 各有一个前导空格），槽位写 10 会让 O 与 W 之间多 1 格；修正后总宽 **66**。
+- 但 O 的自然形状也是 9 列（不是 10；顶行 ` ██████╗`、底行 ` ╚═════╝` 各有一个前导空格），槽位写 10 会让 O 与 W 之间多 1 格；修正后总宽 **66**；
+- W 底行同理：正确是 `" ╚══╝╚══╝"`，少了前导空格底部两个 V 会左移。
 
 现在的规则：**每个字形声明自己的槽位宽度；字形数据只写自然形状、行尾不留空格，合成器只在行尾补空格，禁止在字形内部塞空格改形状**。N 已恢复为手绘 9 列，合成总宽 66（N=9、O=9、W=10、H/E/R=8）。
 
@@ -36,6 +37,10 @@ cargo run --offline -- --print
 
 # 交互预览
 cargo run --offline
+
+# 单字预览（当前支持 N/O/W/H/E/R/D）
+cargo run --offline -- --glyph D --print
+cargo run --offline -- --glyph D
 
 # 直接以某个字体打开预览（由 fragment 的 commandline 传回）
 cargo run --offline -- --font "Sarasa Mono CL"
@@ -61,6 +66,8 @@ cargo run --offline -- --font "Sarasa Mono CL"
 | `q` / `Esc` | 退出 |
 
 选字体后会自动写 fragment；按 `r` 打开新窗口。
+
+单字模式用 `--glyph D` 启动；fragment 的 commandline 会带上 `--glyph`，新窗口仍然显示同一个字。
 
 ---
 
@@ -104,7 +111,7 @@ cargo run --offline -- --font "Sarasa Mono CL"
 
 | 文件 | 用途 |
 |---|---|
-| `src/main.rs` | 交互 TUI、`--print`、fragment 写入、字体列表 |
+| `src/main.rs` | 交互 TUI、`--print`、`--glyph` 单字预览、fragment 写入、字体列表 |
 | `Cargo.toml` | 独立 crate；`ratatui` / `crossterm` / `unicode-width` |
 | `Cargo.lock` | 固定实验依赖 |
 | `../../crates/np-tui/src/logo.rs` | 与产品共用的字形表与合成逻辑 |
