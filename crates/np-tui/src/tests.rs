@@ -7,6 +7,7 @@ use np_app::PlaybackTarget;
 use np_app::complete_for;
 use np_core::{Block, BlockStatus, Output};
 use ratatui::style::Color;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
@@ -409,9 +410,18 @@ fn splash_cycles_themes_and_wraps() {
 fn splash_degrades_to_one_line_on_narrow_screens() {
     assert_eq!(splash_art(59), "NOWHERE");
     assert_eq!(splash_art(60), "NOWHERE");
-    assert_eq!(splash_art(67), "NOWHERE");
-    assert!(splash_art(68).contains('█'));
+    assert_eq!(splash_art(65), "NOWHERE");
+    assert!(splash_art(66).contains('█'));
     assert!(splash_art(80).contains('█'));
+}
+
+#[test]
+fn splash_art_lines_have_equal_display_width() {
+    let art = splash_art(66);
+    let widths: HashSet<usize> = art.lines().map(UnicodeWidthStr::width).collect();
+    assert_eq!(widths.len(), 1, "art lines must align: {widths:?}");
+    assert_eq!(art.lines().count(), 6);
+    assert!(splash_art(66).contains('█'));
 }
 
 #[test]

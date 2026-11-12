@@ -11,13 +11,14 @@ use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block as TuiBlock, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use np_app::ThemeApi;
 
-pub(crate) fn splash_art(width: u16) -> &'static str {
-    if width < 68 {
-        "NOWHERE"
+pub(crate) fn splash_art(width: u16) -> String {
+    let art = if width < 66 {
+        "NOWHERE".to_owned()
     } else {
         "███╗   ██╗ ██████╗ ██╗    ██╗██╗  ██╗███████╗██████╗  ███████╗\n\
          ████╗  ██║██╔═══██╗██║    ██║██║  ██║██╔════╝██╔══██╗ ██╔════╝\n\
@@ -25,7 +26,22 @@ pub(crate) fn splash_art(width: u16) -> &'static str {
          ██║╚████║██║   ██║██║███╗██║██╔══██║██╔══╝  ██╔══██╗ ██╔══╝\n\
          ██║ ╚███║╚██████╔╝╚███╔███╔╝██║  ██║███████╗██║  ██║ ███████╗\n\
          ╚═╝  ╚══╝ ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚══════╝"
-    }
+            .to_owned()
+    };
+    let lines: Vec<&str> = art.lines().collect();
+    let max_width = lines
+        .iter()
+        .map(|line| UnicodeWidthStr::width(*line))
+        .max()
+        .unwrap_or(0);
+    lines
+        .into_iter()
+        .map(|line| {
+            let padding = max_width.saturating_sub(UnicodeWidthStr::width(line));
+            format!("{line}{}", " ".repeat(padding))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn splash_theme_ids() -> Vec<&'static str> {
@@ -72,7 +88,8 @@ where
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let mut lines = vec![Line::from("")];
-        lines.extend(splash_art(inner.width).lines().map(Line::from));
+        let art = splash_art(inner.width);
+        lines.extend(art.lines().map(Line::from));
         lines.push(Line::from(""));
         lines.push(Line::from(format!("◄  {}  ►", app.theme_name)));
         lines.push(Line::from(""));
