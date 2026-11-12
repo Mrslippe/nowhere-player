@@ -155,7 +155,7 @@ where
                                 }
                                 _ => {}
                             }
-                        } else if app.mode == UiMode::Command {
+                        } else if app.focus == Focus::Controller {
                             match key.code {
                                 KeyCode::Esc => {
                                     app.leave_command();
@@ -211,7 +211,7 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => {
-                                    if app.focus == Focus::Library {
+                                    if app.focus == Focus::Browse {
                                         app.move_view(true);
                                     } else {
                                         app.move_row(true);
@@ -219,7 +219,7 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('k') | KeyCode::Up => {
-                                    if app.focus == Focus::Library {
+                                    if app.focus == Focus::Browse {
                                         app.move_view(false);
                                     } else {
                                         app.move_row(false);
@@ -248,7 +248,7 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Enter => {
-                                    if app.focus == Focus::Library {
+                                    if app.focus == Focus::Browse {
                                         app.focus = Focus::List;
                                     } else if let Some(row) =
                                         app.filtered_rows().get(app.row_index).cloned()
@@ -269,7 +269,7 @@ where
                                     if app.immersive {
                                         app.immersive = false;
                                     } else if app.focus == Focus::List {
-                                        app.focus = Focus::Library;
+                                        app.focus = Focus::Browse;
                                     } else {
                                         return Ok(());
                                     }

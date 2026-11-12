@@ -86,7 +86,7 @@ impl App {
             palette: Palette::terminal(),
             theme_id: "terminal".to_owned(),
             theme_name: "跟随终端".to_owned(),
-            focus: Focus::Library,
+            focus: Focus::Browse,
             mode: UiMode::Normal,
             filter: String::new(),
             g_pending: None,
@@ -323,8 +323,9 @@ impl App {
 
     pub(crate) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
-            Focus::Library => Focus::List,
-            Focus::List => Focus::Library,
+            Focus::Browse => Focus::List,
+            Focus::List => Focus::Controller,
+            Focus::Controller => Focus::Browse,
         };
     }
 
@@ -347,13 +348,15 @@ impl App {
     }
 
     pub(crate) fn enter_command(&mut self) {
-        self.mode = UiMode::Command;
+        self.focus = Focus::Controller;
+        self.mode = UiMode::Normal;
         self.input.clear();
         self.cursor = 0;
         self.completion = None;
     }
 
     pub(crate) fn leave_command(&mut self) {
+        self.focus = Focus::List;
         self.mode = UiMode::Normal;
         self.input.clear();
         self.cursor = 0;

@@ -387,15 +387,22 @@ fn tab_changes_focus_border_color() {
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
-    let left_before = terminal.backend().buffer()[(1, 1)].style().fg;
+    let controller_x = 1;
+    let controller_y = 1 + vertical_heights(28).0 + vertical_heights(28).1;
+    let line_before = terminal.backend().buffer()[(controller_x, controller_y)]
+        .style()
+        .fg;
     app.toggle_focus();
+    app.toggle_focus();
+    assert_eq!(app.focus, Focus::Controller);
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
-    let left_after = terminal.backend().buffer()[(1, 1)].style().fg;
-    assert_ne!(left_before, left_after);
-    assert_eq!(left_before, Some(Palette::terminal().accent));
-    assert_eq!(left_after, Some(Palette::terminal().faint));
+    let line_after = terminal.backend().buffer()[(controller_x, controller_y)]
+        .style()
+        .fg;
+    assert_ne!(line_before, line_after);
+    assert_eq!(line_after, Some(Palette::terminal().accent));
 }
 
 #[test]
@@ -420,10 +427,14 @@ fn missing_theme_setting_defaults_to_milkgreen() {
 }
 
 #[test]
-fn player_strip_is_six_rows_and_list_gets_the_rest() {
-    assert_eq!(player_height_for(30), 6);
-    assert_eq!(player_height_for(20), 6);
-    assert_eq!(player_height_for(8), 5);
+fn layout_heights_for_three_window_sizes() {
+    assert_eq!(vertical_heights(28), (13, 11, 3, 1)); // 100x30
+    assert_eq!(vertical_heights(38), (20, 14, 3, 1)); // 140x40
+    assert_eq!(vertical_heights(22), (10, 8, 3, 1)); // 80x24
+    let (top, player, controller, status) = vertical_heights(28);
+    assert!(top + player + controller + status == 28);
+    assert!((8..=14).contains(&player));
+    assert!(top.saturating_sub(3) >= 8); // block borders + header
 }
 
 #[test]
@@ -433,7 +444,7 @@ fn chinese_title_truncates_by_display_width() {
 }
 
 #[test]
-fn normal_mode_hides_command_input() {
+fn controller_is_always_visible_and_colon_focuses_it() {
     let mut app = App::new();
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
@@ -447,8 +458,30 @@ fn normal_mode_hides_command_input() {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(!text.replace(' ', "").contains("输入命令"));
+    assert!(text.replace(' ', "").contains("Controller"));
     app.enter_command();
+    assert_eq!(app.focus, Focus::Controller);
+    assert_eq!(app.mode, UiMode::Normal);
+    app.leave_command();
+    assert_eq!(app.focus, Focus::List);
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn browse_list_counters_use_data() {
+    let mut app = App::new();
+    app.views = (0..7)
+        .map(|index| ViewData {
+            title: format!("视图{index}"),
+            columns: vec!["#".to_owned(), "标题".to_owned()],
+            rows: (0..4)
+                .map(|row| vec![row.to_string(), "晴天".to_owned()])
+                .collect(),
+            refs: Vec::new(),
+        })
+        .collect();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
@@ -459,7 +492,9 @@ fn normal_mode_hides_command_input() {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.replace(' ', "").contains("命令"));
+    let compact = text.replace(' ', "");
+    assert!(compact.contains("1of7"), "{compact}");
+    assert!(compact.contains("total4"), "{compact}");
 }
 
 #[test]

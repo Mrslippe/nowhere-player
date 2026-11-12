@@ -29,8 +29,9 @@ impl VisualMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Focus {
-    Library,
+    Browse,
     List,
+    Controller,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

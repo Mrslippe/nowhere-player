@@ -7,7 +7,7 @@ use crate::app::{App, Focus, UiMode};
 use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::*;
-use crate::layout::player_height_for;
+use crate::layout::vertical_heights;
 use crate::player_bar::draw_player_strip;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
@@ -17,119 +17,221 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     } else {
         frame.render_widget(Clear, full);
     }
-    // 主题模式自绘 1 格留白；跟随终端模式绝不覆盖用户终端背景。
-    let area = if app.palette.bg.is_some() && full.width > 2 && full.height > 2 {
-        Rect {
-            x: full.x + 1,
-            y: full.y + 1,
-            width: full.width - 2,
-            height: full.height - 2,
-        }
-    } else {
-        full
-    };
-
-    let player_height = player_height_for(area.height);
-    let input_height = u16::from(matches!(app.mode, UiMode::Command | UiMode::Filter));
-    let body_height = area
-        .height
-        .saturating_sub(1 + player_height + input_height + 1)
-        .max(1);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(body_height),
-            Constraint::Length(player_height),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    let title = Paragraph::new(Line::from(vec![
-        TuiSpan::styled(
-            " Nowhere Player ",
-            Style::default()
-                .fg(app.palette.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        TuiSpan::raw(format!("  {}", app.theme_name)),
-    ]))
-    .style(
-        Style::default()
-            .bg(app.palette.bg.unwrap_or(Color::Reset))
-            .fg(app.palette.fg),
-    );
-    frame.render_widget(title, rows[0]);
-
-    if app.immersive {
-        draw_player_strip(frame, rows[1].union(rows[2]), app, player);
-    } else {
-        if area.width < 80 {
-            draw_list(frame, rows[1], app);
-        } else {
-            let columns = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(22), Constraint::Min(20)])
-                .split(rows[1]);
-            draw_library(frame, columns[0], app);
-            draw_list(frame, columns[1], app);
-        }
-        draw_player_strip(frame, rows[2], app, player);
+    if full.width < 4 || full.height < 6 {
+        return;
     }
-
-    if matches!(app.mode, UiMode::Command | UiMode::Filter) {
-        let title = if app.mode == UiMode::Filter {
-            " 过滤 "
-        } else {
-            " 命令 "
-        };
-        let _ = title;
-        let input = Paragraph::new(input_line(app)).style(
+    let outer = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.palette.line))
+        .style(
             Style::default()
                 .bg(app.palette.bg.unwrap_or(Color::Reset))
                 .fg(app.palette.fg),
         );
-        frame.render_widget(input, rows[3]);
-        frame.set_cursor_position((
-            rows[3].x.saturating_add(input_width_before(app) as u16),
-            rows[3].y,
-        ));
-    }
+    let inner = outer.inner(full);
+    let version = format!(" NOWHERE PLAYER v{} ", env!("CARGO_PKG_VERSION"));
+    let theme = format!(" {} ", app.theme_name);
+    let border_style = Style::default().fg(app.palette.line);
+    frame.render_widget(outer.title(version.clone()), full);
+    let theme_x = full
+        .right()
+        .saturating_sub(display_width(theme.as_str()) as u16 + 1);
+    frame.buffer_mut().set_string(
+        theme_x,
+        full.y,
+        &theme,
+        Style::default().fg(app.palette.accent),
+    );
+    let _ = border_style;
 
-    let hint = if app.immersive {
-        "Ctrl+F 退出沉浸 · Space 播放/暂停 · n/p 切歌 · +/- 音量 · Esc 返回"
+    let (top_h, player_h, controller_h, _status_h) = vertical_heights(inner.height);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_h),
+            Constraint::Length(player_h),
+            Constraint::Length(controller_h),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let (top, player_area, controller_area, status_area) = (rows[0], rows[1], rows[2], rows[3]);
+
+    if app.immersive {
+        draw_player_strip(frame, top.union(player_area), app, player);
     } else {
-        match (app.focus, app.mode) {
-            (Focus::Library, _) => {
-                "j/k 切视图 · Enter 进入列表 · Tab 切焦点 · / 过滤 · : 命令 · ? 帮助 · q 退出"
-            }
-            (Focus::List, _) => {
-                "j/k 移动 · Enter 播放 · a 入队 · d 删除(需 dd) · f 视觉 · Tab 切焦点 · / 过滤 · : 命令 · ? 帮助"
-            }
+        draw_browse_list(frame, top, app);
+        draw_player_strip(frame, player_area, app, player);
+    }
+    draw_controller(frame, controller_area, app);
+    let hint = match (app.focus, app.mode) {
+        (Focus::Controller, UiMode::Filter) => {
+            "Filter: Enter 确认 · Esc 清除 · ↑/↓ 历史 · Tab 切焦点"
+        }
+        (Focus::Controller, _) => {
+            "Enter 执行 · ↑/↓ 历史 · Esc 回列表 · Tab 切焦点 · ? 帮助 · q 退出"
+        }
+        (Focus::Browse, _) => {
+            "j/k 切视图 · Enter 进入列表 · Tab 切焦点 · / 过滤 · : 命令 · ? 帮助 · q 退出"
+        }
+        (Focus::List, UiMode::Filter) => "Filter: Enter 确认 · Esc 清除 · / 输入过滤",
+        (Focus::List, _) => {
+            "j/k 移动 · Enter 播放 · a 入队 · d 删除(需 dd) · f 视觉 · Tab 切焦点 · / 过滤 · : 命令"
         }
     };
-    let status = Paragraph::new(format!(
-        " {} · {} · {} · NO_COLOR {}",
-        app.selected_view()
-            .map(|view| view.title.as_str())
-            .unwrap_or("无视图"),
-        app.status,
-        hint,
-        if app.no_color_ignored {
-            "已忽略"
-        } else {
-            "未设置"
-        }
-    ))
-    .style(
+    let status = Paragraph::new(format!(" {} · {}", app.status, hint)).style(
         Style::default()
             .bg(app.palette.bg.unwrap_or(Color::Reset))
             .fg(app.palette.muted),
     );
-    frame.render_widget(status, rows[4]);
+    frame.render_widget(status, status_area);
     if app.mode == UiMode::Help {
-        draw_help(frame, area, app);
+        draw_help(frame, inner, app);
+    }
+}
+
+fn border_text(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    y: u16,
+    text: &str,
+    right: bool,
+    style: Style,
+) {
+    if area.width < 2 {
+        return;
+    }
+    let width = display_width(text) as u16;
+    if width + 2 > area.width {
+        return;
+    }
+    let x = if right {
+        area.right().saturating_sub(width + 2)
+    } else {
+        area.x + 2
+    };
+    frame.buffer_mut().set_string(x, y, text, style);
+}
+
+fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let focused = app.focus != Focus::Controller;
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused {
+            app.palette.accent
+        } else {
+            app.palette.line
+        }))
+        .style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    border_text(
+        frame,
+        area,
+        area.y,
+        " Browse ",
+        false,
+        Style::default().fg(app.palette.accent),
+    );
+    border_text(
+        frame,
+        area,
+        area.y,
+        " List ",
+        true,
+        Style::default().fg(app.palette.accent),
+    );
+    let view_number = if app.views.is_empty() {
+        0
+    } else {
+        app.view_index + 1
+    };
+    let left_count = format!(" {view_number} of {} ", app.views.len());
+    let right_count = format!(" total {} ", app.filtered_row_count());
+    border_text(
+        frame,
+        area,
+        area.bottom().saturating_sub(1),
+        &left_count,
+        false,
+        Style::default().fg(app.palette.muted),
+    );
+    border_text(
+        frame,
+        area,
+        area.bottom().saturating_sub(1),
+        &right_count,
+        true,
+        Style::default().fg(app.palette.muted),
+    );
+    let split = inner
+        .x
+        .saturating_add(22)
+        .min(inner.right().saturating_sub(1));
+    let left = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: split.saturating_sub(inner.x),
+        height: inner.height,
+    };
+    let right = Rect {
+        x: split.saturating_add(1),
+        y: inner.y,
+        width: inner.right().saturating_sub(split.saturating_add(1)),
+        height: inner.height,
+    };
+    draw_library(frame, left, app);
+    draw_list(frame, right, app);
+    let line_style = Style::default().fg(app.palette.line);
+    for y in inner.y..inner.bottom() {
+        frame.buffer_mut().set_string(split, y, "│", line_style);
+    }
+    frame
+        .buffer_mut()
+        .set_string(split, area.y, "┬", line_style);
+    frame
+        .buffer_mut()
+        .set_string(split, area.bottom().saturating_sub(1), "┴", line_style);
+}
+
+fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.focus == Focus::Controller {
+            app.palette.accent
+        } else {
+            app.palette.line
+        }))
+        .title(" Controller ")
+        .style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if area.height < 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(input_line(app)).style(
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        ),
+        inner,
+    );
+    if app.focus == Focus::Controller {
+        frame.set_cursor_position((
+            inner.x.saturating_add(input_width_before(app) as u16),
+            inner.y,
+        ));
     }
 }
 
@@ -199,9 +301,7 @@ pub(crate) fn panel_block(app: &App, title: &str, focused: bool) -> TuiBlock<'st
 }
 
 pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = panel_block(app, " 视图 ", app.focus == Focus::Library);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = area;
     let lines: Vec<Line> = app
         .views
         .iter()
@@ -228,15 +328,8 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let view = app.selected_view();
-    let title = match view {
-        Some(view) => format!(" {} · {} ", view.title, view.rows.len()),
-        None => " 条目 ".to_owned(),
-    };
-    let block = panel_block(app, &title, app.focus == Focus::List);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let Some(view) = view else {
+    let inner = area;
+    let Some(view) = app.selected_view() else {
         return;
     };
     if view.columns.is_empty() {

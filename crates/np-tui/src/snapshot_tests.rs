@@ -196,7 +196,7 @@ fn golden_player_bar() {
 fn golden_status_focus_states() {
     let audio = TuiAudio::empty();
     let mut app = library_app();
-    app.focus = Focus::Library;
+    app.focus = Focus::Browse;
     snapshot_app("status_library.txt", 100, 30, &mut app, &audio);
     app.focus = Focus::List;
     snapshot_app("status_list.txt", 100, 30, &mut app, &audio);
