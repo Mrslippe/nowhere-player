@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::{Block as TuiBlock, Borders, Clear, Paragraph, Wrap};
@@ -7,15 +7,14 @@ use crate::app::{App, Focus, UiMode};
 use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::*;
-use crate::layout::vertical_heights;
+use crate::layout::{layout_areas, layout_inner};
 use crate::player_bar::draw_player_strip;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
     let full = frame.area();
+    frame.render_widget(Clear, full);
     if let Some(bg) = app.palette.bg {
         frame.buffer_mut().set_style(full, Style::default().bg(bg));
-    } else {
-        frame.render_widget(Clear, full);
     }
     if full.width < 4 || full.height < 6 {
         return;
@@ -28,7 +27,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
                 .bg(app.palette.bg.unwrap_or(Color::Reset))
                 .fg(app.palette.fg),
         );
-    let inner = outer.inner(full);
+    let inner = layout_inner(full);
     let version = format!(" NOWHERE PLAYER v{} ", env!("CARGO_PKG_VERSION"));
     let theme = format!(" {} ", app.theme_name);
     let border_style = Style::default().fg(app.palette.line);
@@ -44,17 +43,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     );
     let _ = border_style;
 
-    let (top_h, player_h, controller_h, _status_h) = vertical_heights(inner.height);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(top_h),
-            Constraint::Length(player_h),
-            Constraint::Length(controller_h),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-    let (top, player_area, controller_area, status_area) = (rows[0], rows[1], rows[2], rows[3]);
+    let [top, player_area, controller_area, status_area] = layout_areas(full);
 
     if app.immersive {
         draw_player_strip(frame, top.union(player_area), app, player);

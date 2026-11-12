@@ -438,6 +438,34 @@ fn layout_heights_for_three_window_sizes() {
 }
 
 #[test]
+fn layout_areas_stay_inside_outer_border() {
+    for (width, height) in [(100, 30), (140, 40), (80, 24)] {
+        let outer = ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let [top, player, controller, status] = layout_areas(outer);
+        assert!(top.y > outer.y, "{width}x{height} top {top:?}");
+        assert!(
+            player.y >= top.bottom(),
+            "{width}x{height} player {player:?}"
+        );
+        assert!(
+            controller.y >= player.bottom(),
+            "{width}x{height} controller {controller:?}"
+        );
+        assert!(
+            status.y >= controller.bottom(),
+            "{width}x{height} status {status:?}"
+        );
+        assert_eq!(status.bottom(), outer.bottom() - 1);
+        assert_eq!(outer.width, width);
+    }
+}
+
+#[test]
 fn chinese_title_truncates_by_display_width() {
     let text = truncate_width("晴天 · Jay Chou", 8);
     assert_eq!(UnicodeWidthStr::width(text.as_str()), 8);

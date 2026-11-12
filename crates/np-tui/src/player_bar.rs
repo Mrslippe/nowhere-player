@@ -19,7 +19,7 @@ pub(crate) fn draw_player_strip(
 ) {
     let block = TuiBlock::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(app.palette.line))
+        .border_style(Style::default().fg(app.palette.line_strong))
         .style(
             Style::default()
                 .bg(app.palette.bg.unwrap_or(Color::Reset))
