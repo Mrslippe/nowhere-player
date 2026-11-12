@@ -1,5 +1,7 @@
 use ratatui::Terminal;
 use ratatui::widgets::Clear;
+use std::collections::HashSet;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::*;
 use crate::audio::TuiAudio;
@@ -219,4 +221,32 @@ fn golden_splash_sizes() {
     let mut small = Terminal::new(ratatui::backend::TestBackend::new(60, 20)).expect("terminal");
     draw_splash(&mut small, &app).expect("splash 60x20");
     check_golden("splash_60x20.txt", &buffer_text(small.backend().buffer()));
+}
+
+#[test]
+fn glyph_rows_are_equal_width() {
+    for (index, glyph) in GLYPHS.iter().enumerate() {
+        let widths: HashSet<usize> = glyph
+            .iter()
+            .map(|row| UnicodeWidthStr::width(*row))
+            .collect();
+        assert_eq!(widths.len(), 1, "glyph {index} rows differ: {widths:?}");
+    }
+}
+
+#[test]
+fn composed_rows_are_equal_width() {
+    let composed = compose(&GLYPHS);
+    let widths: HashSet<usize> = composed
+        .iter()
+        .map(|row| UnicodeWidthStr::width(row.as_str()))
+        .collect();
+    assert_eq!(widths.len(), 1, "composed rows differ: {widths:?}");
+    assert_eq!(composed.len(), 6);
+}
+
+#[test]
+fn splash_threshold_is_computed_from_art_width() {
+    assert_eq!(splash_art(60), "NOWHERE");
+    assert!(splash_art(80).contains('█'));
 }
