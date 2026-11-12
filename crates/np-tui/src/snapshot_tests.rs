@@ -225,13 +225,15 @@ fn golden_splash_sizes() {
 }
 
 #[test]
-fn glyph_rows_are_equal_width() {
+fn glyph_rows_fit_their_slots() {
     for (index, glyph) in GLYPHS.iter().enumerate() {
-        let widths: HashSet<usize> = glyph
-            .iter()
-            .map(|row| UnicodeWidthStr::width(*row))
-            .collect();
-        assert_eq!(widths.len(), 1, "glyph {index} rows differ: {widths:?}");
+        for row in glyph.rows {
+            assert!(
+                UnicodeWidthStr::width(row) <= glyph.width,
+                "glyph {index} row {row:?} wider than slot {}",
+                glyph.width
+            );
+        }
     }
 }
 

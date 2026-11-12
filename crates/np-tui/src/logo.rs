@@ -1,74 +1,124 @@
 //! NOWHERE logo 字形与合成。
 //!
-//! 不依赖 App / Ratatui，只做“字形表 → 等宽行”的纯计算；
-//! 启动页与 `spikes/logo-font` 测试工具共用同一份字形。
+//! 绘制规则：
+//! - 每个字形只写“自然形状”，**行尾不留空格**；
+//! - 每个字形声明一个 `width`（槽位宽度），合成器只在行尾补空格到槽位；
+//! - 禁止在字形内部塞空格来凑等宽——那会改变字母形状（T-0088 的 N 就是例子）。
+//!
+//! 这样任意字母都可以按手绘形状直接录入，布局对齐由 `compose` 统一负责。
+//! 不依赖 App / Ratatui，启动页与 `spikes/logo-font` 测试工具共用。
 
 use unicode_width::UnicodeWidthStr;
 
-pub(crate) const GLYPH_N: [&str; 6] = [
-    "███╗  ██╗",
-    "████╗ ██║",
-    "██╔██╗██║",
-    "██║╚████║",
-    "██║ ╚███║",
-    "╚═╝  ╚══╝",
-];
+/// 一个 6 行高的字形。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Glyph {
+    /// 自然形状；每行不得以空格结尾。
+    pub rows: [&'static str; 6],
+    /// 该字形在合成结果中的固定槽位宽度。
+    pub width: usize,
+}
 
-pub(crate) const GLYPH_O: [&str; 6] = [
-    "██████╗   ",
-    "██╔═══██╗ ",
-    "██║   ██║ ",
-    "██║   ██║ ",
-    "╚██████╔╝ ",
-    "╚═════╝   ",
-];
+const fn glyph(rows: [&'static str; 6], width: usize) -> Glyph {
+    Glyph { rows, width }
+}
 
-pub(crate) const GLYPH_W: [&str; 6] = [
-    "██╗    ██╗",
-    "██║    ██║",
-    "██║ █╗ ██║",
-    "██║███╗██║",
-    "╚███╔███╔╝",
-    "╚══╝╚══╝  ",
-];
+/// N：手绘 9 列，6 行完全一致。
+pub(crate) const GLYPH_N: Glyph = glyph(
+    [
+        "███╗  ██╗",
+        "████╗ ██║",
+        "██╔██╗██║",
+        "██║╚████║",
+        "██║ ╚███║",
+        "╚═╝  ╚══╝",
+    ],
+    9,
+);
 
-pub(crate) const GLYPH_H: [&str; 6] = [
-    "██╗  ██╗",
-    "██║  ██║",
-    "███████║",
-    "██╔══██║",
-    "██║  ██║",
-    "╚═╝  ╚═╝",
-];
+/// O：自然形状最宽 9，槽位留 10（尾部 1 列对齐，不进入字形内部）。
+pub(crate) const GLYPH_O: Glyph = glyph(
+    [
+        "██████╗",
+        "██╔═══██╗",
+        "██║   ██║",
+        "██║   ██║",
+        "╚██████╔╝",
+        "╚═════╝",
+    ],
+    10,
+);
 
-pub(crate) const GLYPH_E: [&str; 6] = [
-    "███████╗",
-    "██╔════╝",
-    "█████╗  ",
-    "██╔══╝  ",
-    "███████╗",
-    "╚══════╝",
-];
+pub(crate) const GLYPH_W: Glyph = glyph(
+    [
+        "██╗    ██╗",
+        "██║    ██║",
+        "██║ █╗ ██║",
+        "██║███╗██║",
+        "╚███╔███╔╝",
+        "╚══╝╚══╝",
+    ],
+    10,
+);
 
-pub(crate) const GLYPH_R: [&str; 6] = [
-    "██████╗ ",
-    "██╔══██╗",
-    "██████╔╝",
-    "██╔══██╗",
-    "██║  ██║",
-    "╚═╝  ╚═╝",
-];
+pub(crate) const GLYPH_H: Glyph = glyph(
+    [
+        "██╗  ██╗",
+        "██║  ██║",
+        "███████║",
+        "██╔══██║",
+        "██║  ██║",
+        "╚═╝  ╚═╝",
+    ],
+    8,
+);
 
-pub(crate) const GLYPHS: [[&str; 6]; 7] = [
+pub(crate) const GLYPH_E: Glyph = glyph(
+    [
+        "███████╗",
+        "██╔════╝",
+        "█████╗",
+        "██╔══╝",
+        "███████╗",
+        "╚══════╝",
+    ],
+    8,
+);
+
+pub(crate) const GLYPH_R: Glyph = glyph(
+    [
+        "██████╗",
+        "██╔══██╗",
+        "██████╔╝",
+        "██╔══██╗",
+        "██║  ██║",
+        "╚═╝  ╚═╝",
+    ],
+    8,
+);
+
+pub(crate) const GLYPHS: [Glyph; 7] = [
     GLYPH_N, GLYPH_O, GLYPH_W, GLYPH_H, GLYPH_E, GLYPH_R, GLYPH_E,
 ];
 
-pub(crate) fn compose(letters: &[[&str; 6]; 7]) -> Vec<String> {
+/// 把一行自然形状右补空格到槽位宽度。
+///
+/// 只处理行尾；行内空格原样保留，因此不会改变字母形状。
+fn padded(row: &str, width: usize) -> String {
+    let visible = row.trim_end();
+    let pad = width.saturating_sub(UnicodeWidthStr::width(visible));
+    let mut out = String::with_capacity(visible.len() + pad);
+    out.push_str(visible);
+    out.push_str(&" ".repeat(pad));
+    out
+}
+
+pub(crate) fn compose(letters: &[Glyph; 7]) -> Vec<String> {
     (0..6)
         .map(|row| {
             letters
                 .iter()
-                .map(|glyph| glyph[row])
+                .map(|glyph| padded(glyph.rows[row], glyph.width))
                 .collect::<Vec<_>>()
                 .join(" ")
         })
@@ -93,12 +143,16 @@ pub(crate) fn splash_art(width: u16) -> String {
 mod tests {
     use super::*;
 
+    fn visible_width(row: &str) -> usize {
+        UnicodeWidthStr::width(row.trim_end())
+    }
+
     /// N 是手绘 9 列。不要为了“每行等宽”在字形内部塞空格——
     /// 只允许在行尾补空格；当前字形 6 行都必须是 9 列。
     #[test]
     fn n_keeps_hand_drawn_nine_columns() {
         assert_eq!(
-            GLYPH_N,
+            GLYPH_N.rows,
             [
                 "███╗  ██╗",
                 "████╗ ██║",
@@ -108,13 +162,46 @@ mod tests {
                 "╚═╝  ╚══╝",
             ]
         );
-        for row in GLYPH_N {
-            assert_eq!(UnicodeWidthStr::width(row), 9, "{row:?}");
+        assert_eq!(GLYPH_N.width, 9);
+        for row in GLYPH_N.rows {
+            assert_eq!(visible_width(row), 9, "{row:?}");
+        }
+    }
+
+    /// 数据层不允许用行尾空格“预对齐”；对齐是合成器的职责。
+    #[test]
+    fn glyph_rows_are_right_trimmed() {
+        for glyph in GLYPHS {
+            for row in glyph.rows {
+                assert_eq!(
+                    row,
+                    row.trim_end(),
+                    "glyph row has trailing spaces: {row:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_rows_fit_their_slots() {
+        for glyph in GLYPHS {
+            for row in glyph.rows {
+                assert!(
+                    visible_width(row) <= glyph.width,
+                    "row {row:?} wider than slot {}",
+                    glyph.width
+                );
+            }
         }
     }
 
     #[test]
     fn composed_logo_is_67_columns() {
+        assert_eq!(
+            GLYPHS.iter().map(|glyph| glyph.width).collect::<Vec<_>>(),
+            [9, 10, 10, 8, 8, 8, 8]
+        );
+
         let composed = compose(&GLYPHS);
         let widths: std::collections::HashSet<usize> = composed
             .iter()
