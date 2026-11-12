@@ -37,9 +37,9 @@ NP_TUI_DATA_DIR=/tmp/np-data target/release/np-tui.exe
 | 播放 | 播放/暂停/切歌/seek/音量/循环/随机；本地文件与远程缓存统一走 `np-audio` |
 | 在线音源 | B 站搜索/UP 检索/取流/下载缓存；网易云匿名搜索/取流 |
 | 队列与歌单 | 队列增删跳转；歌单支持本地 + 在线条目 |
-| 主题 | 内置主题 + 用户 JSON；`theme list/set/export` |
+| 主题 | 内置 MilkGreen + 用户 JSON；`theme list/set/export` |
 | 设置 | `config` 命令族；`settings.json` 原子写 |
-| 终端界面 | 三区布局、补全、历史、启动页、频谱/波形/矢量、沉浸模式 |
+| 终端界面 | 72×24 三区布局、Browse 树与搜索、Player 视觉区、历史、启动页、频谱/波形/矢量 |
 | 系统集成 | Windows 托盘、全局热键、单实例、开机自启 |
 
 **已移除**：封面显示与封面缓存（[`ADR-0007`](docs/20-架构/adr/ADR-0007-移除封面子系统与schema-v3.md)）。
