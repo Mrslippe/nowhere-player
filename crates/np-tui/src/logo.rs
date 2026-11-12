@@ -36,7 +36,7 @@ pub(crate) const GLYPH_N: Glyph = glyph(
     9,
 );
 
-/// O：自然形状最宽 9，槽位留 10（尾部 1 列对齐，不进入字形内部）。
+/// O：自然形状 9 列；最后一行有一个前导空格，不能省。
 pub(crate) const GLYPH_O: Glyph = glyph(
     [
         "██████╗",
@@ -44,9 +44,9 @@ pub(crate) const GLYPH_O: Glyph = glyph(
         "██║   ██║",
         "██║   ██║",
         "╚██████╔╝",
-        "╚═════╝",
+        " ╚═════╝",
     ],
-    10,
+    9,
 );
 
 pub(crate) const GLYPH_W: Glyph = glyph(
@@ -168,6 +168,23 @@ mod tests {
         }
     }
 
+    /// O 的最后一行有前导空格；这是字形的一部分，不是补位。
+    #[test]
+    fn o_keeps_bottom_curve_alignment() {
+        assert_eq!(
+            GLYPH_O.rows,
+            [
+                "██████╗",
+                "██╔═══██╗",
+                "██║   ██║",
+                "██║   ██║",
+                "╚██████╔╝",
+                " ╚═════╝",
+            ]
+        );
+        assert_eq!(GLYPH_O.width, 9);
+    }
+
     /// 数据层不允许用行尾空格“预对齐”；对齐是合成器的职责。
     #[test]
     fn glyph_rows_are_right_trimmed() {
@@ -196,10 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn composed_logo_is_67_columns() {
+    fn composed_logo_is_66_columns() {
         assert_eq!(
             GLYPHS.iter().map(|glyph| glyph.width).collect::<Vec<_>>(),
-            [9, 10, 10, 8, 8, 8, 8]
+            [9, 9, 10, 8, 8, 8, 8]
         );
 
         let composed = compose(&GLYPHS);
@@ -207,6 +224,6 @@ mod tests {
             .iter()
             .map(|row| UnicodeWidthStr::width(row.as_str()))
             .collect();
-        assert_eq!(widths, std::collections::HashSet::from([67]));
+        assert_eq!(widths, std::collections::HashSet::from([66]));
     }
 }
