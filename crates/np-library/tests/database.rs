@@ -10,6 +10,16 @@ fn empty_db_migrates_to_current_version() {
     let db = Database::open(dir.db_path()).expect("open db");
     assert_eq!(SCHEMA_VERSION, 3);
     assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
+    drop(db);
+    let conn = rusqlite::Connection::open(dir.db_path()).expect("raw db");
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(tracks)")
+        .expect("pragma")
+        .query_map([], |row| row.get(1))
+        .expect("columns")
+        .collect::<Result<_, _>>()
+        .expect("column names");
+    assert!(!columns.iter().any(|column| column == "cover_key"));
 }
 
 #[test]
