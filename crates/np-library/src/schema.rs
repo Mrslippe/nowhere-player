@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use crate::error::Result;
 
 /// 当前 schema 版本。
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// v1 的完整 DDL。
 ///
@@ -119,6 +119,18 @@ CREATE INDEX IF NOT EXISTS idx_items_playlist
     ON playlist_items(playlist_id, position);
 "#;
 
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// 读取当前 `user_version`。
 pub(crate) fn version(conn: &Connection) -> Result<u32> {
     Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
@@ -135,6 +147,17 @@ pub(crate) fn apply(conn: &Connection, current: u32) -> Result<u32> {
     }
     if current < 2 {
         conn.execute_batch(&format!("BEGIN;\n{V2}\nPRAGMA user_version = 2;\nCOMMIT;"))?;
+    }
+    if current < 3 {
+        let mut migration = String::from("BEGIN;\n");
+        if column_exists(conn, "tracks", "cover_key")? {
+            migration.push_str("ALTER TABLE tracks DROP COLUMN cover_key;\n");
+        }
+        if column_exists(conn, "albums", "cover_key")? {
+            migration.push_str("ALTER TABLE albums DROP COLUMN cover_key;\n");
+        }
+        migration.push_str("PRAGMA user_version = 3;\nCOMMIT;");
+        conn.execute_batch(&migration)?;
     }
     version(conn)
 }

@@ -29,8 +29,8 @@ use np_core::{
     validate_setting,
 };
 use np_library::{
-    CoverCacheUsage, Database, LibraryError, NewPlaylistItem, Playlist, PlaylistItem,
-    PlaylistSummary, ScanObserver, ScanReport, Scanner, Stats, Track, cover_cache_usage,
+    Database, LibraryError, NewPlaylistItem, Playlist, PlaylistItem, PlaylistSummary, ScanObserver,
+    ScanReport, Scanner, Stats, Track,
 };
 use np_sources::{
     AudioSource, BilibiliSource, Downloader, HttpDownloader, MatchKind, NeteaseSource,
@@ -89,8 +89,6 @@ pub trait LibraryApi {
     fn list_recent(&self, limit: usize) -> Result<Vec<Track>, CmdError>;
     /// 曲目 / 专辑 / 艺人 / 时长 / 最近扫描。
     fn stats(&self) -> Result<Stats, CmdError>;
-    /// 封面缓存用量（文件数 / 字节数，T-0026 §6.3）。
-    fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError>;
     /// 把最近一次 `search` 结果存进会话上下文（最多 100 条）。
     fn remember_search(&self, tracks: Vec<Track>);
     /// 当前会话上下文里的搜索结果。
@@ -635,11 +633,39 @@ fn known_source_by_str(known: &[SourceId], id: &str) -> Option<SourceId> {
     known.iter().copied().find(|source| source.as_str() == id)
 }
 
+fn purge_cover_cache(dir: &Path) {
+    if !dir.is_dir() {
+        return;
+    }
+    let mut removed = 0u64;
+    match fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let result = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    fs::remove_dir_all(&path)
+                } else {
+                    fs::remove_file(&path)
+                };
+                if result.is_ok() {
+                    removed = removed.saturating_add(1);
+                } else {
+                    eprintln!("covers: warning: could not remove {}", path.display());
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("covers: warning: could not read {}: {error}", dir.display());
+            return;
+        }
+    }
+    eprintln!("covers: removed {removed} files");
+}
+
 fn target_label(target: CacheTarget) -> &'static str {
     match target {
         CacheTarget::Streams => "streams",
-        CacheTarget::Covers => "covers",
-        CacheTarget::All => "streams + covers",
+        CacheTarget::All => "streams",
     }
 }
 
@@ -684,15 +710,12 @@ struct RemoteMeta {
     artist: String,
     /// 时长，毫秒。
     duration_ms: u64,
-    /// 本地封面缓存 key（`np-library` 的 16 位 hex）；无封面为 `None`。
-    cover_key: Option<String>,
 }
 
 /// 缓存清理目标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheTarget {
     Streams,
-    Covers,
     All,
 }
 
@@ -700,19 +723,14 @@ impl CacheTarget {
     fn parse(raw: &str) -> Result<Self, CmdError> {
         match raw {
             "streams" => Ok(Self::Streams),
-            "covers" => Ok(Self::Covers),
             "all" => Ok(Self::All),
             _ => Err(CmdError::new("E_CMD_ARG", format!("未知缓存目标：{raw}"))
-                .with_hint("可用：streams / covers / all")),
+                .with_hint("可用：streams / all")),
         }
     }
 
     fn includes_streams(self) -> bool {
         matches!(self, Self::Streams | Self::All)
-    }
-
-    fn includes_covers(self) -> bool {
-        matches!(self, Self::Covers | Self::All)
     }
 }
 
@@ -721,17 +739,15 @@ impl CacheTarget {
 pub struct CacheUsage {
     pub streams_files: u64,
     pub streams_bytes: u64,
-    pub covers_files: u64,
-    pub covers_bytes: u64,
 }
 
 impl CacheUsage {
     fn total_files(self) -> u64 {
-        self.streams_files.saturating_add(self.covers_files)
+        self.streams_files
     }
 
     fn total_bytes(self) -> u64 {
-        self.streams_bytes.saturating_add(self.covers_bytes)
+        self.streams_bytes
     }
 }
 
@@ -911,10 +927,6 @@ impl LibraryApi for EmptyLibraryApi {
 
     fn stats(&self) -> Result<Stats, CmdError> {
         Ok(Stats::default())
-    }
-
-    fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError> {
-        Ok(CoverCacheUsage::default())
     }
 
     fn remember_search(&self, _tracks: Vec<Track>) {}
@@ -2241,7 +2253,6 @@ impl Executor<'_> {
     /// `library stat`：曲目 / 专辑 / 艺人 / 总时长 / 最近扫描 / 封面缓存。
     fn library_stat(&self) -> Result<Outcome, CmdError> {
         let stats = self.library.stats()?;
-        let covers = self.library.covers_usage()?;
         let last_scan = if stats.last_scan_at == 0 {
             "从未扫描".to_owned()
         } else {
@@ -2263,8 +2274,8 @@ impl Executor<'_> {
             vec![
                 "最近扫描".to_owned(),
                 last_scan,
-                "封面缓存".to_owned(),
-                format_cover_cache(covers),
+                "缓存".to_owned(),
+                "streams".to_owned(),
             ],
         ];
 
@@ -2750,12 +2761,7 @@ impl Executor<'_> {
                 if stopped {
                     spans.push(dim(" · 已先停止播放远程曲目"));
                 }
-                let mut outputs = vec![text_of(spans)];
-                if target.includes_covers() {
-                    outputs.push(hint_output(
-                        "本地库封面缓存已清空，下次扫描会重建（不会丢功能）",
-                    ));
-                }
+                let outputs = vec![text_of(spans)];
                 Ok(Outcome {
                     outputs,
                     footer: None,
@@ -2773,14 +2779,6 @@ impl Executor<'_> {
                         )),
                     ]),
                     text_of(vec![
-                        bold("covers"),
-                        plain(format!(
-                            " · {} 个文件 / {}",
-                            usage.covers_files,
-                            format_bytes(usage.covers_bytes)
-                        )),
-                    ]),
-                    text_of(vec![
                         bold("合计"),
                         plain(format!(
                             " · {} 个文件 / {}",
@@ -2794,7 +2792,7 @@ impl Executor<'_> {
                 }
                 Ok(Outcome {
                     outputs,
-                    footer: Some("cache clear [streams|covers|all]".to_owned()),
+                    footer: Some("cache clear [streams|all]".to_owned()),
                 })
             }
         }
@@ -2977,12 +2975,6 @@ fn format_total_duration(total_ms: u64) -> String {
     } else {
         format!("{seconds} 秒")
     }
-}
-
-/// 封面缓存用量文案：`N 个文件 / X MB`（1 MB = 1024² 字节，保留一位小数）。
-fn format_cover_cache(usage: CoverCacheUsage) -> String {
-    let megabytes = usage.bytes as f64 / (1024.0 * 1024.0);
-    format!("{} 个文件 / {megabytes:.1} MB", usage.files)
 }
 
 /// 最近扫描的粗粒度相对时间；只用于终端文案，精度到天。
@@ -3496,6 +3488,7 @@ impl LibraryHandle {
 
     /// 生产入口：三个目录由宿主注入。
     pub fn with_paths(paths: crate::Paths) -> Self {
+        purge_cover_cache(&paths.data_dir.join("covers"));
         let covers_dir = paths.data_dir.join("covers");
         let settings = Arc::new(SettingsHandle::load(paths.config_dir));
         let enabled = settings.enabled_source_ids(&KNOWN_SOURCES);
@@ -3677,11 +3670,6 @@ impl LibraryApi for LibraryHandle {
 
     fn stats(&self) -> Result<Stats, CmdError> {
         self.with_db(|db| db.stats())
-    }
-
-    fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError> {
-        // 只算 `<db 所在目录>/covers` 下的 jpg；目录不存在返回 0。
-        Ok(cover_cache_usage(&self.covers_dir()))
     }
 
     fn remember_search(&self, tracks: Vec<Track>) {
@@ -3876,6 +3864,7 @@ type DedupKey = (SourceId, String);
 type DedupLock = Arc<Mutex<()>>;
 
 /// 把远端封面字节编码并落盘；生产实现只调用 `np_library::store_cover`。
+#[allow(dead_code)]
 trait CoverStore: Send + Sync {
     fn store(&self, dir: &Path, bytes: &[u8]) -> Option<String>;
 }
@@ -3883,14 +3872,16 @@ trait CoverStore: Send + Sync {
 struct NpCoverStore;
 
 impl CoverStore for NpCoverStore {
-    fn store(&self, dir: &Path, bytes: &[u8]) -> Option<String> {
-        np_library::store_cover(dir, bytes)
+    fn store(&self, _dir: &Path, _bytes: &[u8]) -> Option<String> {
+        // T-0079：封面管线已停用；保留 trait 只为不扩散接口改动。
+        None
     }
 }
 
 struct OnlineRuntime {
     registry: SourceRegistry,
     cache: StreamCache,
+    #[allow(dead_code)]
     transport: Arc<dyn Transport>,
 }
 
@@ -3900,7 +3891,9 @@ struct OnlineRuntime {
 /// 客户端构造失败会变成一次可读的 `E_SRC_UNAVAILABLE`，不影响本地命令。
 pub struct OnlineService {
     cache_root: PathBuf,
+    #[allow(dead_code)]
     covers_dir: PathBuf,
+    #[allow(dead_code)]
     cover_store: Arc<dyn CoverStore>,
     runtime: OnceLock<Result<OnlineRuntime, String>>,
     /// 单测注入的现成 runtime；生产恒为 `None`。
@@ -3941,7 +3934,7 @@ impl OnlineService {
         cache: StreamCache,
         transport: Arc<dyn Transport>,
         covers_dir: PathBuf,
-        cover_store: Arc<dyn CoverStore>,
+        #[allow(dead_code)] cover_store: Arc<dyn CoverStore>,
     ) -> Self {
         let cache_root = cache
             .dir()
@@ -4004,38 +3997,18 @@ impl OnlineService {
     }
 
     /// 下载/命中缓存后登记远程元数据；会话级，不持久化。
-    fn remember_remote(&self, path: &Path, track: &SourceTrack, cover_key: Option<String>) {
+    fn remember_remote(&self, path: &Path, track: &SourceTrack) {
         let meta = RemoteMeta {
             source: track.source.as_str().to_owned(),
             source_id: track.source_id.clone(),
             title: track.title.clone(),
             artist: track.artist.clone(),
             duration_ms: track.duration_ms,
-            cover_key,
         };
         self.remote_meta
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(path.to_path_buf(), meta);
-    }
-
-    /// 取封面字节并交给 `np-library` 编码落盘；任何一步失败都只丢图。
-    fn fetch_cover(&self, runtime: &OnlineRuntime, track: &SourceTrack) -> Option<String> {
-        if self.cancel.load(Ordering::SeqCst) {
-            return None;
-        }
-        let url = track.cover_url.as_deref()?;
-        let headers: &[(&str, &str)] = if track.source == SourceId::Bilibili {
-            &[("Referer", "https://www.bilibili.com")]
-        } else {
-            &[]
-        };
-        let mut bytes = Vec::new();
-        runtime.transport.get_to(url, headers, &mut bytes).ok()?;
-        if bytes.is_empty() {
-            return None;
-        }
-        self.cover_store.store(&self.covers_dir, &bytes)
     }
 
     /// 缓存清理/文件消失后同步移除映射，避免“元数据有、文件没了”。
@@ -4078,22 +4051,13 @@ impl OnlineService {
     /// 准备成功后登记元数据并清理已消失的缓存映射。
     fn finish_prepared(
         &self,
-        runtime: &OnlineRuntime,
+        _runtime: &OnlineRuntime,
         track: &SourceTrack,
         path: PathBuf,
         bytes: u64,
         cached: bool,
     ) -> PreparedTrack {
-        // 已登记的 cover_key 直接复用；否则在这一步取图（失败只丢图）。
-        let existing_cover = {
-            self.remote_meta
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&path)
-                .and_then(|meta| meta.cover_key.clone())
-        };
-        let cover_key = existing_cover.or_else(|| self.fetch_cover(runtime, track));
-        self.remember_remote(&path, track, cover_key);
+        self.remember_remote(&path, track);
         self.prune_remote_meta();
         PreparedTrack {
             path,
@@ -4129,12 +4093,9 @@ impl OnlineService {
 
     pub fn cache_usage(&self) -> Result<CacheUsage, CmdError> {
         let (streams_files, streams_bytes) = dir_usage(&self.cache_root.join("streams"));
-        let (covers_files, covers_bytes) = dir_usage(&self.covers_dir);
         Ok(CacheUsage {
             streams_files,
             streams_bytes,
-            covers_files,
-            covers_bytes,
         })
     }
 
@@ -4142,9 +4103,6 @@ impl OnlineService {
         let mut released = 0u64;
         if target.includes_streams() {
             released = released.saturating_add(clear_dir_files(&self.cache_root.join("streams")));
-        }
-        if target.includes_covers() {
-            released = released.saturating_add(clear_dir_files(&self.covers_dir));
         }
         Ok(released)
     }
@@ -4411,7 +4369,6 @@ fn remote_track(path: &Path, meta: &RemoteMeta, metadata: &fs::Metadata) -> Trac
         channels: 0,
         bitrate: 0,
         codec: String::new(),
-        cover_key: meta.cover_key.clone(),
         size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
         mtime_ms: metadata
             .modified()
@@ -5473,7 +5430,6 @@ mod tests {
             channels: 2,
             bitrate: 320,
             codec: "flac".to_owned(),
-            cover_key: None,
             size_bytes: 0,
             mtime_ms: 0,
             added_at: 0,
@@ -5490,7 +5446,6 @@ mod tests {
         Search(String, usize),
         ListRecent(usize),
         Stats,
-        Covers,
     }
 
     struct FakeLibraryState {
@@ -5498,7 +5453,6 @@ mod tests {
         list_tracks: Vec<Track>,
         search_tracks: Vec<Track>,
         stats: Stats,
-        covers: CoverCacheUsage,
         busy: bool,
         session: Vec<SearchHit>,
         active_listing: Option<ActiveListing>,
@@ -5524,7 +5478,6 @@ mod tests {
                     list_tracks: Vec::new(),
                     search_tracks: Vec::new(),
                     stats: Stats::default(),
-                    covers: CoverCacheUsage::default(),
                     busy: false,
                     session: Vec::new(),
                     active_listing: None,
@@ -5566,11 +5519,6 @@ mod tests {
 
         fn with_stats(self, stats: Stats) -> Self {
             self.state.lock().expect("state mutex").stats = stats;
-            self
-        }
-
-        fn with_covers(self, files: u64, bytes: u64) -> Self {
-            self.state.lock().expect("state mutex").covers = CoverCacheUsage { files, bytes };
             self
         }
 
@@ -5648,11 +5596,6 @@ mod tests {
         fn stats(&self) -> Result<Stats, CmdError> {
             self.record(LibraryCall::Stats);
             Ok(self.state.lock().expect("state mutex").stats)
-        }
-
-        fn covers_usage(&self) -> Result<CoverCacheUsage, CmdError> {
-            self.record(LibraryCall::Covers);
-            Ok(self.state.lock().expect("state mutex").covers)
         }
 
         fn remember_search(&self, tracks: Vec<Track>) {
@@ -6880,15 +6823,13 @@ mod tests {
     #[test]
     fn library_stat_renders_counts_scan_time_and_cover_cache() {
         let api = FakeApi::new();
-        let library = FakeLibraryApi::new()
-            .with_stats(Stats {
-                tracks: 3,
-                albums: 1,
-                artists: 2,
-                total_duration_ms: 3_723_000,
-                last_scan_at: 0,
-            })
-            .with_covers(3, 1_572_864);
+        let library = FakeLibraryApi::new().with_stats(Stats {
+            tracks: 3,
+            albums: 1,
+            artists: 2,
+            total_duration_ms: 3_723_000,
+            last_scan_at: 0,
+        });
         let block = done_with_library(&api, &library, "library stat");
         let (_, rows) = table_of_block(&block);
 
@@ -6898,22 +6839,10 @@ mod tests {
                 vec!["曲目", "3", "专辑", "1"],
                 vec!["艺人", "2", "总时长", "1 小时 2 分"],
                 // 3 个文件 / 1.5 MB：字节数按 1024² 换算，保留一位小数。
-                vec!["最近扫描", "从未扫描", "封面缓存", "3 个文件 / 1.5 MB"],
+                vec!["最近扫描", "从未扫描", "缓存", "streams"],
             ]
         );
-        assert_eq!(
-            library.calls(),
-            vec![LibraryCall::Stats, LibraryCall::Covers]
-        );
-    }
-
-    #[test]
-    fn library_stat_reports_zero_cover_cache() {
-        let api = FakeApi::new();
-        let library = FakeLibraryApi::new();
-        let block = done_with_library(&api, &library, "library stat");
-        let (_, rows) = table_of_block(&block);
-        assert_eq!(rows[2][3], "0 个文件 / 0.0 MB");
+        assert_eq!(library.calls(), vec![LibraryCall::Stats]);
     }
 
     #[test]
@@ -7714,10 +7643,7 @@ mod tests {
         let block = done_with_library(&api, &library, "lib stat");
 
         assert_eq!(block.status, BlockStatus::Done);
-        assert_eq!(
-            library.calls(),
-            vec![LibraryCall::Stats, LibraryCall::Covers]
-        );
+        assert_eq!(library.calls(), vec![LibraryCall::Stats]);
     }
 
     // ---- 扫描进度（节流 + 块状态） ----
@@ -8188,6 +8114,7 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn calls(&self) -> CoverCalls {
             self.calls
                 .lock()
@@ -8236,6 +8163,7 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn calls(&self) -> Vec<Vec<u8>> {
             self.calls
                 .lock()
@@ -10037,7 +9965,7 @@ mod tests {
         let path = dir.path().join("bilibili-BV1xx411c7mD.m4a");
         fs::write(&path, b"abc").expect("write cache");
         let source_track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "晴天");
-        service.remember_remote(&path, &source_track, Some("0123456789abcdef".to_string()));
+        service.remember_remote(&path, &source_track);
 
         let track = service.track_by_path(&path).expect("远程命中");
 
@@ -10050,7 +9978,6 @@ mod tests {
         assert_eq!(track.artist, "在线艺人");
         assert_eq!(track.duration_ms, 200_000);
         assert_eq!(track.album, "");
-        assert_eq!(track.cover_key.as_deref(), Some("0123456789abcdef"));
         assert_eq!(track.size_bytes, 3);
         assert_eq!(track.track_no, 0);
     }
@@ -10068,7 +9995,6 @@ mod tests {
         service.remember_remote(
             &path,
             &online_track(SourceId::Bilibili, "BV1xx", "远程标题"),
-            None,
         );
         let local = track(1, "本地标题", "本地艺人", "/music/local.flac", 1_000);
 
@@ -10133,11 +10059,7 @@ mod tests {
         );
         let path = dir.path().join("netease-10001.mp3");
         fs::write(&path, b"abc").expect("write cache");
-        service.remember_remote(
-            &path,
-            &online_track(SourceId::Netease, "10001", "Song"),
-            None,
-        );
+        service.remember_remote(&path, &online_track(SourceId::Netease, "10001", "Song"));
         fs::remove_file(&path).expect("remove cache");
 
         assert!(service.track_by_path(&path).is_none());
@@ -10151,11 +10073,7 @@ mod tests {
         let (_dir, service) = online_service(Arc::clone(&source), Arc::clone(&downloader));
         let stale = _dir.path().join("bilibili-BVstale.m4a");
         fs::write(&stale, b"old").expect("write stale");
-        service.remember_remote(
-            &stale,
-            &online_track(SourceId::Bilibili, "BVstale", "Old"),
-            None,
-        );
+        service.remember_remote(&stale, &online_track(SourceId::Bilibili, "BVstale", "Old"));
         fs::remove_file(&stale).expect("模拟 LRU 清理");
 
         service
@@ -10175,11 +10093,9 @@ mod tests {
         let handle = LibraryHandle::new(dir.path().join("library.db"));
         let path = dir.path().join("netease-10001.mp3");
         fs::write(&path, b"abc").expect("write cache");
-        handle.online.remember_remote(
-            &path,
-            &online_track(SourceId::Netease, "10001", "Song"),
-            None,
-        );
+        handle
+            .online
+            .remember_remote(&path, &online_track(SourceId::Netease, "10001", "Song"));
 
         let found = handle
             .track_by_path(path.to_str().expect("utf8"))
@@ -10189,144 +10105,6 @@ mod tests {
         assert_eq!(found.kind, "remote");
         assert_eq!(found.source, "netease");
         assert_eq!(found.title, "Song");
-    }
-
-    #[test]
-    fn prepare_fetches_bilibili_cover_with_referer_and_records_key() {
-        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
-        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
-        let dir = TestDir::new("cover-bili");
-        let cache = StreamCache::with_limits(
-            dir.path(),
-            Arc::clone(&downloader) as Arc<dyn Downloader>,
-            10 * 1024 * 1024,
-            5 * 1024 * 1024,
-        );
-        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
-        let transport = Arc::new(FakeCoverTransport::new(b"jpeg"));
-        let store = Arc::new(FakeCoverStore::new(Some("0123456789abcdef")));
-        let service = OnlineService::from_parts(
-            registry,
-            cache,
-            Arc::clone(&transport) as Arc<dyn Transport>,
-            dir.path().join("covers"),
-            Arc::clone(&store) as Arc<dyn CoverStore>,
-        );
-        let mut track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video");
-        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
-
-        let prepared = service.prepare(&track, &mut |_| {}).expect("下载");
-
-        assert_eq!(store.calls(), vec![b"jpeg".to_vec()]);
-        let calls = transport.calls();
-        assert_eq!(calls[0].0, "https://example.invalid/cover.jpg");
-        assert!(
-            calls[0]
-                .1
-                .iter()
-                .any(|(name, value)| { name == "Referer" && value == "https://www.bilibili.com" })
-        );
-        let remote = service.track_by_path(&prepared.path).expect("元数据");
-        assert_eq!(remote.cover_key.as_deref(), Some("0123456789abcdef"));
-    }
-
-    #[test]
-    fn cover_failure_does_not_fail_prepare() {
-        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
-        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
-        let dir = TestDir::new("cover-fail");
-        let cache = StreamCache::with_limits(
-            dir.path(),
-            Arc::clone(&downloader) as Arc<dyn Downloader>,
-            10 * 1024 * 1024,
-            5 * 1024 * 1024,
-        );
-        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
-        let transport = Arc::new(FakeCoverTransport::new(b"not-an-image"));
-        let store = Arc::new(FakeCoverStore::new(None));
-        let service = OnlineService::from_parts(
-            registry,
-            cache,
-            Arc::clone(&transport) as Arc<dyn Transport>,
-            dir.path().join("covers"),
-            Arc::clone(&store) as Arc<dyn CoverStore>,
-        );
-        let mut track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video");
-        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
-
-        let prepared = service
-            .prepare(&track, &mut |_| {})
-            .expect("播放不受封面影响");
-
-        assert!(service.track_by_path(&prepared.path).is_some());
-        assert_eq!(store.calls().len(), 1);
-        assert_eq!(
-            service
-                .track_by_path(&prepared.path)
-                .expect("元数据")
-                .cover_key,
-            None
-        );
-    }
-
-    #[test]
-    fn cache_hit_reuses_cover_key_without_refetching() {
-        let source = FakeOnlineSource::new(SourceId::Bilibili, Vec::new());
-        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
-        let dir = TestDir::new("cover-cache");
-        let cache = StreamCache::with_limits(
-            dir.path(),
-            Arc::clone(&downloader) as Arc<dyn Downloader>,
-            10 * 1024 * 1024,
-            5 * 1024 * 1024,
-        );
-        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
-        let transport = Arc::new(FakeCoverTransport::new(b"jpeg"));
-        let store = Arc::new(FakeCoverStore::new(Some("0123456789abcdef")));
-        let service = OnlineService::from_parts(
-            registry,
-            cache,
-            Arc::clone(&transport) as Arc<dyn Transport>,
-            dir.path().join("covers"),
-            Arc::clone(&store) as Arc<dyn CoverStore>,
-        );
-        let mut track = online_track(SourceId::Bilibili, "BV1xx411c7mD", "Video");
-        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
-
-        service.prepare(&track, &mut |_| {}).expect("首次");
-        service.prepare(&track, &mut |_| {}).expect("命中缓存");
-
-        assert_eq!(transport.calls().len(), 1, "缓存命中不应重新抓封面");
-        assert_eq!(store.calls().len(), 1);
-    }
-
-    #[test]
-    fn netease_cover_has_no_referer_header() {
-        let source = FakeOnlineSource::new(SourceId::Netease, Vec::new());
-        let downloader = Arc::new(FakeDownloader::new(b"abc", false, Vec::new()));
-        let dir = TestDir::new("cover-netease");
-        let cache = StreamCache::with_limits(
-            dir.path(),
-            Arc::clone(&downloader) as Arc<dyn Downloader>,
-            10 * 1024 * 1024,
-            5 * 1024 * 1024,
-        );
-        let registry = SourceRegistry::new(vec![source as Arc<dyn AudioSource>]);
-        let transport = Arc::new(FakeCoverTransport::new(b"jpeg"));
-        let store = Arc::new(FakeCoverStore::new(Some("0123456789abcdef")));
-        let service = OnlineService::from_parts(
-            registry,
-            cache,
-            Arc::clone(&transport) as Arc<dyn Transport>,
-            dir.path().join("covers"),
-            Arc::clone(&store) as Arc<dyn CoverStore>,
-        );
-        let mut track = online_track(SourceId::Netease, "10001", "Song");
-        track.cover_url = Some("https://example.invalid/cover.jpg".to_string());
-
-        service.prepare(&track, &mut |_| {}).expect("下载");
-
-        assert!(transport.calls()[0].1.is_empty());
     }
 
     #[test]
@@ -10921,28 +10699,6 @@ mod tests {
     }
 
     #[test]
-    fn cache_stat_counts_streams_and_covers() {
-        let dir = TestDir::new("cache-stat");
-        let settings = settings_for(&dir);
-        let service = cache_service(&dir);
-        fs::create_dir_all(dir.path().join("streams")).expect("streams");
-        fs::create_dir_all(dir.path().join("covers")).expect("covers");
-        fs::write(dir.path().join("streams/a.mp3"), b"abcd").expect("streams file");
-        fs::write(dir.path().join("covers/b.jpg"), b"abcdef").expect("covers file");
-        let api = FakeApi::new();
-        let library = FakeLibraryApi::new();
-        let theme = FakeTheme::new(Ok(theme_reply("ice")));
-
-        let block =
-            done_with_online_services(&api, &library, &settings, &theme, &service, "cache stat");
-
-        let text = text_of_block(&block);
-        assert!(text.contains("streams · 1 个文件 / 4 B"), "{text}");
-        assert!(text.contains("covers · 1 个文件 / 6 B"), "{text}");
-        assert!(text.contains("合计 · 2 个文件 / 10 B"), "{text}");
-    }
-
-    #[test]
     fn cache_clear_streams_keeps_covers() {
         let dir = TestDir::new("cache-clear-streams");
         let settings = settings_for(&dir);
@@ -10971,33 +10727,6 @@ mod tests {
     }
 
     #[test]
-    fn cache_clear_covers_warns_rebuild() {
-        let dir = TestDir::new("cache-clear-covers");
-        let settings = settings_for(&dir);
-        let service = cache_service(&dir);
-        fs::create_dir_all(dir.path().join("covers")).expect("covers");
-        fs::write(dir.path().join("covers/b.jpg"), b"abcdef").expect("covers file");
-        let api = FakeApi::new();
-        let library = FakeLibraryApi::new();
-        let theme = FakeTheme::new(Ok(theme_reply("ice")));
-
-        let block = done_with_online_services(
-            &api,
-            &library,
-            &settings,
-            &theme,
-            &service,
-            "cache clear covers",
-        );
-
-        assert!(!dir.path().join("covers/b.jpg").exists());
-        assert!(block.outputs.iter().any(|output| matches!(
-            output,
-            Output::Hint { text, .. } if text.contains("下次扫描会重建")
-        )));
-    }
-
-    #[test]
     fn cache_clear_all_stops_remote_playback_first() {
         let dir = TestDir::new("cache-clear-remote");
         let settings = settings_for(&dir);
@@ -11005,11 +10734,7 @@ mod tests {
         let path = dir.path().join("streams/bilibili-BV1xx.mp3");
         fs::create_dir_all(dir.path().join("streams")).expect("streams");
         fs::write(&path, b"abcd").expect("cache file");
-        service.remember_remote(
-            &path,
-            &online_track(SourceId::Bilibili, "BV1xx", "Song"),
-            None,
-        );
+        service.remember_remote(&path, &online_track(SourceId::Bilibili, "BV1xx", "Song"));
         let path_text = path.to_string_lossy().into_owned();
         let remote = service.track_by_path(&path).expect("remote meta");
         let api = FakeApi::new()

@@ -3,7 +3,7 @@
 //! 归一化顺序固定为 `artists` → `albums` → `tracks` → `track_artists`
 //! （ARCH-003 §4）。写入只由扫描器的单线程 writer 调用。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
@@ -13,7 +13,7 @@ use crate::metadata::ParsedTrack;
 
 const TRACK_COLUMNS: &str = "id, kind, path, source, source_id, title, album_id, album, artist, \
      album_artist, track_no, disc_no, year, duration_ms, sample_rate, channels, bitrate, codec, \
-     cover_key, size_bytes, mtime_ms, added_at, last_seen_at";
+     size_bytes, mtime_ms, added_at, last_seen_at";
 
 /// 一首曲目。
 ///
@@ -40,7 +40,6 @@ pub struct Track {
     pub channels: u32,
     pub bitrate: u32,
     pub codec: String,
-    pub cover_key: Option<String>,
     pub size_bytes: i64,
     pub mtime_ms: i64,
     pub added_at: i64,
@@ -79,7 +78,6 @@ pub(crate) fn upsert_track(conn: &Connection, track: &ParsedTrack, now: i64) -> 
             track.album.trim(),
             album_artist_id,
             track.year,
-            track.cover_key.as_deref(),
         )?)
     };
 
@@ -87,11 +85,11 @@ pub(crate) fn upsert_track(conn: &Connection, track: &ParsedTrack, now: i64) -> 
         "INSERT INTO tracks (
              kind, path, source, source_id, title, album_id, album, artist, album_artist,
              track_no, disc_no, year, duration_ms, sample_rate, channels, bitrate, codec,
-             cover_key, size_bytes, mtime_ms, added_at, last_seen_at
+             size_bytes, mtime_ms, added_at, last_seen_at
          ) VALUES (
              'local', ?1, 'local', '', ?2, ?3, ?4, ?5, ?6,
              ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-             ?15, ?16, ?17, ?18, ?18
+             ?15, ?16, ?17, ?17
          )
          ON CONFLICT(kind, path) DO UPDATE SET
              title = excluded.title,
@@ -107,7 +105,6 @@ pub(crate) fn upsert_track(conn: &Connection, track: &ParsedTrack, now: i64) -> 
              channels = excluded.channels,
              bitrate = excluded.bitrate,
              codec = excluded.codec,
-             cover_key = COALESCE(excluded.cover_key, tracks.cover_key),
              size_bytes = excluded.size_bytes,
              mtime_ms = excluded.mtime_ms,
              last_seen_at = excluded.last_seen_at
@@ -127,7 +124,6 @@ pub(crate) fn upsert_track(conn: &Connection, track: &ParsedTrack, now: i64) -> 
             track.channels,
             track.bitrate,
             track.codec,
-            track.cover_key,
             track.size_bytes,
             track.mtime_ms,
             now,
@@ -220,20 +216,6 @@ pub(crate) fn count_missing(conn: &Connection, scan_started_at: i64) -> Result<u
         |row| row.get(0),
     )?;
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
-}
-
-/// 数据库里仍被引用的封面 key（曲目级 + 专辑级）。
-///
-/// 全量扫描结束时拿它和缓存目录对账，删除孤儿文件。两处都查，避免专辑
-/// 封面在曲目被删后立刻失效。
-pub(crate) fn referenced_cover_keys(conn: &Connection) -> Result<HashSet<String>> {
-    let mut statement = conn.prepare(
-        "SELECT cover_key FROM tracks WHERE cover_key IS NOT NULL
-         UNION
-         SELECT cover_key FROM albums WHERE cover_key IS NOT NULL",
-    )?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
 /// 在 `title` / `artist` / `album` 上做不区分大小写的 `LIKE`，按标题排序。
@@ -368,11 +350,10 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         channels: row.get(15)?,
         bitrate: row.get(16)?,
         codec: row.get(17)?,
-        cover_key: row.get(18)?,
-        size_bytes: row.get(19)?,
-        mtime_ms: row.get(20)?,
-        added_at: row.get(21)?,
-        last_seen_at: row.get(22)?,
+        size_bytes: row.get(18)?,
+        mtime_ms: row.get(19)?,
+        added_at: row.get(20)?,
+        last_seen_at: row.get(21)?,
     })
 }
 
@@ -419,7 +400,6 @@ fn get_or_create_album(
     title: &str,
     album_artist_id: Option<i64>,
     year: u32,
-    cover_key: Option<&str>,
 ) -> Result<i64> {
     let existing: Option<i64> = conn
         .query_row(
@@ -430,17 +410,14 @@ fn get_or_create_album(
         .optional()?;
     if let Some(id) = existing {
         conn.execute(
-            "UPDATE albums SET
-                 cover_key = COALESCE(cover_key, ?2),
-                 year = CASE WHEN year = 0 THEN ?3 ELSE year END
-             WHERE id = ?1",
-            params![id, cover_key, year],
+            "UPDATE albums SET year = CASE WHEN year = 0 THEN ?2 ELSE year END WHERE id = ?1",
+            params![id, year],
         )?;
         return Ok(id);
     }
     conn.execute(
-        "INSERT INTO albums (title, album_artist_id, year, cover_key) VALUES (?1, ?2, ?3, ?4)",
-        params![title, album_artist_id, year, cover_key],
+        "INSERT INTO albums (title, album_artist_id, year) VALUES (?1, ?2, ?3)",
+        params![title, album_artist_id, year],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -755,8 +732,6 @@ mod tests {
             channels: 1,
             bitrate: 128,
             codec: "wav".to_string(),
-            cover_key: None,
-            cover: None,
             size_bytes: 100,
             mtime_ms: 1,
         }
@@ -964,7 +939,6 @@ mod tests {
         let db = Database::open_in_memory().expect("memory db");
         let mut track = sample(r"C:\Music\Album\Song.wav");
         track.title = "Song".to_string();
-        track.cover_key = Some("0123456789abcdef".to_string());
         insert(&db, &track, 100);
 
         // 正斜杠 / 反斜杠 / 大小写混写都命中同一条记录。
@@ -979,7 +953,6 @@ mod tests {
                 .expect(lookup);
             // 归一化只作用于查询参数，不修改库里的原样路径。
             assert_eq!(found.path, r"C:\Music\Album\Song.wav");
-            assert_eq!(found.cover_key.as_deref(), Some("0123456789abcdef"));
         }
 
         assert!(
@@ -1001,7 +974,6 @@ mod tests {
         let db = Database::open_in_memory().expect("memory db");
         let mut track = sample("/music/album/Song.wav");
         track.title = "Song".to_string();
-        track.cover_key = Some("0123456789abcdef".to_string());
         insert(&db, &track, 100);
 
         let found = track_by_path(db.conn(), "/music/album/Song.wav")
@@ -1080,27 +1052,22 @@ mod tests {
     }
 
     #[test]
-    fn album_keeps_first_cover_and_backfills_year() {
+    fn album_backfills_year() {
         let db = Database::open_in_memory().expect("memory db");
         let mut first = sample("/music/a.wav");
         first.album = "Album".to_string();
-        first.cover_key = Some("aaaaaaaaaaaaaaaa".to_string());
         first.year = 0;
         let mut second = sample("/music/b.wav");
         second.album = "Album".to_string();
-        second.cover_key = Some("bbbbbbbbbbbbbbbb".to_string());
         second.year = 1999;
 
         insert(&db, &first, 100);
         insert(&db, &second, 100);
 
-        let (cover, year): (Option<String>, u32) = db
+        let year: u32 = db
             .conn()
-            .query_row("SELECT cover_key, year FROM albums", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row("SELECT year FROM albums", [], |row| row.get(0))
             .expect("album row");
-        assert_eq!(cover.as_deref(), Some("aaaaaaaaaaaaaaaa"));
         assert_eq!(year, 1999);
     }
 

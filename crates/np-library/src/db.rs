@@ -20,15 +20,11 @@ pub(crate) const BATCH_SIZE: usize = 200;
 pub struct Database {
     conn: Connection,
     path: Option<PathBuf>,
-    /// 封面缓存目录；默认是数据库同级的 `covers/`。
-    covers_dir: Option<PathBuf>,
 }
 
 impl Database {
     /// 打开（必要时创建）数据库并迁移到最新 schema。
     ///
-    /// 封面缓存目录默认取 `<db 所在目录>/covers`（ARCH-003 §3 的
-    /// `<appdata>/covers/`），可用 [`Database::set_covers_dir`] 覆盖。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if let Some(parent) = path.parent()
@@ -39,7 +35,6 @@ impl Database {
         let db = Self {
             conn: Connection::open(path)?,
             path: Some(path.to_path_buf()),
-            covers_dir: path.parent().map(|parent| parent.join("covers")),
         };
         db.configure()?;
         db.migrate()?;
@@ -54,23 +49,10 @@ impl Database {
         let db = Self {
             conn: Connection::open_in_memory()?,
             path: None,
-            covers_dir: None,
         };
         db.configure()?;
         db.migrate()?;
         Ok(db)
-    }
-
-    /// 封面缓存目录：`<db 所在目录>/covers`，内存库为 `None`。
-    ///
-    /// 上层用它拼封面绝对路径：`covers_dir().join(format!("{key}.jpg"))`。
-    pub fn covers_dir(&self) -> Option<&Path> {
-        self.covers_dir.as_deref()
-    }
-
-    /// 覆盖封面缓存目录（例如测试或将来换缓存盘）。
-    pub fn set_covers_dir(&mut self, dir: impl Into<PathBuf>) {
-        self.covers_dir = Some(dir.into());
     }
 
     /// 迁移到最新 schema，返回迁移后的 `user_version`。

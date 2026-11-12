@@ -8,7 +8,7 @@ use np_library::{Database, SCHEMA_VERSION};
 fn empty_db_migrates_to_current_version() {
     let dir = common::TempDir::new("migrate-empty");
     let db = Database::open(dir.db_path()).expect("open db");
-    assert_eq!(SCHEMA_VERSION, 2);
+    assert_eq!(SCHEMA_VERSION, 3);
     assert_eq!(db.schema_version().expect("version"), SCHEMA_VERSION);
 }
 
@@ -16,12 +16,12 @@ fn empty_db_migrates_to_current_version() {
 fn migration_is_idempotent() {
     let dir = common::TempDir::new("migrate-idempotent");
     let db = Database::open(dir.db_path()).expect("open db");
-    assert_eq!(db.migrate().expect("migrate again"), 2);
-    assert_eq!(db.migrate().expect("migrate third time"), 2);
+    assert_eq!(db.migrate().expect("migrate again"), 3);
+    assert_eq!(db.migrate().expect("migrate third time"), 3);
     drop(db);
 
     let reopened = Database::open(dir.db_path()).expect("reopen db");
-    assert_eq!(reopened.schema_version().expect("version"), 2);
+    assert_eq!(reopened.schema_version().expect("version"), 3);
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn v1_database_gains_playlists_without_losing_old_data() {
     }
 
     let db = Database::open(&path).expect("upgrade v1");
-    assert_eq!(db.schema_version().expect("version"), 2);
+    assert_eq!(db.schema_version().expect("version"), 3);
     assert_eq!(
         db.list_roots().expect("old data"),
         vec!["/music".to_owned()]
@@ -68,7 +68,7 @@ fn m5_bench_database_copy_migrates_without_losing_data() {
     std::fs::copy(&source, &target).expect("copy M5 db");
     let db = Database::open(&target).expect("migrate M5 copy");
 
-    assert_eq!(db.schema_version().expect("version"), 2);
+    assert_eq!(db.schema_version().expect("version"), 3);
     assert!(
         db.stats().expect("stats").tracks > 0,
         "old tracks must survive"

@@ -54,48 +54,10 @@ pub fn write_wav(path: &Path, frames: u32) {
 ///
 /// 这是 WAV 自带的标签容器，不需要为了测试另造 FLAC。
 pub fn write_wav_with_tags(path: &Path, frames: u32, tags: &[(&str, &str)]) {
-    write_wav_bytes(path, frames, tags, None);
+    write_wav_bytes(path, frames, tags);
 }
 
-/// 写一个内嵌封面的 WAV：封面放在 `ID3 ` chunk 的 ID3v2.3 `APIC` 帧里。
-///
-/// WAV 的 RIFF INFO 不支持图片，但 lofty 会读 `ID3 ` chunk（与音频标签
-/// 同一套解析），因此用它模拟“标签内嵌图”，不需要 FLAC 编码器。
-pub fn write_wav_with_cover(path: &Path, frames: u32, cover: &[u8]) {
-    write_wav_bytes(path, frames, &[], Some(cover));
-}
-
-/// 现场生成一张渐变色 JPEG，测试图片不落仓库。
-pub fn jpeg_bytes(width: u32, height: u32) -> Vec<u8> {
-    let image = image::RgbImage::from_fn(width, height, |x, y| {
-        image::Rgb([(x % 251) as u8, (y % 251) as u8, 128])
-    });
-    let mut bytes = Vec::new();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90);
-    encoder.encode_image(&image).expect("encode generated jpeg");
-    bytes
-}
-
-/// 用 `image` 读回 JPEG 并返回尺寸，顺便断言文件可解析。
-pub fn jpeg_dimensions(path: &Path) -> (u32, u32) {
-    let image = image::ImageReader::open(path)
-        .expect("open jpeg")
-        .decode()
-        .expect("decode jpeg");
-    (image.width(), image.height())
-}
-
-/// FNV-1a 64 位内容哈希（与 `metadata::cover_key` 同一算法），测试侧独立实现。
-pub fn content_key(bytes: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
-}
-
-fn write_wav_bytes(path: &Path, frames: u32, tags: &[(&str, &str)], cover: Option<&[u8]>) {
+fn write_wav_bytes(path: &Path, frames: u32, tags: &[(&str, &str)]) {
     let sample_rate: u32 = 8_000;
     let channels: u16 = 1;
     let bits_per_sample: u16 = 16;
@@ -119,10 +81,6 @@ fn write_wav_bytes(path: &Path, frames: u32, tags: &[(&str, &str)], cover: Optio
         chunks.extend_from_slice(&riff_info(tags));
     }
 
-    if let Some(cover) = cover {
-        chunks.extend_from_slice(&id3_apic_chunk(cover));
-    }
-
     // data chunk
     chunks.extend_from_slice(b"data");
     chunks.extend_from_slice(&data_len.to_le_bytes());
@@ -140,47 +98,6 @@ fn write_wav_bytes(path: &Path, frames: u32, tags: &[(&str, &str)], cover: Optio
     fs::write(path, bytes).expect("write wav");
 }
 
-/// 构造一个带单张 `APIC` 帧的 `ID3 ` RIFF chunk（ID3v2.3）。
-fn id3_apic_chunk(cover: &[u8]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(cover.len() + 32);
-    body.push(0); // Latin-1
-    body.extend_from_slice(b"image/jpeg\0");
-    body.push(3); // front cover
-    body.push(0); // 空描述
-    body.extend_from_slice(cover);
-
-    let mut frames = Vec::with_capacity(body.len() + 10);
-    frames.extend_from_slice(b"APIC");
-    frames.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    frames.extend_from_slice(&[0, 0]); // flags
-    frames.extend_from_slice(&body);
-
-    let mut tag = Vec::with_capacity(frames.len() + 10);
-    tag.extend_from_slice(b"ID3");
-    tag.extend_from_slice(&[3, 0, 0]); // v2.3, flags 0
-    tag.extend_from_slice(&syncsafe(frames.len() as u32));
-    tag.extend_from_slice(&frames);
-
-    let mut chunk = Vec::with_capacity(tag.len() + 8);
-    chunk.extend_from_slice(b"ID3 ");
-    chunk.extend_from_slice(&(tag.len() as u32).to_le_bytes());
-    chunk.extend_from_slice(&tag);
-    if tag.len() % 2 == 1 {
-        chunk.push(0); // RIFF chunk 对齐到偶数
-    }
-    chunk
-}
-
-fn syncsafe(value: u32) -> [u8; 4] {
-    [
-        ((value >> 21) & 0x7F) as u8,
-        ((value >> 14) & 0x7F) as u8,
-        ((value >> 7) & 0x7F) as u8,
-        (value & 0x7F) as u8,
-    ]
-}
-
-/// 构造一个 `LIST ....INFO` chunk。
 fn riff_info(tags: &[(&str, &str)]) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(b"INFO");

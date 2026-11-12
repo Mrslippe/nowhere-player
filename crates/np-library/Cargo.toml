@@ -7,7 +7,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lofty = "0.25"
 rayon = "1.12"
 rusqlite = { version = "0.41", features = ["bundled"] }
@@ -17,4 +16,3 @@ walkdir = "2.5"
 
 [dev-dependencies]
 # 测试现场生成图片并读回校验；与被测代码是同一个 crate、同一组 features。
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

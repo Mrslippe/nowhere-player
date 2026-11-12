@@ -13,7 +13,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use walkdir::{DirEntry, WalkDir};
 
-use crate::covers::{self, CoverOutcome};
 use crate::db::{Database, WriteBatch};
 use crate::error::{LibraryError, Result};
 use crate::metadata::{self, ParsedTrack};
@@ -111,25 +110,14 @@ impl<'a> Scanner<'a> {
         let cancelled = AtomicBool::new(false);
         let (tx, rx) = sync_channel::<ScanItem>(CHANNEL_CAPACITY);
         // 只能把路径（而不是 `&Database`）带进线程：`Connection` 不是 `Sync`。
-        let covers_dir = self.db.covers_dir().map(Path::to_path_buf);
 
         let report = std::thread::scope(|scope| -> Result<ScanReport> {
             let producer = {
                 let candidates: &[Candidate] = &candidates;
                 let index = &index;
-                let covers_dir = &covers_dir;
                 let cancelled = &cancelled;
                 let observer = self.observer;
-                scope.spawn(move || {
-                    produce(
-                        candidates,
-                        index,
-                        covers_dir.as_deref(),
-                        &tx,
-                        cancelled,
-                        observer,
-                    )
-                })
+                scope.spawn(move || produce(candidates, index, &tx, cancelled, observer))
             };
 
             let result = self.write_loop(&rx, total, scan_started_at, &cancelled);
@@ -144,22 +132,7 @@ impl<'a> Scanner<'a> {
             result
         })?;
 
-        // 清理只在全量扫描正常结束时做：增量扫描可能只扫了部分根，且库中
-        // 引用尚未刷新，此时删文件有误删风险（任务卡 §6）；取消的扫描同理。
-        if self.full && !report.cancelled {
-            self.cleanup_covers()?;
-        }
         Ok(report)
-    }
-
-    /// 删除数据库不再引用的封面文件（只由全量扫描在末尾调用）。
-    fn cleanup_covers(&self) -> Result<()> {
-        let Some(dir) = self.db.covers_dir() else {
-            return Ok(());
-        };
-        let referenced = repo::referenced_cover_keys(self.db.conn())?;
-        covers::remove_orphans(dir, &referenced);
-        Ok(())
     }
 
     /// 扫描起点：保证严格大于库里已有的 `last_seen_at`，同一毫秒内连续扫描
@@ -200,18 +173,11 @@ impl<'a> Scanner<'a> {
                             Err(_) => report.failed += 1,
                         }
                     }
-                    ScanItem::Parsed {
-                        track,
-                        cover_failed,
-                    } => {
+                    ScanItem::Parsed { track } => {
                         let parsed_path = track.path.clone();
                         match batch.run(|conn| repo::upsert_track(conn, &track, scan_started_at)) {
                             Ok(()) => {
                                 report.indexed += 1;
-                                if cover_failed {
-                                    // 封面解码/写入失败：曲目照样入库，但计一次失败。
-                                    report.failed += 1;
-                                }
                                 self.observer.on_parsed(&parsed_path);
                             }
                             Err(_) => report.failed += 1,
@@ -240,7 +206,6 @@ impl<'a> Scanner<'a> {
 fn produce(
     candidates: &[Candidate],
     index: &HashMap<String, (i64, i64)>,
-    covers_dir: Option<&Path>,
     tx: &SyncSender<ScanItem>,
     cancelled: &AtomicBool,
     observer: &dyn ScanObserver,
@@ -267,13 +232,9 @@ fn produce(
                         candidate.size_bytes,
                         candidate.mtime_ms,
                     ) {
-                        Ok(mut track) => {
-                            let cover_failed = write_cover(covers_dir, &mut track);
-                            ScanItem::Parsed {
-                                track: Box::new(track),
-                                cover_failed,
-                            }
-                        }
+                        Ok(track) => ScanItem::Parsed {
+                            track: Box::new(track),
+                        },
                         Err(err) => ScanItem::Failed {
                             path: candidate.path.clone(),
                             message: err.to_string(),
@@ -284,20 +245,6 @@ fn produce(
             });
         }
     });
-}
-
-/// 把解析出的封面源字节落盘；失败时清掉 `cover_key`，避免库里指向不存在的文件。
-fn write_cover(covers_dir: Option<&Path>, track: &mut ParsedTrack) -> bool {
-    let (Some(dir), Some(cover)) = (covers_dir, track.cover.take()) else {
-        return false;
-    };
-    match covers::store(dir, &cover.key, &cover.bytes) {
-        CoverOutcome::Written | CoverOutcome::Skipped => false,
-        CoverOutcome::Failed => {
-            track.cover_key = None;
-            true
-        }
-    }
 }
 
 /// 候选文件及其增量指纹。
@@ -312,8 +259,6 @@ enum ScanItem {
     Unchanged(PathBuf),
     Parsed {
         track: Box<ParsedTrack>,
-        /// 封面解码或落盘失败；曲目仍然入库。
-        cover_failed: bool,
     },
     Failed {
         path: PathBuf,
