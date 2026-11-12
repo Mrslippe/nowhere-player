@@ -43,8 +43,7 @@ impl Database {
 
     /// 打开一个内存库并迁移；供测试与一次性工具使用。
     ///
-    /// 内存库没有落盘位置，因此默认不写封面缓存；需要时用
-    /// [`Database::set_covers_dir`] 指定。
+    /// 内存库没有落盘位置；需要临时文件时由调用方使用系统临时目录。
     pub fn open_in_memory() -> Result<Self> {
         let db = Self {
             conn: Connection::open_in_memory()?,

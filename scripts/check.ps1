@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# 全量门禁：Rust fmt / clippy / test（Web 前端已移除）。
+# 全量门禁：Rust fmt / clippy / test + 文档 / 契约 / 代码卫生。
 # 用法：pwsh scripts/check.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -26,9 +26,10 @@ Invoke-CheckStep 'cargo fmt --all -- --check' { cargo fmt --all -- --check }
 Invoke-CheckStep 'cargo clippy --workspace --all-targets -- -D warnings' { cargo clippy --workspace --all-targets -- -D warnings }
 Invoke-CheckStep 'cargo test --workspace' { cargo test --workspace }
 
-# 文档悬空链接目前有 6 处存量（docs/** 不在本卡授权内）；门禁先告警，
-# 修完后把  去掉即可升级为硬失败。
-Invoke-CheckStep 'check-docs' { pwsh -NoProfile -File scripts/check-docs.ps1  }
+# 文档结构检查：规范类 front-matter / 长度 / 索引 / 链接；过程类历史路径只警告。
+Invoke-CheckStep 'check-docs' { python scripts/check-docs.py }
+Invoke-CheckStep 'check-contracts' { python scripts/check-contracts.py }
+Invoke-CheckStep 'check-hygiene' { python scripts/check-hygiene.py }
 
 Write-Host ''
 Write-Host '[DONE] 全部门禁通过'

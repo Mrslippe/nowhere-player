@@ -4,6 +4,7 @@ title: Windows Terminal 外观定制
 status: active
 owner: 架构师
 updated: 2026-11-11
+verified: —
 tags: [design, tui, windows]
 related: [ADR-0006]
 ---

@@ -3,7 +3,9 @@ use ratatui::text::{Line, Span as TuiSpan};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
+#[cfg(test)]
 use crate::theme::Palette;
+#[cfg(test)]
 use np_core::{Output, Span, SpanColor, Tone};
 
 pub(crate) fn truncate_width(value: &str, width: usize) -> String {
@@ -51,6 +53,7 @@ pub(crate) fn input_line(app: &App) -> Line<'static> {
     ])
 }
 
+#[cfg(test)]
 pub(crate) fn all_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for block in &app.blocks {
@@ -82,6 +85,7 @@ pub(crate) fn all_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg(test)]
 pub(crate) fn span_style(span: &Span, tone: Option<Tone>, palette_ref: &Palette) -> Style {
     let mut style = Style::default();
     if span.bold {
@@ -110,6 +114,7 @@ pub(crate) fn span_style(span: &Span, tone: Option<Tone>, palette_ref: &Palette)
     style.fg(color.or(tone).unwrap_or(palette_ref.fg))
 }
 
+#[cfg(test)]
 pub(crate) fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, palette_ref: &Palette) {
     match output {
         Output::Text { spans, tone } => {

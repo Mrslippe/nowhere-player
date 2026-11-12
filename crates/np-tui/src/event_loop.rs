@@ -174,6 +174,19 @@ where
                                     );
                                     draw_needed = true;
                                 }
+                                KeyCode::Tab => {
+                                    if app.accept_completion() {
+                                        draw_needed = true;
+                                    }
+                                }
+                                KeyCode::Up if app.completion.is_some() => {
+                                    app.move_completion(false);
+                                    draw_needed = true;
+                                }
+                                KeyCode::Down if app.completion.is_some() => {
+                                    app.move_completion(true);
+                                    draw_needed = true;
+                                }
                                 KeyCode::Up => {
                                     app.history_up();
                                     draw_needed = true;
@@ -227,17 +240,8 @@ where
                                     draw_needed = true;
                                 }
                                 KeyCode::Char('g') => {
-                                    if app.focus == Focus::List {
-                                        let repeated = app.g_pending.is_some_and(|at| {
-                                            now.duration_since(at)
-                                                <= std::time::Duration::from_millis(300)
-                                        });
-                                        if repeated {
-                                            app.row_index = 0;
-                                            app.g_pending = None;
-                                        } else {
-                                            app.g_pending = Some(now);
-                                        }
+                                    if app.focus == Focus::List && app.press_g(now) {
+                                        app.row_index = 0;
                                     }
                                     draw_needed = true;
                                 }

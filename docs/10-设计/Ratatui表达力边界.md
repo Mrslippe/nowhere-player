@@ -4,6 +4,7 @@ title: Ratatui 表达力边界
 status: active
 owner: 架构师
 updated: 2026-11-12
+verified: —
 tags: [design, tui, ratatui]
 related: [ADR-0006, DES-007]
 ---

@@ -24,4 +24,13 @@ step 'cargo fmt --all -- --check' cargo fmt --all -- --check
 step 'cargo clippy --workspace --all-targets -- -D warnings' cargo clippy --workspace --all-targets -- -D warnings
 step 'cargo test --workspace' cargo test --workspace
 
+PYTHON_BIN="$(command -v python || command -v python3 || true)"
+if [ -n "$PYTHON_BIN" ]; then
+  step 'check-docs' "$PYTHON_BIN" scripts/check-docs.py
+  step 'check-contracts' "$PYTHON_BIN" scripts/check-contracts.py
+  step 'check-hygiene' "$PYTHON_BIN" scripts/check-hygiene.py
+else
+  printf '\n[WARN] python/python3 不在 PATH，跳过 docs/contracts/hygiene（Windows/CI 必须跑）\n'
+fi
+
 printf '\n[DONE] 全部门禁通过\n'

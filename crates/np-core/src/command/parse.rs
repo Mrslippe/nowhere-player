@@ -1144,9 +1144,10 @@ mod tests {
     fn cache_clear_rejects_unknown_target() {
         let error = parse_err("cache clear nope");
         assert_eq!(error.code, crate::CommandErrorCode::Arg);
-        assert_eq!(
-            error.usage.as_deref(),
-            Some("cache clear [streams|covers|all]")
-        );
+        assert_eq!(error.usage.as_deref(), Some("cache clear [streams|all]"));
+
+        // T-0079 删除了封面子系统：covers 不再是合法缓存目标。
+        let covers = parse_err("cache clear covers");
+        assert_eq!(covers.code, crate::CommandErrorCode::Arg);
     }
 }

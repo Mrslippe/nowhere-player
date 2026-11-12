@@ -4,6 +4,7 @@ title: TUI 美学调研
 status: draft
 owner: 架构师
 updated: 2026-11-11
+verified: —
 tags: [design, research, tui]
 related: [DES-001, DES-006, ADR-0003]
 ---

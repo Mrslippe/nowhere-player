@@ -4,6 +4,7 @@ title: TUI 交互模型
 status: draft
 owner: 架构师
 updated: 2026-11-12
+verified: —
 tags: [design, tui, interaction, ux]
 related: [DES-010, DES-011, ADR-0006]
 ---

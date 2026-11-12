@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
-use ratatui::widgets::{Block as TuiBlock, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block as TuiBlock, Borders, Clear, Paragraph};
 
 use crate::app::{App, Focus, UiMode};
 use crate::audio::TuiAudio;
@@ -52,6 +52,18 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
         draw_player_strip(frame, player_area, app, player);
     }
     draw_controller(frame, controller_area, app);
+    if app.completion.is_some() && controller_area.y > top.y + 3 {
+        let height = 7.min(controller_area.y - top.y - 1);
+        let width = 58.min(inner.width);
+        let popup = Rect {
+            x: controller_area.x + 2,
+            y: controller_area.y - height,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, popup);
+        draw_completion(frame, popup, app);
+    }
     let hint = match (app.focus, app.mode) {
         (Focus::Controller, UiMode::Filter) => {
             "Filter: Enter 确认 · Esc 清除 · ↑/↓ 历史 · Tab 切焦点"
@@ -273,22 +285,6 @@ pub(crate) fn draw_help(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-pub(crate) fn panel_block(app: &App, title: &str, focused: bool) -> TuiBlock<'static> {
-    TuiBlock::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused {
-            app.palette.accent
-        } else {
-            app.palette.faint
-        }))
-        .style(
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
-        )
-        .title(title.to_owned())
-}
-
 pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = area;
     let lines: Vec<Line> = app
@@ -407,30 +403,4 @@ pub(crate) fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App)
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-pub(crate) fn draw_output(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let lines = all_lines(app);
-    let output_height = area.height.saturating_sub(2);
-    let max_scroll = lines.len().saturating_sub(output_height as usize) as u16;
-    if app.auto_scroll {
-        app.scroll = max_scroll;
-    } else {
-        app.scroll = app.scroll.min(max_scroll);
-    }
-    let output = Paragraph::new(lines)
-        .block(
-            TuiBlock::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.palette.line))
-                .title(" 输出 "),
-        )
-        .style(
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll, 0));
-    frame.render_widget(output, area);
 }

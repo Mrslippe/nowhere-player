@@ -1,69 +1,83 @@
 # Nowhere Player
 
-一个常驻桌面的极简播放器小窗，配一个纯 CLI 风格的配置窗。跨 Windows / macOS / Linux。
+一个常驻终端的极简音乐播放器：本地库 + B 站 / 网易云在线音源，Ratatui 三区界面，单一 Rust 二进制。
 
-> 当前进度：**M0 已完成**（骨架、双窗口、设计系统、终端双方案、托盘常驻、CI）。音频引擎在 M1。
+> 当前形态：**纯 Rust + Ratatui**，没有 Tauri、没有 WebView、没有 `apps/`、没有 pnpm。
+> 架构迁移记录见 [`ADR-0006`](docs/20-架构/adr/ADR-0006-TUI宿主与渲染栈.md)；当前进度见 [`当前状态`](docs/30-计划/当前状态.md)。
 
----
-
-## 截图
-
-| 播放器小窗（6 状态） | 终端双方案对比 |
-|---|---|
-| ![播放器小窗](docs/30-计划/截图/T-0004-player-states.png) | ![终端对比](docs/30-计划/截图/T-0008-lab-both.png) |
-
-| 托盘菜单 |
-|---|
-| ![托盘](docs/30-计划/截图/T-0009-tray-menu.png) |
+![Nowhere Player 新布局](docs/30-计划/截图/tui-layout-p1-fixed.png)
 
 ---
 
 ## 快速开始
 
-需要 Node ≥ 20、pnpm 11、Rust 1.98、Windows 需 WebView2（Win11 自带）。
+需要 **Rust 1.98**（见 [`rust-toolchain.toml`](rust-toolchain.toml)）。Windows 建议使用 Windows Terminal；Linux 需要 ALSA 开发库（cpal 的构建依赖）。
 
 ```bash
-pnpm install
-pnpm -C apps/desktop tauri dev
+cargo build --release -p np-tui
+target/release/np-tui.exe
 ```
 
-启动后：播放器小窗出现 → `Ctrl+Shift+P` 打开终端窗 → 关掉终端窗进程仍在，托盘图标常驻。
+没有 `npm install`、没有 `pnpm`、没有 WebView2。首次编译会拉取 Rust 依赖，约 2–5 分钟。
 
-首次编译约 2–5 分钟。**构建顺序很重要**：必须先 `pnpm install` 再 `cargo build`，因为 Tauri 的 `generate_context!` 在编译期读取 `apps/web/dist`。
-
-### 只跑前端（不启动 Tauri）
+无头自检（不打开界面，适合脚本/验收）：
 
 ```bash
-pnpm -C apps/web dev
+NP_TUI_SELFTEST="search 晴天;play 2" target/release/np-tui.exe
+NP_TUI_DATA_DIR=/tmp/np-data target/release/np-tui.exe
 ```
-
-- 播放器：`http://localhost:1420/?window=player`
-- 终端对比实验室：`http://localhost:1420/?window=terminal&variant=both`
-- 设计系统 demo：`http://localhost:1420/design.html`
 
 ---
 
-## 快捷键
+## 能做什么
 
-| 快捷键 | 作用 | 生效范围 |
-|---|---|---|
-| `Ctrl/Cmd + Shift + P` | 打开/隐藏终端窗 | 全局 |
-| `Ctrl + W` | 播放器窗隐藏到托盘 | 播放器聚焦时 |
-| `Ctrl + Q` | 退出应用 | 播放器聚焦时 |
+| 能力 | 说明 |
+|---|---|
+| 本地媒体库 | 添加扫描根、增量/全量扫描、按标题/艺人/专辑检索 |
+| 播放 | 播放/暂停/切歌/seek/音量/循环/随机；本地文件与远程缓存统一走 `np-audio` |
+| 在线音源 | B 站搜索/UP 检索/取流/下载缓存；网易云匿名搜索/取流 |
+| 队列与歌单 | 队列增删跳转；歌单支持本地 + 在线条目 |
+| 主题 | 内置主题 + 用户 JSON；`theme list/set/export` |
+| 设置 | `config` 命令族；`settings.json` 原子写 |
+| 终端界面 | 三区布局、补全、历史、启动页、频谱/波形/矢量、沉浸模式 |
+| 系统集成 | Windows 托盘、全局热键、单实例、开机自启 |
 
-托盘菜单：显示播放器 / 打开终端 / 开机自启（勾选）/ 退出。
+**已移除**：封面显示与封面缓存（[`ADR-0007`](docs/20-架构/adr/ADR-0007-移除封面子系统与schema-v3.md)）。
 
 ---
 
-## 目录结构
+## 键位（Normal 模式）
 
-```
-crates/           纯 Rust 模块（np-core 已有终端输出模型，其余待填）
-apps/desktop/     Tauri 壳（窗口、托盘、单实例、快捷键）
-apps/web/         React 前端（player / terminal 两个视图 + design 与 lab 页）
-docs/             全部文档，入口 docs/README.md
-scripts/          门禁脚本 check.ps1 / check.sh
-```
+| 键 | 动作 |
+|---|---|
+| `Space` | 播放 / 暂停 |
+| `n` / `p` | 下一首 / 上一首 |
+| `+` / `-` | 音量 ±5% |
+| `Tab` / `Shift+Tab` | 切换焦点 |
+| `/` | 就地过滤 |
+| `:` | 命令模式（完整命令表见 [`命令表`](docs/30-计划/命令表.md)） |
+| `?` | 帮助 |
+| `j` / `k`、`↑` / `↓` | 移动 |
+| `gg` / `G` | 首 / 尾 |
+| `Enter` | 播放选中项 |
+| `a` / `A` / `d` | 加入队列 / 加入歌单 / 从歌单移除 |
+| `f` | 切换视觉区（频谱 / 波形 / 矢量） |
+| `Ctrl+F` | 沉浸模式 |
+| `q` | 退出（播放中二次确认） |
+
+> 键位以 [`TUI交互模型`](docs/10-设计/TUI交互模型.md) 与代码为准；本文只列最常用的一组。
+
+---
+
+## 数据目录
+
+| 平台 | 位置 |
+|---|---|
+| Windows | `%APPDATA%\com.nowhere.player` |
+| macOS | `~/Library/Application Support/com.nowhere.player` |
+| Linux | `$XDG_CONFIG_HOME/com.nowhere.player`（默认 `~/.config/...`） |
+
+可用 `NP_TUI_DATA_DIR=<dir>` 覆盖；测试/验收必须用它隔离真实库。
 
 ---
 
@@ -71,22 +85,38 @@ scripts/          门禁脚本 check.ps1 / check.sh
 
 | 目的 | 命令 |
 |---|---|
-| 全量门禁 | `pwsh scripts/check.ps1` |
-| 前端测试 | `pnpm -C apps/web test` |
-| Rust 测试 | `cargo test --workspace` |
+| 格式 | `cargo fmt --all -- --check` |
+| 静态检查 | `cargo clippy --workspace --all-targets -- -D warnings` |
+| 单元测试 | `cargo test --workspace` |
+| 全量门禁（Windows） | `pwsh -NoProfile -File scripts/check.ps1` |
+| 全量门禁（Unix） | `bash scripts/check.sh` |
+| 真机验收 | `pwsh -NoProfile -File scripts/verify.ps1 -Card <卡号> -Selftest "<命令>"` |
 
-贡献或接手前先读 [`AGENTS.md`](AGENTS.md)（项目地图、验证命令、红线）与 [`docs/30-计划/当前状态.md`](docs/30-计划/当前状态.md)（进度与欠账）。
+接手前先读 [`AGENTS.md`](AGENTS.md)（红线、命令、文档路由）与 [`当前状态`](docs/30-计划/当前状态.md)。
+
+---
+
+## 平台说明
+
+- **Windows 是当前主平台**：托盘、全局热键、单实例、开机自启、Windows Terminal 启动器都已接通。
+- **macOS / Linux 可以编译和播放**，但托盘、自启、单实例、启动器尚未等价实现；不要按“全平台完整体验”宣传。
+- 真实音频设备、托盘点击、媒体键属于人工验收项；无头自检只覆盖命令/状态/文本输出。
 
 ---
 
 ## 文档
 
 - [文档索引](docs/README.md)
-- [开发方案](docs/30-计划/开发方案-v0.1.md)
-- [技术调研](docs/20-架构/技术调研-2026-11.md)
+- [开发方案](docs/30-计划/开发方案-v0.1.md)（历史；产品范围仍可参考）
+- [当前状态](docs/30-计划/当前状态.md)
+- [TUI 交互模型](docs/10-设计/TUI交互模型.md)
+- [数据模型](docs/20-架构/数据模型.md)
+- [命令表](docs/30-计划/命令表.md)
 
 ---
 
 ## 许可
 
-MIT OR Apache-2.0（代码）。在线音源仅用于个人学习与试听，详见文档免责说明。
+MIT OR Apache-2.0（代码）。见 [`LICENSE-MIT`](LICENSE-MIT) 与 [`LICENSE-APACHE`](LICENSE-APACHE)。
+
+在线音源仅用于个人学习与试听；请遵守各平台的服务条款。

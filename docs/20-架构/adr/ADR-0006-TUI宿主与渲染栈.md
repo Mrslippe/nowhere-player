@@ -4,6 +4,7 @@ title: TUI 宿主与渲染栈
 status: accepted
 owner: 架构师
 updated: 2026-11-11
+verified: —
 tags: [adr, tui, architecture]
 related: [ADR-0003, DES-007, DES-008, ARCH-007]
 ---

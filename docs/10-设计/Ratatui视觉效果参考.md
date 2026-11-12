@@ -4,6 +4,7 @@ title: Ratatui 视觉效果参考
 status: active
 owner: 架构师
 updated: 2026-11-12
+verified: —
 tags: [design, tui, ratatui, research]
 related: [DES-010, ADR-0006]
 ---

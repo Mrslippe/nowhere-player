@@ -93,7 +93,8 @@ fn test_backend_renders_completion_area() {
         .map(|cell| cell.symbol())
         .collect();
     let compact = text.replace(' ', "");
-    assert!(compact.contains("NowherePlayer"), "{text}");
+    assert!(compact.contains("候选"), "{text}");
+    assert!(compact.contains("search"), "{text}");
 }
 
 #[test]

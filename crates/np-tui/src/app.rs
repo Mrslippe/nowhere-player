@@ -20,8 +20,6 @@ pub(crate) struct App {
     pub(crate) history: Vec<String>,
     pub(crate) history_cursor: Option<usize>,
     pub(crate) blocks: Vec<Block>,
-    pub(crate) scroll: u16,
-    pub(crate) auto_scroll: bool,
     pub(crate) status: String,
     pub(crate) panel_visible: bool,
     pub(crate) immersive: bool,
@@ -63,8 +61,6 @@ impl App {
             history: Vec::new(),
             history_cursor: None,
             blocks: Vec::new(),
-            scroll: 0,
-            auto_scroll: true,
             status: "就绪".to_owned(),
             panel_visible: true,
             immersive: false,
@@ -433,23 +429,6 @@ impl App {
         true
     }
 
-    pub(crate) fn update_search_view(&mut self, block: &Block) {
-        if !block.input.starts_with("search") {
-            return;
-        }
-        for output in &block.outputs {
-            if let Output::Table { columns, rows, .. } = output {
-                if let Some(view) = self.views.get_mut(1) {
-                    view.columns = columns.clone();
-                    view.rows = rows.clone();
-                    self.view_index = 1;
-                    self.row_index = 0;
-                }
-                break;
-            }
-        }
-    }
-
     pub(crate) fn upsert_block(&mut self, block: Block) {
         if let Some(existing) = self
             .blocks
@@ -460,7 +439,6 @@ impl App {
         } else {
             self.blocks.push(block);
         }
-        self.auto_scroll = true;
     }
 
     pub(crate) fn run(

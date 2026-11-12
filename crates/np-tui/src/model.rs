@@ -38,7 +38,6 @@ pub(crate) enum Focus {
 pub(crate) enum UiMode {
     Normal,
     Filter,
-    Command,
     Help,
 }
 

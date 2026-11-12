@@ -1,6 +1,7 @@
 name: CI
 
-# Nowhere Player 门禁：Rust fmt / clippy / test，Windows + Ubuntu。
+# Nowhere Player 门禁：Rust fmt / clippy / test / release build + 文档结构检查。
+# 平台：Windows / Ubuntu / macOS。Linux 需要 ALSA 头文件（cpal）。
 
 on:
   push:
@@ -12,16 +13,23 @@ permissions:
 
 jobs:
   rust:
-    name: Rust（${{ matrix.os }}）
+    name: Rust + docs（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python（文档检查）
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -29,11 +37,31 @@ jobs:
           toolchain: 1.98.0
           components: rustfmt, clippy
 
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Linux audio deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: 格式检查
         run: cargo fmt --all -- --check
+
+      - name: 文档结构检查
+        run: python scripts/check-docs.py
+
+      - name: 契约检查（含 base diff）
+        shell: bash
+        run: python scripts/check-contracts.py --base "${BASE_REF:-}"
+
+      - name: 代码卫生（文件预算 / 死代码残留）
+        run: python scripts/check-hygiene.py
 
       - name: Clippy（警告即错误）
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: 测试
-        run: cargo test --workspace
+      - name: 测试（锁文件）
+        run: cargo test --workspace --locked
+
+      - name: Release 构建（验证 LTO 路径）
+        run: cargo build --release --locked -p np-tui

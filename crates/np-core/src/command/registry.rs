@@ -531,7 +531,7 @@ const SOURCE_SUBCOMMANDS: &[SubcommandSpec] = &[
 const CACHE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "stat",
-        summary: "统计 streams / covers 缓存",
+        summary: "统计 streams 缓存",
         usage: "cache stat",
         args: &[],
         flags: &[],
@@ -539,12 +539,12 @@ const CACHE_SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "clear",
         summary: "清空指定缓存",
-        usage: "cache clear [streams|covers|all]",
+        usage: "cache clear [streams|all]",
         args: &[ArgSpec {
             name: "target",
             label: "类型",
 
-            kind: ArgKind::Enum(&["streams", "covers", "all"]),
+            kind: ArgKind::Enum(&["streams", "all"]),
             required: false,
         }],
         flags: &[],

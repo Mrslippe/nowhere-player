@@ -4,6 +4,7 @@ title: TUI 库与技能调研
 status: draft
 owner: 架构师
 updated: 2026-11-11
+verified: —
 tags: [design, research, tui, library]
 related: [DES-007, ARCH-007]
 ---

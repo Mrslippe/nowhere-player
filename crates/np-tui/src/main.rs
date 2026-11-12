@@ -2,7 +2,6 @@
 //!
 //! 这一版只覆盖任务卡的 1/4/5：输入、执行、text/table/error/hint。
 //! 在线搜索异步分派、补全、播放器面板留给后续卡片。
-#![allow(dead_code)]
 
 use std::io;
 use std::sync::Arc;

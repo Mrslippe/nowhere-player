@@ -110,6 +110,7 @@ impl TuiAudio {
         self.tap.borrow().clone()
     }
 
+    #[cfg(test)]
     pub fn source_path(&self) -> Option<PathBuf> {
         self.source_path.borrow().clone()
     }
