@@ -1,6 +1,7 @@
 ---
 id: DES-008
 title: TUI 库与技能调研
+summary: "6 库 + 2 skill 核实、Ratzilla 路线"
 status: draft
 owner: 架构师
 updated: 2026-11-11

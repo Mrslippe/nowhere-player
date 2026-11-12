@@ -27,6 +27,7 @@ step 'cargo test --workspace' cargo test --workspace
 PYTHON_BIN="$(command -v python || command -v python3 || true)"
 if [ -n "$PYTHON_BIN" ]; then
   step 'check-docs' "$PYTHON_BIN" scripts/check-docs.py
+  step 'check-index' "$PYTHON_BIN" scripts/gen-docs-index.py --check
   step 'check-contracts' "$PYTHON_BIN" scripts/check-contracts.py
   step 'check-hygiene' "$PYTHON_BIN" scripts/check-hygiene.py
 else

@@ -1,6 +1,7 @@
 ---
 id: ADR-0007
 title: 移除封面子系统与 schema v3
+summary: "封面管线、cover_key、covers 缓存的删除决策"
 status: accepted
 owner: 架构师
 updated: 2026-11-13

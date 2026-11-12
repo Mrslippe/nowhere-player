@@ -1,6 +1,7 @@
 ---
 id: DES-009
 title: Windows Terminal 外观定制
+summary: "fragment、可定制清单、启动器职责"
 status: active
 owner: 架构师
 updated: 2026-11-11

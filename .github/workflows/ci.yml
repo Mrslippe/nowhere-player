@@ -50,6 +50,9 @@ jobs:
       - name: 文档结构检查
         run: python scripts/check-docs.py
 
+      - name: 文档索引是否过期
+        run: python scripts/gen-docs-index.py --check
+
       - name: 契约检查（含 base diff）
         shell: bash
         run: python scripts/check-contracts.py --base "${BASE_REF:-}"

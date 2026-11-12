@@ -1,6 +1,7 @@
 ---
 id: DES-011
 title: Ratatui 视觉效果参考
+summary: "scope-tui / rebels-in-the-sky 等可借鉴手法"
 status: active
 owner: 架构师
 updated: 2026-11-12

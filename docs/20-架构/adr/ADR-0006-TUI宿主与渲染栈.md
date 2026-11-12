@@ -1,6 +1,7 @@
 ---
 id: ADR-0006
 title: TUI 宿主与渲染栈
+summary: "放弃 WebView，改纯 Rust + Ratatui"
 status: accepted
 owner: 架构师
 updated: 2026-11-11

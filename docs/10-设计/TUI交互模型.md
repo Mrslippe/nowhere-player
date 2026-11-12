@@ -1,6 +1,7 @@
 ---
 id: DES-012
 title: TUI 交互模型
+summary: "三区布局、焦点、四模式、键位表"
 status: draft
 owner: 架构师
 updated: 2026-11-12

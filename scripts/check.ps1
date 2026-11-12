@@ -28,6 +28,7 @@ Invoke-CheckStep 'cargo test --workspace' { cargo test --workspace }
 
 # 文档结构检查：规范类 front-matter / 长度 / 索引 / 链接；过程类历史路径只警告。
 Invoke-CheckStep 'check-docs' { python scripts/check-docs.py }
+Invoke-CheckStep 'check-index' { python scripts/gen-docs-index.py --check }
 Invoke-CheckStep 'check-contracts' { python scripts/check-contracts.py }
 Invoke-CheckStep 'check-hygiene' { python scripts/check-hygiene.py }
 

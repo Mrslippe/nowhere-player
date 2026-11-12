@@ -1,6 +1,7 @@
 ---
 id: DES-010
 title: Ratatui 表达力边界
+summary: "终端能画什么、不能画什么"
 status: active
 owner: 架构师
 updated: 2026-11-12

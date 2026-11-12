@@ -1,6 +1,7 @@
 ---
 id: DES-007
 title: TUI 美学调研
+summary: "opencode 主题模型、十二条 TUI 设计逻辑"
 status: draft
 owner: 架构师
 updated: 2026-11-11

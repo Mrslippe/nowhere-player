@@ -34,7 +34,7 @@ NORMATIVE_30 = {
     "开发方案-v0.1.md",
 }
 ALLOWED_STATUS = {"draft", "active", "accepted", "deprecated", "superseded", "archived"}
-REQUIRED_FM = ("id", "title", "status", "owner", "updated", "verified")
+REQUIRED_FM = ("id", "title", "status", "owner", "updated", "verified", "summary")
 
 # 超过 200 行的 active 规范文档；必须写原因和到期日，到期后应拆分。
 LENGTH_ALLOWLIST = {
