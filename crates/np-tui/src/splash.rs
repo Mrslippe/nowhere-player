@@ -20,18 +20,18 @@ pub(crate) const GLYPH_N: [&str; 6] = [
     "███╗   ██╗",
     "████╗  ██║",
     "██╔██╗ ██║",
-    "██║╚██╗██║",
-    "██║ ╚████║",
+    "██║╚████║ ",
+    "██║ ╚███║ ",
     "╚═╝  ╚══╝ ",
 ];
 
 pub(crate) const GLYPH_O: [&str; 6] = [
-    " ██████╗ ",
-    "██╔═══██╗",
-    "██║   ██║",
-    "██║   ██║",
-    "╚██████╔╝",
-    " ╚═════╝ ",
+    "██████╗   ",
+    "██╔═══██╗ ",
+    "██║   ██║ ",
+    "██║   ██║ ",
+    "╚██████╔╝ ",
+    "╚═════╝   ",
 ];
 
 pub(crate) const GLYPH_W: [&str; 6] = [
@@ -40,7 +40,7 @@ pub(crate) const GLYPH_W: [&str; 6] = [
     "██║ █╗ ██║",
     "██║███╗██║",
     "╚███╔███╔╝",
-    " ╚══╝╚══╝ ",
+    "╚══╝╚══╝  ",
 ];
 
 pub(crate) const GLYPH_H: [&str; 6] = [
@@ -75,26 +75,11 @@ pub(crate) const GLYPHS: [[&str; 6]; 7] = [
 ];
 
 pub(crate) fn compose(letters: &[[&str; 6]; 7]) -> Vec<String> {
-    let widths: Vec<usize> = letters
-        .iter()
-        .map(|glyph| {
-            glyph
-                .iter()
-                .map(|row| UnicodeWidthStr::width(*row))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
     (0..6)
         .map(|row| {
             letters
                 .iter()
-                .zip(widths.iter())
-                .map(|(glyph, width)| {
-                    let line = glyph[row];
-                    let padding = width.saturating_sub(UnicodeWidthStr::width(line));
-                    format!("{line}{}", " ".repeat(padding))
-                })
+                .map(|glyph| glyph[row])
                 .collect::<Vec<_>>()
                 .join(" ")
         })
