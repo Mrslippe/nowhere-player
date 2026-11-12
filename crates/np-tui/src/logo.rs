@@ -6,12 +6,12 @@
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) const GLYPH_N: [&str; 6] = [
-    "███╗   ██╗",
-    "████╗  ██║",
-    "██╔██╗ ██║",
-    "██║╚████║ ",
-    "██║ ╚███║ ",
-    "╚═╝  ╚══╝ ",
+    "███╗  ██╗",
+    "████╗ ██║",
+    "██╔██╗██║",
+    "██║╚████║",
+    "██║ ╚███║",
+    "╚═╝  ╚══╝",
 ];
 
 pub(crate) const GLYPH_O: [&str; 6] = [
@@ -86,5 +86,40 @@ pub(crate) fn splash_art(width: u16) -> String {
         "NOWHERE".to_owned()
     } else {
         composed.join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// N 是手绘 9 列。不要为了“每行等宽”在字形内部塞空格——
+    /// 只允许在行尾补空格；当前字形 6 行都必须是 9 列。
+    #[test]
+    fn n_keeps_hand_drawn_nine_columns() {
+        assert_eq!(
+            GLYPH_N,
+            [
+                "███╗  ██╗",
+                "████╗ ██║",
+                "██╔██╗██║",
+                "██║╚████║",
+                "██║ ╚███║",
+                "╚═╝  ╚══╝",
+            ]
+        );
+        for row in GLYPH_N {
+            assert_eq!(UnicodeWidthStr::width(row), 9, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn composed_logo_is_67_columns() {
+        let composed = compose(&GLYPHS);
+        let widths: std::collections::HashSet<usize> = composed
+            .iter()
+            .map(|row| UnicodeWidthStr::width(row.as_str()))
+            .collect();
+        assert_eq!(widths, std::collections::HashSet::from([67]));
     }
 }
