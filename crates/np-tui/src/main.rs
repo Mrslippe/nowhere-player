@@ -164,6 +164,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => VisualMode::Spectrum,
         };
     }
+    #[cfg(windows)]
+    if selftest.is_none()
+        && let Ok((cols, rows)) = crossterm::terminal::size()
+        && launcher::ensure_default_size(cols, rows)
+    {
+        return Ok(());
+    }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(

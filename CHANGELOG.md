@@ -9,7 +9,8 @@
 
 - 72×24 默认窗口与三区域布局（Browse/List、Player、Controller）
 - Browse 树：歌单子项、媒体库、搜索、队列、设置；5 条折叠阈值与 `Shift+Enter`
-- 圆角边框、焦点 accent、计数 italic/faint、状态栏键名分色
+- 方角粗边框、焦点 accent、计数 italic/faint、状态栏键名分色
+- 默认字体 Maple Mono NF CN；启动时兜底 72×24
 
 ### Changed
 

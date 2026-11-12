@@ -45,7 +45,8 @@ pub(crate) fn draw_player_strip(
         if idle {
             let line = "░".repeat(content.width as usize);
             let style = Style::default().fg(app.palette.faint);
-            for y in visual_area.y..visual_area.bottom() {
+            let last = content.y.saturating_add(visual_height);
+            for y in visual_area.y..=last {
                 frame
                     .buffer_mut()
                     .set_string(visual_area.x, y, &line, style);
@@ -90,11 +91,16 @@ pub(crate) fn draw_player_strip(
     };
     let bar_width = content.width as usize;
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
-    let progress = format!(
-        "{}{}",
-        glyphs::PROGRESS_DONE.repeat(filled),
-        glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled))
-    );
+    let mut progress = String::with_capacity(bar_width);
+    for column in 0..bar_width {
+        if column % 2 == 1 {
+            progress.push(' ');
+        } else if column < filled {
+            progress.push_str(glyphs::PROGRESS_DONE);
+        } else {
+            progress.push_str(glyphs::PROGRESS_TODO);
+        }
+    }
     frame.render_widget(
         Paragraph::new(progress).style(Style::default().fg(app.palette.accent)),
         Rect {
@@ -117,8 +123,8 @@ fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let mode_w = UnicodeWidthStr::width(mode);
     let top_fill = width.saturating_sub(2 + title_w);
     let bottom_fill = width.saturating_sub(2 + mode_w);
-    let top = format!("╭{title}{}╮", "─".repeat(top_fill));
-    let bottom = format!("╰{}{mode}╯", "─".repeat(bottom_fill));
+    let top = format!("┏{title}{}┓", "━".repeat(top_fill));
+    let bottom = format!("┗{}{mode}┛", "━".repeat(bottom_fill));
     let line = Style::default().fg(app.palette.line_strong);
     frame.buffer_mut().set_string(area.x, area.y, &top, line);
     frame.buffer_mut().set_string(

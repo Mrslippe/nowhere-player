@@ -87,6 +87,9 @@ pub fn detect_font_face() -> Option<&'static str> {
             registry.push('\n');
         }
     }
+    if registry.contains("Maple Mono NF CN") || registry.contains("MapleMono-NF-CN") {
+        return Some("Maple Mono NF CN");
+    }
     if registry.contains("SarasaMonoCL-Bold")
         || registry.contains("SarasaMonoCL-SemiBold")
         || registry.contains("SarasaMonoTC-SemiBold")
@@ -104,9 +107,6 @@ pub fn detect_font_face() -> Option<&'static str> {
         || registry.contains("SarasaMonoTC")
     {
         return Some("Sarasa Mono TC");
-    }
-    if registry.contains("Maple Mono NF CN") || registry.contains("MapleMono-NF-CN") {
-        return Some("Maple Mono NF CN");
     }
     let mut dirs = Vec::new();
     if let Some(windir) = std::env::var_os("WINDIR") {
@@ -133,10 +133,10 @@ fn detect_font_in_dirs(dirs: &[PathBuf]) -> Option<&'static str> {
             }
         }
     }
-    if has_sarasa {
-        Some("Sarasa Mono CL")
-    } else if has_maple {
+    if has_maple {
         Some("Maple Mono NF CN")
+    } else if has_sarasa {
+        Some("Sarasa Mono CL")
     } else {
         None
     }
@@ -282,6 +282,60 @@ fn fallback_args(cwd: &str, exe: &str, size: bool) -> Vec<String> {
         exe.to_owned(),
     ]);
     args
+}
+
+/// 如果当前 Windows Terminal 不是 72×24，尝试开一个指定尺寸的新窗口。
+/// 用临时 marker 避免尺寸设置失败时无限重开。
+pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
+    if (cols, rows) == (72, 24) || std::env::var_os("WT_SESSION").is_none() {
+        return false;
+    }
+    let marker = std::env::temp_dir().join("nowhere-tui-size-attempt");
+    let recent = std::fs::metadata(&marker)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed < std::time::Duration::from_secs(15));
+    if recent {
+        return false;
+    }
+    let _ = std::fs::write(&marker, std::process::id().to_string());
+    let mut args = vec![
+        "--size".to_owned(),
+        "72,24".to_owned(),
+        "-w".to_owned(),
+        "new".to_owned(),
+        "-p".to_owned(),
+        "Nowhere Player".to_owned(),
+    ];
+    if Command::new("wt.exe")
+        .args(&args)
+        .env(LAUNCHED_ENV, "1")
+        .spawn()
+        .is_ok()
+    {
+        return true;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    args = vec![
+        "--size".to_owned(),
+        "72,24".to_owned(),
+        "-w".to_owned(),
+        "new".to_owned(),
+        "-d".to_owned(),
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .to_string_lossy()
+            .into_owned(),
+        exe.to_string_lossy().into_owned(),
+    ];
+    Command::new("wt.exe")
+        .args(&args)
+        .env(LAUNCHED_ENV, "1")
+        .spawn()
+        .is_ok()
 }
 
 /// 双击路径：返回 true 表示父进程已成功拉起子进程，应退出。

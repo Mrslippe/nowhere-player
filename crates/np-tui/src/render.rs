@@ -22,7 +22,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     }
     let outer = TuiBlock::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Thick)
         .border_style(Style::default().fg(app.palette.muted))
         .style(
             Style::default()
@@ -137,7 +137,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let focused = app.focus != Focus::Controller;
     let block = TuiBlock::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Thick)
         .border_style(Style::default().fg(if focused {
             app.palette.accent
         } else {
@@ -150,22 +150,28 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         );
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    border_text(
-        frame,
-        area,
-        area.y,
-        " Browse ",
-        false,
-        Style::default().fg(app.palette.accent),
-    );
-    border_text(
-        frame,
-        area,
-        area.y,
-        " List ",
-        true,
-        Style::default().fg(app.palette.accent),
-    );
+    let browse_title_style = Style::default()
+        .fg(if app.focus == Focus::Browse {
+            app.palette.accent
+        } else {
+            app.palette.muted
+        })
+        .add_modifier(Modifier::BOLD);
+    let list_title_style = Style::default()
+        .fg(if app.focus == Focus::List {
+            app.palette.accent
+        } else {
+            app.palette.muted
+        })
+        .add_modifier(Modifier::BOLD);
+    border_text(frame, area, area.y, " Browse ", false, browse_title_style);
+    let split = inner
+        .x
+        .saturating_add(22)
+        .min(inner.right().saturating_sub(1));
+    frame
+        .buffer_mut()
+        .set_string(split.saturating_add(1), area.y, " List ", list_title_style);
     let view_number = if app.views.is_empty() {
         0
     } else {
@@ -173,15 +179,15 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     let left_count = format!(" {view_number} of {} ", app.views.len());
     let right_count = format!(" total {} ", app.filtered_row_count());
-    border_text(
-        frame,
-        area,
+    let count_style = Style::default()
+        .fg(app.palette.faint)
+        .add_modifier(Modifier::ITALIC);
+    let left_count_x = split.saturating_sub(display_width(&left_count) as u16 + 1);
+    frame.buffer_mut().set_string(
+        left_count_x,
         area.bottom().saturating_sub(1),
         &left_count,
-        false,
-        Style::default()
-            .fg(app.palette.faint)
-            .add_modifier(Modifier::ITALIC),
+        count_style,
     );
     border_text(
         frame,
@@ -189,14 +195,8 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         area.bottom().saturating_sub(1),
         &right_count,
         true,
-        Style::default()
-            .fg(app.palette.faint)
-            .add_modifier(Modifier::ITALIC),
+        count_style,
     );
-    let split = inner
-        .x
-        .saturating_add(22)
-        .min(inner.right().saturating_sub(1));
     let left = Rect {
         x: inner.x,
         y: inner.y,
@@ -213,14 +213,14 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     draw_list(frame, right, app);
     let line_style = Style::default().fg(app.palette.line);
     for y in inner.y..inner.bottom() {
-        frame.buffer_mut().set_string(split, y, "│", line_style);
+        frame.buffer_mut().set_string(split, y, "┃", line_style);
     }
     frame
         .buffer_mut()
-        .set_string(split, area.y, "┬", line_style);
+        .set_string(split, area.y, "┳", line_style);
     frame
         .buffer_mut()
-        .set_string(split, area.bottom().saturating_sub(1), "┴", line_style);
+        .set_string(split, area.bottom().saturating_sub(1), "┻", line_style);
 }
 
 fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -229,7 +229,7 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     let block = TuiBlock::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Thick)
         .border_style(Style::default().fg(if app.focus == Focus::Controller {
             app.palette.accent
         } else {
@@ -271,6 +271,7 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .take(inner.height as usize)
         .map(|(index, view)| {
             let selected = index == app.view_index;
+            let active = selected && app.focus == Focus::Browse;
             let depth = app.view_depth.get(index).copied().unwrap_or(0) as usize;
             let last_child = app
                 .view_kind
@@ -280,12 +281,18 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             let branch = if depth == 0 {
                 ""
             } else if last_child {
-                "  └ "
+                "└ "
             } else {
-                "  ├ "
+                "├ "
             };
             let indent = "  ".repeat(depth.saturating_sub(1));
-            let style = if selected {
+            let mut text = format!("{marker} {indent}{branch}{}", view.title);
+            if active {
+                let width = display_width(&text);
+                let pad = (inner.width as usize).saturating_sub(width);
+                text.push_str(&" ".repeat(pad));
+            }
+            let style = if active {
                 Style::default()
                     .bg(app.palette.fg)
                     .fg(app.palette.bg.unwrap_or(Color::Reset))
@@ -294,10 +301,7 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 Style::default().fg(app.palette.fg)
             };
             Line::from(TuiSpan::styled(
-                truncate_width(
-                    &format!("{marker}{indent}{branch}{}", view.title),
-                    inner.width as usize,
-                ),
+                truncate_width(&text, inner.width as usize),
                 style,
             ))
         })

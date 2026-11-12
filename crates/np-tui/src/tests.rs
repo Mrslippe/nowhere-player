@@ -564,13 +564,17 @@ fn player_content_is_sixty_eight_columns_on_72x24() {
     let filled = (0..72)
         .filter(|x| buffer[(*x, progress_row)].symbol() == glyphs::PROGRESS_TODO)
         .count();
-    assert_eq!(filled, 68);
+    assert_eq!(filled, 34);
+    let gaps = (0..72)
+        .filter(|x| buffer[(*x, progress_row)].symbol() == " ")
+        .count();
+    assert!(gaps >= 34);
     let top = (0..24)
         .find(|y| {
             (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
         })
         .expect("player title");
-    assert_eq!(buffer[(1, top)].symbol(), "╭");
+    assert_eq!(buffer[(1, top)].symbol(), "┏");
     assert_eq!(buffer[(2, top)].symbol(), " ");
 }
 
@@ -584,7 +588,7 @@ fn status_bar_is_embedded_in_bottom_border() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let text: String = (0..72).map(|x| buffer[(x, 23)].symbol()).collect();
-    assert!(text.starts_with('╰'), "{text:?}");
+    assert!(text.starts_with('┗'), "{text:?}");
     let compact = text.replace(' ', "");
     assert!(compact.contains("退出"), "{text:?}");
     assert!(!text.contains("就绪"), "{text:?}");
@@ -608,7 +612,7 @@ fn focus_and_status_styles_follow_the_focused_pane() {
     let corners_accent = buffer
         .content()
         .iter()
-        .filter(|cell| cell.symbol() == "╭" && cell.style().fg == accent)
+        .filter(|cell| cell.symbol() == "┏" && cell.style().fg == accent)
         .count();
     assert!(
         corners_accent >= 1,
@@ -623,12 +627,12 @@ fn focus_and_status_styles_follow_the_focused_pane() {
     let corners_line = buffer
         .content()
         .iter()
-        .filter(|cell| cell.symbol() == "╭" && cell.style().fg == line)
+        .filter(|cell| cell.symbol() == "┏" && cell.style().fg == line)
         .count();
     let corners_accent = buffer
         .content()
         .iter()
-        .filter(|cell| cell.symbol() == "╭" && cell.style().fg == accent)
+        .filter(|cell| cell.symbol() == "┏" && cell.style().fg == accent)
         .count();
     assert!(corners_line >= 1, "unfocused Browse corner missing");
     assert!(corners_accent >= 1, "focused Controller corner missing");

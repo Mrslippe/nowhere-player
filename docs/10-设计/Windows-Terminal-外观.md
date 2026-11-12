@@ -39,7 +39,7 @@ related: [ADR-0006]
 
 | # | 手段 | 收益 | 风险 |
 |---|---|---|---|
-| 1 | **字体**（Sarasa Mono SC / Maple Mono CN）+ 字号 | ★★★ 最大 | 用户没装需随包分发 |
+| 1 | **字体**（Maple Mono NF CN；缺失回退 Sarasa Mono） + 字号 | ★★★ 最大 | 用户没装需随包分发 |
 | 2 | **16 色配色方案** | ★★★ | 无 |
 | 3 | **`padding`**（内容四周留白） | ★★★ 便宜且明显 | 无 |
 | 4 | **`opacity` + `useAcrylic`**（半透明/亚克力） | ★★ | 老机器性能 |
@@ -70,7 +70,7 @@ related: [ADR-0006]
       "name": "Nowhere Player",
       "commandline": "nowhere-tui.exe",
       "colorScheme": "Nowhere Dark",
-      "font": { "face": "Sarasa Mono SC", "size": 12 },
+      "font": { "face": "Maple Mono NF CN", "size": 12 },
       "padding": "10,10,10,10",
       "opacity": 96,
       "useAcrylic": true,
@@ -125,6 +125,6 @@ related: [ADR-0006]
 
 | # | 问题 | 何时定 |
 |---|---|---|
-| 1 | 是否随包分发字体（Sarasa 2.4MB） | 启动器卡里定 |
+| 1 | 是否随包分发字体（Maple Mono NF CN） | 启动器卡里定 |
 | 2 | 是否为 `tui-paper` 提供浅色 WT 配色 | 主题卡 |
 | 3 | 是否给用户提供「安装 WT 美化」命令（`config` 族） | M7 收尾 |
