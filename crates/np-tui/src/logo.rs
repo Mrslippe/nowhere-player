@@ -36,10 +36,10 @@ pub(crate) const GLYPH_N: Glyph = glyph(
     9,
 );
 
-/// O：自然形状 9 列；最后一行有一个前导空格，不能省。
+/// O：自然形状 9 列；顶行、底行各有一个前导空格，不能省。
 pub(crate) const GLYPH_O: Glyph = glyph(
     [
-        "██████╗",
+        " ██████╗",
         "██╔═══██╗",
         "██║   ██║",
         "██║   ██║",
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(
             GLYPH_O.rows,
             [
-                "██████╗",
+                " ██████╗",
                 "██╔═══██╗",
                 "██║   ██║",
                 "██║   ██║",
@@ -183,6 +183,17 @@ mod tests {
             ]
         );
         assert_eq!(GLYPH_O.width, 9);
+        let top = GLYPH_O.rows[0];
+        assert!(
+            top.starts_with(' '),
+            "O top must start with a space: {top:?}"
+        );
+        assert_eq!(top.chars().filter(|ch| *ch == '█').count(), 6);
+        assert!(top.ends_with('╗'), "O top must end with ╗: {top:?}");
+        assert!(
+            GLYPH_O.rows[5].starts_with(' '),
+            "O bottom must start with a space"
+        );
     }
 
     /// 数据层不允许用行尾空格“预对齐”；对齐是合成器的职责。
