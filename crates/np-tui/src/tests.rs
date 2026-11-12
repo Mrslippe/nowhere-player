@@ -408,6 +408,9 @@ fn splash_cycles_themes_and_wraps() {
 #[test]
 fn splash_degrades_to_one_line_on_narrow_screens() {
     assert_eq!(splash_art(59), "NOWHERE");
+    assert_eq!(splash_art(60), "NOWHERE");
+    assert_eq!(splash_art(67), "NOWHERE");
+    assert!(splash_art(68).contains('█'));
     assert!(splash_art(80).contains('█'));
 }
 

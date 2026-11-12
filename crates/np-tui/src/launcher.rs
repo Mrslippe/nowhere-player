@@ -75,6 +75,39 @@ fn json_escape(value: &str) -> String {
 }
 
 pub fn detect_font_face() -> Option<&'static str> {
+    let mut registry = String::new();
+    for key in [
+        r"HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
+        r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
+    ] {
+        if let Ok(output) = Command::new("reg.exe").args(["query", key]).output()
+            && output.status.success()
+        {
+            registry.push_str(&String::from_utf8_lossy(&output.stdout));
+            registry.push('\n');
+        }
+    }
+    if registry.contains("SarasaMonoCL-Bold")
+        || registry.contains("SarasaMonoCL-SemiBold")
+        || registry.contains("SarasaMonoTC-SemiBold")
+    {
+        log_line("fonts: only bold/semibold weights detected");
+    }
+    if registry.contains("等距更紗黑體 CL")
+        || registry.contains("Sarasa Mono CL")
+        || registry.contains("SarasaMonoCL")
+    {
+        return Some("Sarasa Mono CL");
+    }
+    if registry.contains("等距更紗黑體 TC")
+        || registry.contains("Sarasa Mono TC")
+        || registry.contains("SarasaMonoTC")
+    {
+        return Some("Sarasa Mono TC");
+    }
+    if registry.contains("Maple Mono NF CN") || registry.contains("MapleMono-NF-CN") {
+        return Some("Maple Mono NF CN");
+    }
     let mut dirs = Vec::new();
     if let Some(windir) = std::env::var_os("WINDIR") {
         dirs.push(PathBuf::from(windir).join("Fonts"));
@@ -101,9 +134,9 @@ fn detect_font_in_dirs(dirs: &[PathBuf]) -> Option<&'static str> {
         }
     }
     if has_sarasa {
-        Some("Sarasa Mono SC")
+        Some("Sarasa Mono CL")
     } else if has_maple {
-        Some("Maple Mono CN")
+        Some("Maple Mono NF CN")
     } else {
         None
     }

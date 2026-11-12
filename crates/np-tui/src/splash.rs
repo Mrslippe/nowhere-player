@@ -16,15 +16,15 @@ use crate::app::App;
 use np_app::ThemeApi;
 
 pub(crate) fn splash_art(width: u16) -> &'static str {
-    if width < 60 {
+    if width < 68 {
         "NOWHERE"
     } else {
-        "███╗   ██╗ ██████╗ ██╗    ██╗██╗  ██╗███████╗██████╗ \n\
-         ████╗  ██║██╔═══██╗██║    ██║██║  ██║██╔════╝██╔══██╗\n\
-         ██╔██╗ ██║██║   ██║██║ █╗ ██║███████║█████╗  ██████╔╝\n\
-         ██║╚████║██║   ██║██║███╗██║██╔══██║██╔══╝  ██╔══██╗\n\
-         ██║ ╚███║╚██████╔╝╚███╔███╔╝██║  ██║███████╗██║  ██║\n\
-         ╚═╝  ╚══╝ ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝"
+        "███╗   ██╗ ██████╗ ██╗    ██╗██╗  ██╗███████╗██████╗  ███████╗\n\
+         ████╗  ██║██╔═══██╗██║    ██║██║  ██║██╔════╝██╔══██╗ ██╔════╝\n\
+         ██╔██╗ ██║██║   ██║██║ █╗ ██║███████║█████╗  ██████╔╝ █████╗\n\
+         ██║╚████║██║   ██║██║███╗██║██╔══██║██╔══╝  ██╔══██╗ ██╔══╝\n\
+         ██║ ╚███║╚██████╔╝╚███╔███╔╝██║  ██║███████╗██║  ██║ ███████╗\n\
+         ╚═╝  ╚══╝ ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚══════╝"
     }
 }
 
@@ -77,13 +77,21 @@ where
         lines.push(Line::from(format!("◄  {}  ►", app.theme_name)));
         lines.push(Line::from(""));
         lines.push(Line::from("Press [Enter] to Start"));
+        let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let top = inner.height.saturating_sub(content_height) / 2;
+        let content_area = ratatui::layout::Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(top),
+            width: inner.width,
+            height: content_height.min(inner.height),
+        };
         frame.render_widget(
             Paragraph::new(lines).alignment(Alignment::Center).style(
                 Style::default()
                     .bg(app.palette.bg.unwrap_or(Color::Reset))
                     .fg(app.palette.fg),
             ),
-            inner,
+            content_area,
         );
     });
     let end = execute!(io::stdout(), EndSynchronizedUpdate);
