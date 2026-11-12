@@ -353,7 +353,6 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             Style::default()
                 .bg(app.palette.fg)
                 .fg(app.palette.bg.unwrap_or(Color::Reset))
-                .add_modifier(Modifier::REVERSED)
         } else {
             Style::default().fg(app.palette.fg)
         };
