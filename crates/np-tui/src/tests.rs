@@ -203,8 +203,8 @@ fn paper_background_is_written_to_crossterm_backend() {
     crossterm::style::Colored::set_ansi_color_disabled(false);
     let mut terminal = Terminal::new(CrosstermBackend::new(sink.clone())).unwrap();
     let mut app = App::new();
-    let theme = TuiThemeApi::new(std::env::temp_dir().join("np-tui-paper-writer"));
-    app.load_theme(&theme, "tui-paper");
+    let theme = TuiThemeApi::new(std::env::temp_dir().join("np-tui-milkgreen-writer"));
+    app.load_theme(&theme, "milkgreen");
     let audio = TuiAudio::empty();
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
@@ -212,7 +212,7 @@ fn paper_background_is_written_to_crossterm_backend() {
     let bytes = sink.0.lock().unwrap().clone();
     let text = String::from_utf8_lossy(&bytes);
     assert!(
-        text.contains("242"),
+        text.contains("238"),
         "missing paper bg; bytes={}",
         text.escape_default()
     );
@@ -225,7 +225,7 @@ fn paper_theme_fills_background_in_buffer() {
 
     let mut app = App::new();
     let theme = TuiThemeApi::new(std::env::temp_dir().join("np-tui-paper-buffer"));
-    app.load_theme(&theme, "tui-paper");
+    app.load_theme(&theme, "milkgreen");
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     let audio = TuiAudio::empty();
     terminal
@@ -233,7 +233,7 @@ fn paper_theme_fills_background_in_buffer() {
         .unwrap();
     assert_eq!(
         terminal.backend().buffer()[(0, 0)].style().bg,
-        Some(Color::Rgb(242, 239, 233))
+        Some(Color::Rgb(238, 241, 234))
     );
 }
 
@@ -303,9 +303,9 @@ fn left_view_selection_changes_middle_source() {
 
 #[test]
 fn splash_cycles_themes_and_wraps() {
-    assert_eq!(splash_step("milkgreen", 1), "graphite");
-    assert_eq!(splash_step("milkgreen", -1), "tui-paper");
-    assert_eq!(splash_theme_ids().first().copied(), Some("milkgreen"));
+    assert_eq!(splash_step("milkgreen", 1), "milkgreen");
+    assert_eq!(splash_step("milkgreen", -1), "milkgreen");
+    assert_eq!(splash_theme_ids(), vec!["milkgreen"]);
 }
 
 #[test]
@@ -439,9 +439,9 @@ fn settings_file_is_read_as_theme_id() {
     let dir = std::env::temp_dir().join(format!("np-tui-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("settings.json"), r#"{"theme.id":"tui-paper"}"#).unwrap();
+    std::fs::write(dir.join("settings.json"), r#"{"theme.id":"milkgreen"}"#).unwrap();
     let settings = SettingsHandle::load(dir.clone());
-    assert_eq!(settings.theme_id().as_deref(), Some("tui-paper"));
+    assert_eq!(settings.theme_id().as_deref(), Some("milkgreen"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -451,12 +451,9 @@ fn theme_switch_updates_palette_without_restart() {
     let _ = std::fs::remove_dir_all(&dir);
     let api = TuiThemeApi::new(dir);
     let mut app = App::new();
-    app.load_theme(&api, "tui-paper");
-    assert_eq!(app.palette.bg, Some(Color::Rgb(242, 239, 233)));
-    assert_eq!(app.theme_id, "tui-paper");
-    app.load_theme(&api, "terminal");
-    assert!(app.palette.bg.is_none());
-    assert_eq!(app.theme_id, "terminal");
+    app.load_theme(&api, "milkgreen");
+    assert_eq!(app.palette.bg, Some(Color::Rgb(238, 241, 234)));
+    assert_eq!(app.theme_id, "milkgreen");
 }
 
 #[test]
@@ -591,4 +588,61 @@ fn status_bar_is_embedded_in_bottom_border() {
     let compact = text.replace(' ', "");
     assert!(compact.contains("退出"), "{text:?}");
     assert!(!text.contains("就绪"), "{text:?}");
+}
+
+#[test]
+fn focus_and_status_styles_follow_the_focused_pane() {
+    use ratatui::style::Modifier;
+
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let accent = Some(Palette::terminal().accent);
+    let line = Some(Palette::terminal().line);
+
+    app.focus = Focus::List;
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let corners_accent = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.symbol() == "╭" && cell.style().fg == accent)
+        .count();
+    assert!(
+        corners_accent >= 1,
+        "focused Browse corner missing: {corners_accent}"
+    );
+
+    app.focus = Focus::Controller;
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let corners_line = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.symbol() == "╭" && cell.style().fg == line)
+        .count();
+    let corners_accent = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.symbol() == "╭" && cell.style().fg == accent)
+        .count();
+    assert!(corners_line >= 1, "unfocused Browse corner missing");
+    assert!(corners_accent >= 1, "focused Controller corner missing");
+
+    let counts = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "1" && cell.style().add_modifier.contains(Modifier::ITALIC));
+    assert!(counts.is_some(), "1 of N must be italic");
+    let status = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "←")
+        .expect("status key");
+    assert_eq!(status.style().fg, accent);
+    assert!(status.style().add_modifier.contains(Modifier::BOLD));
 }

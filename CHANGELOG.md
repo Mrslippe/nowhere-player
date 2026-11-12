@@ -7,6 +7,23 @@
 
 ### Added
 
+- 72×24 默认窗口与三区域布局（Browse/List、Player、Controller）
+- Browse 树：歌单子项、媒体库、搜索、队列、设置；5 条折叠阈值与 `Shift+Enter`
+- 圆角边框、焦点 accent、计数 italic/faint、状态栏键名分色
+
+### Changed
+
+- 状态栏嵌入外框下边线；Player 无左右边框，内容宽 = 外框内宽 − 2
+- 默认主题固定 MilkGreen；内置主题只保留 `milkgreen`
+
+### Removed
+
+- 补全、候选弹层、过滤、沉浸、Tab 焦点切换
+- `a` 入队、`d` 删除、`f` 视觉、`gg/G`、`:`/`?` 入口
+- `graphite` / `amber` / `ice` / `phosphor` / `tui-block` / `tui-wire` / `tui-paper` 内置主题
+
+### Added
+
 - 文档门禁、契约检查、文件预算检查（第二阶段整改）
 - 任务卡收口清单与删除/重构卡 Definition of Done
 

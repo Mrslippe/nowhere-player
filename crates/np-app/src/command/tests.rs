@@ -4859,8 +4859,8 @@ impl FakeTheme {
         Self {
             entries: vec![
                 ThemeListEntry {
-                    id: "graphite".to_owned(),
-                    name: "石墨".to_owned(),
+                    id: "milkgreen".to_owned(),
+                    name: "MilkGreen".to_owned(),
                     skin: np_core::theme::Skin::Plain,
                     source: ThemeSource::Builtin,
                 },
@@ -4996,29 +4996,15 @@ fn theme_list_shows_tui_structure_summary() {
     let api = FakeApi::new();
     let library = FakeLibraryApi::new();
     let theme = FakeTheme {
-        entries: vec![
-            ThemeListEntry {
-                id: "tui-block".to_owned(),
-                name: "TUI 块面".to_owned(),
-                skin: np_core::theme::Skin::Plain,
-                source: ThemeSource::Builtin,
-            },
-            ThemeListEntry {
-                id: "tui-wire".to_owned(),
-                name: "TUI 线框".to_owned(),
-                skin: np_core::theme::Skin::Plain,
-                source: ThemeSource::Builtin,
-            },
-            ThemeListEntry {
-                id: "tui-paper".to_owned(),
-                name: "TUI 票据".to_owned(),
-                skin: np_core::theme::Skin::Plain,
-                source: ThemeSource::Builtin,
-            },
-        ],
-        apply: Ok(theme_reply("tui-block")),
+        entries: vec![ThemeListEntry {
+            id: "milkgreen".to_owned(),
+            name: "MilkGreen".to_owned(),
+            skin: np_core::theme::Skin::Plain,
+            source: ThemeSource::Builtin,
+        }],
+        apply: Ok(theme_reply("milkgreen")),
         export: Ok(ThemeExportTarget {
-            path: "/themes/tui-block.json".to_owned(),
+            path: "/themes/milkgreen.json".to_owned(),
             created: true,
         }),
         broadcasts: Mutex::new(Vec::new()),
@@ -5027,9 +5013,7 @@ fn theme_list_shows_tui_structure_summary() {
     let block = done_with_services(&api, &library, &settings, &theme, "theme list");
     let (columns, rows) = table_of_block(&block);
     assert_eq!(columns.last().copied(), Some("结构"));
-    assert_eq!(rows[0][5], "块面/紧凑/反白");
-    assert_eq!(rows[1][5], "线框/紧凑/底色");
-    assert_eq!(rows[2][5], "票据/常规/反白");
+    assert_eq!(rows[0][5], "圆角/常规/侧条");
 }
 
 #[test]
@@ -5048,7 +5032,8 @@ fn theme_list_marks_current_and_sources() {
     let (_, rows) = table_of_block(&block);
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0][0], "");
-    assert_eq!(rows[0][1], "graphite");
+    assert_eq!(rows[0][1], "milkgreen");
+    assert_eq!(rows[0][2], "MilkGreen");
     assert_eq!(rows[0][3], "内置");
     assert_eq!(rows[0][5], "圆角/常规/侧条");
     assert_eq!(rows[1][0], "●");

@@ -832,211 +832,28 @@ impl BuiltinTheme {
 }
 
 /// 七个内置主题（原有四个 + 三个 TUI 预设；`theme.list` 会按 id 排序）。
-pub static BUILTIN_THEMES: [BuiltinTheme; 8] = [
-    BuiltinTheme {
-        id: "milkgreen",
-        name: "MilkGreen",
-        skin: Skin::Plain,
-        structure: ResolvedStructure::preset(Skin::Plain),
-        tokens: [
-            ("bg", "#eef1ea"),
-            ("bgElev", "#e4e9df"),
-            ("bgHover", "#d9e0d4"),
-            ("fg", "#1e2a22"),
-            ("fgMuted", "#4a5850"),
-            ("fgFaint", "#8a978e"),
-            ("accent", "#3f7d5b"),
-            ("accentSoft", "#3f7d5b22"),
-            ("accentFg", "#eef1ea"),
-            ("danger", "#a33a2a"),
-            ("warn", "#8a6d1f"),
-            ("success", "#3f6b3a"),
-            ("line", "#c3ccbf"),
-            ("lineStrong", "#a3ad9e"),
-        ],
-    },
-    BuiltinTheme {
-        id: "graphite",
-        name: "石墨",
-        skin: Skin::Plain,
-        structure: ResolvedStructure::preset(Skin::Plain),
-        tokens: [
-            ("bg", "#0d0f12"),
-            ("bgElev", "#14171c"),
-            ("bgHover", "#1a1e24"),
-            ("fg", "#e9e4da"),
-            ("fgMuted", "#a7a49e"),
-            ("fgFaint", "#7d7c78"),
-            ("accent", "#ffb454"),
-            ("accentSoft", "rgba(255, 180, 84, 0.14)"),
-            ("accentFg", "#0d0f12"),
-            ("danger", "#ff8b7d"),
-            ("warn", "#ffb454"),
-            ("success", "#a7a49e"),
-            ("line", "rgba(255, 255, 255, 0.07)"),
-            ("lineStrong", "rgba(255, 255, 255, 0.14)"),
-        ],
-    },
-    BuiltinTheme {
-        id: "amber",
-        name: "琥珀",
-        skin: Skin::Plain,
-        structure: ResolvedStructure::preset(Skin::Plain),
-        tokens: [
-            ("bg", "#0c0a07"),
-            ("bgElev", "#16120c"),
-            ("bgHover", "#221c13"),
-            ("fg", "#f2e9da"),
-            ("fgMuted", "#af9f86"),
-            ("fgFaint", "#5c5245"),
-            ("accent", "#f0a93c"),
-            ("accentSoft", "rgba(240, 169, 60, 0.14)"),
-            ("accentFg", "#1a1206"),
-            ("danger", "#f2707a"),
-            ("warn", "#f2c94c"),
-            ("success", "#8bcb8f"),
-            ("line", "rgba(255, 222, 180, 0.08)"),
-            ("lineStrong", "rgba(255, 222, 180, 0.16)"),
-        ],
-    },
-    BuiltinTheme {
-        id: "ice",
-        name: "冰",
-        skin: Skin::Plain,
-        structure: ResolvedStructure::preset(Skin::Plain),
-        tokens: [
-            ("bg", "#070b10"),
-            ("bgElev", "#0e151d"),
-            ("bgHover", "#16202a"),
-            ("fg", "#e2f0fa"),
-            ("fgMuted", "#8aa3b5"),
-            ("fgFaint", "#46596a"),
-            ("accent", "#61c7e8"),
-            ("accentSoft", "rgba(97, 199, 232, 0.14)"),
-            ("accentFg", "#041017"),
-            ("danger", "#f27e8a"),
-            ("warn", "#e8b45c"),
-            ("success", "#7fc79a"),
-            ("line", "rgba(190, 225, 255, 0.08)"),
-            ("lineStrong", "rgba(190, 225, 255, 0.16)"),
-        ],
-    },
-    BuiltinTheme {
-        id: "phosphor",
-        name: "磷光",
-        skin: Skin::Phosphor,
-        structure: ResolvedStructure::preset(Skin::Phosphor),
-        tokens: [
-            ("bg", "#0a0806"),
-            ("bgElev", "#120e08"),
-            ("bgHover", "#1b140c"),
-            ("fg", "#ffb454"),
-            ("fgMuted", "#a87b3f"),
-            ("fgFaint", "#5c4526"),
-            ("accent", "#ffb454"),
-            ("accentSoft", "rgba(255, 180, 84, 0.14)"),
-            ("accentFg", "#0a0806"),
-            ("danger", "#e05b3c"),
-            ("warn", "#ffc978"),
-            ("success", "#ffd18a"),
-            ("line", "rgba(255, 180, 84, 0.14)"),
-            ("lineStrong", "rgba(255, 180, 84, 0.28)"),
-        ],
-    },
-    BuiltinTheme {
-        id: "tui-block",
-        name: "TUI 块面",
-        skin: Skin::Plain,
-        structure: ResolvedStructure {
-            radius: Radius::None,
-            border: Border::None,
-            density: Density::Compact,
-            progress: Progress::Blocks,
-            selection: Selection::Reverse,
-            labels: Labels::Tracked,
-            stripe: Stripe::Off,
-            font: Font::Mono,
-        },
-        tokens: [
-            ("bg", "#0b0d0f"),
-            ("bgElev", "#101318"),
-            ("bgHover", "#1a2028"),
-            ("fg", "#c8d1d9"),
-            ("fgMuted", "#8b949e"),
-            ("fgFaint", "#4d5560"),
-            ("accent", "#8fbcbb"),
-            ("accentSoft", "#8fbcbb22"),
-            ("accentFg", "#0b0d0f"),
-            ("danger", "#bf616a"),
-            ("warn", "#d08770"),
-            ("success", "#a3be8c"),
-            ("line", "#26303a"),
-            ("lineStrong", "#35414d"),
-        ],
-    },
-    BuiltinTheme {
-        id: "tui-wire",
-        name: "TUI 线框",
-        skin: Skin::Plain,
-        structure: ResolvedStructure {
-            radius: Radius::None,
-            border: Border::Box,
-            density: Density::Compact,
-            progress: Progress::Blocks,
-            selection: Selection::Bg,
-            labels: Labels::Tracked,
-            stripe: Stripe::Off,
-            font: Font::Mono,
-        },
-        tokens: [
-            ("bg", "#0d0f11"),
-            ("bgElev", "#121518"),
-            ("bgHover", "#1a1e22"),
-            ("fg", "#d6d6d6"),
-            ("fgMuted", "#8a8a8a"),
-            ("fgFaint", "#55585c"),
-            ("accent", "#ffb454"),
-            ("accentSoft", "#ffb45422"),
-            ("accentFg", "#0d0f11"),
-            ("danger", "#d06c6c"),
-            ("warn", "#d7ba7d"),
-            ("success", "#89d185"),
-            ("line", "#2a2f35"),
-            ("lineStrong", "#3d444c"),
-        ],
-    },
-    BuiltinTheme {
-        id: "tui-paper",
-        name: "TUI 票据",
-        skin: Skin::Plain,
-        structure: ResolvedStructure {
-            radius: Radius::None,
-            border: Border::Box,
-            density: Density::Normal,
-            progress: Progress::Bracket,
-            selection: Selection::Reverse,
-            labels: Labels::Tracked,
-            stripe: Stripe::Off,
-            font: Font::Mono,
-        },
-        tokens: [
-            ("bg", "#f2efe9"),
-            ("bgElev", "#e9e5dc"),
-            ("bgHover", "#ded9ce"),
-            ("fg", "#1a1815"),
-            ("fgMuted", "#4a453d"),
-            ("fgFaint", "#8a8378"),
-            ("accent", "#1a1815"),
-            ("accentSoft", "#1a181522"),
-            ("accentFg", "#f2efe9"),
-            ("danger", "#a33a2a"),
-            ("warn", "#8a6d1f"),
-            ("success", "#3f6b3a"),
-            ("line", "#c9c3b7"),
-            ("lineStrong", "#a39c8d"),
-        ],
-    },
-];
+pub static BUILTIN_THEMES: [BuiltinTheme; 1] = [BuiltinTheme {
+    id: "milkgreen",
+    name: "MilkGreen",
+    skin: Skin::Plain,
+    structure: ResolvedStructure::preset(Skin::Plain),
+    tokens: [
+        ("bg", "#eef1ea"),
+        ("bgElev", "#e4e9df"),
+        ("bgHover", "#d9e0d4"),
+        ("fg", "#1e2a22"),
+        ("fgMuted", "#4a5850"),
+        ("fgFaint", "#8a978e"),
+        ("accent", "#3f7d5b"),
+        ("accentSoft", "#3f7d5b22"),
+        ("accentFg", "#eef1ea"),
+        ("danger", "#a33a2a"),
+        ("warn", "#8a6d1f"),
+        ("success", "#3f6b3a"),
+        ("line", "#c3ccbf"),
+        ("lineStrong", "#a3ad9e"),
+    ],
+}];
 
 /// 主题相关的失败（`{ code, message, hint? }`，与终端 error 原语同形）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1273,103 +1090,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_graphite_palette_values_are_stable() {
-        let spec = BuiltinTheme::find("graphite").expect("graphite").to_spec();
-        assert_eq!(spec.tokens.get("bg"), Some("#0d0f12"));
-        assert_eq!(spec.tokens.get("fg"), Some("#e9e4da"));
-        assert_eq!(spec.tokens.get("accent"), Some("#ffb454"));
-        assert_eq!(spec.tokens.get("line"), Some("rgba(255, 255, 255, 0.07)"));
-    }
-
-    #[test]
     fn builtin_themes_cover_all_ids() {
         let ids: Vec<&str> = BUILTIN_THEMES.iter().map(|theme| theme.id).collect();
+        assert_eq!(ids, ["milkgreen"]);
         assert_eq!(
-            ids,
-            [
-                "milkgreen",
-                "graphite",
-                "amber",
-                "ice",
-                "phosphor",
-                "tui-block",
-                "tui-wire",
-                "tui-paper"
-            ]
-        );
-        assert_eq!(
-            BuiltinTheme::find("phosphor").map(|theme| theme.skin),
-            Some(Skin::Phosphor)
-        );
-        assert_eq!(
-            BuiltinTheme::find("graphite").map(|theme| theme.skin),
-            Some(Skin::Plain)
+            BuiltinTheme::find("milkgreen").map(|theme| theme.name),
+            Some("MilkGreen")
         );
         assert!(BuiltinTheme::find("nope").is_none());
-    }
-
-    #[test]
-    fn tui_presets_have_expected_structure_and_tokens() {
-        let block = BuiltinTheme::find("tui-block").expect("tui-block");
-        assert_eq!(block.skin, Skin::Plain);
-        assert_eq!(block.structure.radius, Radius::None);
-        assert_eq!(block.structure.border, Border::None);
-        assert_eq!(block.structure.density, Density::Compact);
-        assert_eq!(block.structure.progress, Progress::Blocks);
-        assert_eq!(block.structure.selection, Selection::Reverse);
-        assert_eq!(block.structure.font, Font::Mono);
-        assert_eq!(block.tokens[6].1, "#8fbcbb");
-
-        let wire = BuiltinTheme::find("tui-wire").expect("tui-wire");
-        assert_eq!(wire.structure.border, Border::Box);
-        assert_eq!(wire.structure.selection, Selection::Bg);
-
-        let paper = BuiltinTheme::find("tui-paper").expect("tui-paper");
-        assert_eq!(paper.structure.border, Border::Box);
-        assert_eq!(paper.structure.progress, Progress::Bracket);
-        assert_eq!(paper.structure.selection, Selection::Reverse);
-        assert_eq!(paper.tokens[6].1, "#1a1815");
-    }
-
-    #[test]
-    fn tui_builtins_export_complete_structure() {
-        for id in ["tui-block", "tui-wire", "tui-paper"] {
-            let theme = BuiltinTheme::find(id).expect(id);
-            let spec = theme.to_spec();
-            let json = spec.to_json_pretty();
-            for key in [
-                "radius",
-                "border",
-                "density",
-                "progress",
-                "selection",
-                "labels",
-                "stripe",
-                "font",
-            ] {
-                assert!(json.contains(&format!("\"{key}\"")), "{id} missing {key}");
-            }
-            let reparsed = parse(&json).expect("TUI export round trip");
-            assert_eq!(reparsed.structure, spec.structure, "{id}");
-            assert!(
-                reparsed.warnings.is_empty(),
-                "{id}: {:?}",
-                reparsed.warnings
-            );
-
-            let reply = ThemeApplyReply::from_builtin(theme);
-            assert_eq!(reply.structure, spec.structure, "{id} apply reply");
-        }
-    }
-
-    #[test]
-    fn structure_summary_uses_three_axes() {
-        let block = BuiltinTheme::find("tui-block").expect("tui-block");
-        assert_eq!(block.structure.summary(), "块面/紧凑/反白");
-        let wire = BuiltinTheme::find("tui-wire").expect("tui-wire");
-        assert_eq!(wire.structure.summary(), "线框/紧凑/底色");
-        let paper = BuiltinTheme::find("tui-paper").expect("tui-paper");
-        assert_eq!(paper.structure.summary(), "票据/常规/反白");
     }
 
     #[test]

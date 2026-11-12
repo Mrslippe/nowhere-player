@@ -139,14 +139,10 @@ impl App {
     }
 
     pub(crate) fn apply_theme_reply(&mut self, reply: np_core::theme::ThemeApplyReply) {
-        if reply.id == "terminal" {
-            self.palette = Palette::terminal();
-        } else {
-            let (palette, warnings) = Palette::from_tokens(&reply.tokens);
-            self.palette = palette;
-            if let Some(warning) = warnings.first() {
-                self.status = format!("主题告警：{warning}");
-            }
+        let (palette, warnings) = Palette::from_tokens(&reply.tokens);
+        self.palette = palette;
+        if let Some(warning) = warnings.first() {
+            self.status = format!("主题告警：{warning}");
         }
         osc::set_background(self.palette.bg);
         self.theme_id = reply.id;
@@ -160,10 +156,15 @@ impl App {
         match theme.apply(id) {
             Ok(reply) => self.apply_theme_reply(reply),
             Err(error) => {
-                self.palette = Palette::default_dark();
-                self.theme_id = "graphite".to_owned();
-                self.theme_name = "石墨".to_owned();
-                self.status = format!("主题加载失败：{}，已回退内置 dark", error.message);
+                if let Some(theme) = np_core::theme::BuiltinTheme::find("milkgreen") {
+                    self.apply_theme_reply(np_core::theme::ThemeApplyReply::from_builtin(theme));
+                    self.status = format!("主题加载失败：{}，已回退 MilkGreen", error.message);
+                } else {
+                    self.palette = Palette::default_dark();
+                    self.theme_id = "milkgreen".to_owned();
+                    self.theme_name = "MilkGreen".to_owned();
+                    self.status = format!("主题加载失败：{}", error.message);
+                }
             }
         }
     }

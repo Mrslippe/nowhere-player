@@ -213,15 +213,6 @@ fn to_cmd_error(error: ThemeError) -> CmdError {
 impl ThemeApi for TuiThemeApi {
     fn list(&self) -> Result<Vec<ThemeListEntry>, CmdError> {
         let mut entries: BTreeMap<String, ThemeListEntry> = BTreeMap::new();
-        entries.insert(
-            "terminal".to_owned(),
-            ThemeListEntry {
-                id: "terminal".to_owned(),
-                name: "跟随终端".to_owned(),
-                skin: np_core::theme::Skin::Plain,
-                source: ThemeSource::Builtin,
-            },
-        );
         for theme in np_core::theme::BUILTIN_THEMES.iter() {
             entries.insert(theme.id.to_owned(), theme.entry());
         }
@@ -234,14 +225,6 @@ impl ThemeApi for TuiThemeApi {
     fn apply(&self, id: &str) -> Result<ThemeApplyReply, CmdError> {
         let id = id.trim();
         np_core::theme::validate_theme_id(id).map_err(to_cmd_error)?;
-        if id == "terminal" {
-            let spec = ThemeSpec {
-                id: "terminal".to_owned(),
-                name: "跟随终端".to_owned(),
-                ..ThemeSpec::default()
-            };
-            return Ok(ThemeApplyReply::from_spec(spec, ThemeSource::Builtin));
-        }
         let path = self.dir.join(format!("{id}.json"));
         if path.is_file() {
             let spec = self.load_user(&path).map_err(to_cmd_error)?;
@@ -261,7 +244,7 @@ impl ThemeApi for TuiThemeApi {
         let theme = BuiltinTheme::find(id.trim()).ok_or_else(|| {
             to_cmd_error(
                 ThemeError::new("E_THEME_NOT_FOUND", format!("没有内置主题：{id}"))
-                    .with_hint("可用内置主题：graphite / amber / ice / phosphor / tui-block / tui-wire / tui-paper"),
+                    .with_hint("可用内置主题：milkgreen"),
             )
         })?;
         fs::create_dir_all(&self.dir).map_err(|error| {
@@ -302,20 +285,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_palette_uses_ansi_slots_and_no_background() {
-        let palette = Palette::terminal();
-        assert!(palette.bg.is_none());
-        assert_eq!(palette.fg, Color::Reset);
-        assert_eq!(palette.accent, Color::Cyan);
-        assert_eq!(palette.danger, Color::Red);
-        assert_eq!(palette.warn, Color::Yellow);
-        assert_eq!(palette.success, Color::Green);
-        matches!(palette.line, Color::DarkGray);
-    }
-
-    #[test]
-    fn paper_foreground_contrast_is_at_least_seven() {
-        let theme = np_core::theme::BuiltinTheme::find("tui-paper").expect("paper");
+    fn milk_green_foreground_contrast_is_at_least_seven() {
+        let theme = np_core::theme::BuiltinTheme::find("milkgreen").expect("milkgreen");
         let spec = theme.to_spec();
         let fg = parse_color(&spec.tokens.fg).expect("fg");
         let bg = parse_color(&spec.tokens.bg).expect("bg");
@@ -331,7 +302,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("np-tui-theme-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let api = TuiThemeApi::new(dir.clone());
-        let target = api.export("tui-paper").expect("export");
+        let target = api.export("milkgreen").expect("export");
         assert!(target.created);
         let text = fs::read_to_string(&target.path).expect("read export");
         for axis in [
@@ -346,8 +317,8 @@ mod tests {
         ] {
             assert!(text.contains(&format!("\"{axis}\"")), "missing {axis}");
         }
-        let expected = np_core::theme::BuiltinTheme::find("tui-paper")
-            .expect("paper")
+        let expected = np_core::theme::BuiltinTheme::find("milkgreen")
+            .expect("milkgreen")
             .to_spec()
             .to_json_pretty();
         assert_eq!(text, expected);
@@ -375,19 +346,5 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("颜色非法"))
         );
-    }
-
-    #[test]
-    fn terminal_is_listed_and_applies_without_tokens() {
-        let api = TuiThemeApi::new(std::env::temp_dir().join("np-tui-theme-list"));
-        assert!(
-            api.list()
-                .expect("list")
-                .iter()
-                .any(|entry| entry.id == "terminal")
-        );
-        let reply = api.apply("terminal").expect("apply");
-        assert_eq!(reply.id, "terminal");
-        assert_eq!(reply.name, "跟随终端");
     }
 }
