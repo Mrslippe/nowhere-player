@@ -9,22 +9,14 @@ pub(crate) enum VisualMode {
     Vectorscope,
 }
 
-impl VisualMode {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Spectrum => "频谱",
-            Self::Waveform => "波形",
-            Self::Vectorscope => "矢量",
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::Spectrum => Self::Waveform,
-            Self::Waveform => Self::Vectorscope,
-            Self::Vectorscope => Self::Spectrum,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BrowseKind {
+    PlaylistRoot,
+    Playlist(String),
+    Library,
+    Search,
+    Queue,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,13 +24,6 @@ pub(crate) enum Focus {
     Browse,
     List,
     Controller,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UiMode {
-    Normal,
-    Filter,
-    Help,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

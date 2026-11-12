@@ -1,5 +1,4 @@
 use ratatui::Terminal;
-use ratatui::widgets::Clear;
 use std::collections::HashSet;
 use unicode_width::UnicodeWidthStr;
 
@@ -128,61 +127,10 @@ fn golden_error_block() {
 }
 
 #[test]
-fn golden_completion_popup() {
-    let mut app = App::new();
-    app.completion = Some(np_core::Completion {
-        replace_start: 0,
-        replace_end: 3,
-        items: vec![
-            np_core::CompletionItem {
-                text: "search".to_owned(),
-                kind: np_core::CompletionKind::Command,
-                summary: "搜索".to_owned(),
-                usage: "search [关键词]".to_owned(),
-            },
-            np_core::CompletionItem {
-                text: "scan".to_owned(),
-                kind: np_core::CompletionKind::Command,
-                summary: "扫描".to_owned(),
-                usage: "library scan".to_owned(),
-            },
-            np_core::CompletionItem {
-                text: "seek".to_owned(),
-                kind: np_core::CompletionKind::Command,
-                summary: "跳转".to_owned(),
-                usage: "seek <毫秒>".to_owned(),
-            },
-        ],
-    });
-    app.completion_index = 1;
-    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).expect("terminal");
-    terminal
-        .draw(|frame| {
-            frame.render_widget(
-                Clear,
-                ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: 80,
-                    height: 12,
-                },
-            );
-            draw_completion(
-                frame,
-                ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: 80,
-                    height: 10,
-                },
-                &app,
-            );
-        })
-        .expect("draw");
-    check_golden(
-        "completion_popup.txt",
-        &buffer_text(terminal.backend().buffer()),
-    );
+fn golden_layout_72x24() {
+    let mut app = library_app();
+    let audio = TuiAudio::empty();
+    snapshot_app("layout_72x24.txt", 72, 24, &mut app, &audio);
 }
 
 #[test]
@@ -201,11 +149,6 @@ fn golden_status_focus_states() {
     snapshot_app("status_library.txt", 100, 30, &mut app, &audio);
     app.focus = Focus::List;
     snapshot_app("status_list.txt", 100, 30, &mut app, &audio);
-    app.mode = UiMode::Filter;
-    app.filter = "晴".to_owned();
-    app.input = "晴".chars().collect();
-    app.cursor = app.input.len();
-    snapshot_app("status_filter.txt", 100, 30, &mut app, &audio);
 }
 
 #[test]

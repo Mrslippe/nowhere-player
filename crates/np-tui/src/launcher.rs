@@ -249,6 +249,41 @@ fn try_wt(args: &[String]) -> bool {
     }
 }
 
+/// 新窗口默认终端尺寸；72×24 是 DES-014 的设计基准。
+const DEFAULT_WINDOW_SIZE: [&str; 2] = ["--size", "72,24"];
+
+fn profile_args(focus: bool, size: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if focus {
+        args.push("--focus".to_owned());
+    }
+    if size {
+        args.extend(DEFAULT_WINDOW_SIZE.iter().map(|arg| (*arg).to_owned()));
+    }
+    args.extend([
+        "-w".to_owned(),
+        "new".to_owned(),
+        "-p".to_owned(),
+        "Nowhere Player".to_owned(),
+    ]);
+    args
+}
+
+fn fallback_args(cwd: &str, exe: &str, size: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if size {
+        args.extend(DEFAULT_WINDOW_SIZE.iter().map(|arg| (*arg).to_owned()));
+    }
+    args.extend([
+        "-w".to_owned(),
+        "new".to_owned(),
+        "-d".to_owned(),
+        cwd.to_owned(),
+        exe.to_owned(),
+    ]);
+    args
+}
+
 /// 双击路径：返回 true 表示父进程已成功拉起子进程，应退出。
 pub fn relaunch_from_explorer() -> bool {
     let already_launched = std::env::var_os(LAUNCHED_ENV).is_some();
@@ -264,39 +299,31 @@ pub fn relaunch_from_explorer() -> bool {
         .to_string_lossy()
         .into_owned();
     // 用新窗口 + 工作目录直接运行自身；--focus 是单用途播放器的默认外观。
-    let mut args = vec![
-        "-w".to_owned(),
-        "new".to_owned(),
-        "-p".to_owned(),
-        "Nowhere Player".to_owned(),
-    ];
-    if focus_mode_enabled() {
-        args.insert(0, "--focus".to_owned());
-        if try_wt(&args) {
+    // 先带 72×24；旧 WT 不认 --size 时退回不带尺寸，仍保留 profile。
+    let exe = exe.to_string_lossy().into_owned();
+    let focus = focus_mode_enabled();
+    let mut attempts = vec![(false, true), (false, false)];
+    if focus {
+        attempts.insert(0, (true, true));
+        attempts.insert(1, (true, false));
+    }
+    for (focus, size) in attempts {
+        if try_wt(&profile_args(focus, size)) {
             return true;
         }
-        // 旧版 WT 不认 --focus：记一行，再不带参数重试。
-        args.remove(0);
-    }
-    if try_wt(&args) {
-        return true;
     }
     // profile 不可用时退回默认 profile + 工作目录 + 绝对 exe。
-    let fallback_args = vec![
-        "-w".to_owned(),
-        "new".to_owned(),
-        "-d".to_owned(),
-        cwd,
-        exe.to_string_lossy().into_owned(),
-    ];
-    if try_wt(&fallback_args) {
+    if try_wt(&fallback_args(&cwd, &exe, true)) {
+        return true;
+    }
+    if try_wt(&fallback_args(&cwd, &exe, false)) {
         return true;
     }
 
     // wt 不存在/启动失败：回退到 conhost。子进程仍继承 marker，
     // 避免在无 TTY 环境里再次自举。
     Command::new("cmd.exe")
-        .args(["/c", "start", "", &exe.to_string_lossy()])
+        .args(["/c", "start", "", &exe])
         .env(LAUNCHED_ENV, "1")
         .env(FALLBACK_ENV, "1")
         .spawn()
@@ -312,6 +339,14 @@ mod tests {
         assert!(!should_relaunch(true, false));
         assert!(should_relaunch(false, false));
         assert!(!should_relaunch(false, true));
+    }
+
+    #[test]
+    fn window_opens_at_designed_size() {
+        let args = profile_args(false, true);
+        assert!(args.windows(2).any(|pair| pair == ["--size", "72,24"]));
+        assert!(args.windows(2).any(|pair| pair == ["-w", "new"]));
+        assert!(!profile_args(false, false).iter().any(|arg| arg == "--size"));
     }
 
     #[test]

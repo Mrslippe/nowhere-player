@@ -4,8 +4,8 @@ use crate::layout::*;
 use crate::render::*;
 use crate::theme::Palette;
 use np_app::PlaybackTarget;
-use np_app::complete_for;
 use np_core::{Block, BlockStatus, Output};
+use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
@@ -61,40 +61,6 @@ fn block_upsert_replaces_same_id() {
     app.upsert_block(done);
     assert_eq!(app.blocks.len(), 1);
     assert_eq!(app.blocks[0].status, BlockStatus::Done);
-}
-
-#[test]
-fn test_backend_renders_completion_area() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let backend = TestBackend::new(80, 24);
-    let mut terminal = Terminal::new(backend).expect("terminal");
-    let mut app = App::new();
-    app.completion = Some(np_core::Completion {
-        replace_start: 0,
-        replace_end: 3,
-        items: vec![np_core::CompletionItem {
-            text: "search".to_owned(),
-            kind: np_core::CompletionKind::Command,
-            summary: "搜索".to_owned(),
-            usage: "search [关键词]".to_owned(),
-        }],
-    });
-    let audio = TuiAudio::empty();
-    terminal
-        .draw(|frame| draw(frame, &mut app, &audio))
-        .unwrap();
-    let text: String = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect();
-    let compact = text.replace(' ', "");
-    assert!(compact.contains("候选"), "{text}");
-    assert!(compact.contains("search"), "{text}");
 }
 
 #[test]
@@ -312,42 +278,6 @@ fn same_title_different_paths_are_distinct_trackrefs() {
 }
 
 #[test]
-fn filter_is_case_insensitive_and_handles_chinese() {
-    assert!(filter_matches(&["晴天".to_owned()], "晴"));
-    assert!(filter_matches(&["Jay Chou".to_owned()], "jay"));
-    assert!(filter_matches(&["x".to_owned()], ""));
-    assert!(!filter_matches(&["晴天".to_owned()], "稻"));
-}
-
-#[test]
-fn gg_requires_two_presses_within_timeout() {
-    let mut app = App::new();
-    app.views = vec![ViewData {
-        title: "媒体库".to_owned(),
-        columns: vec!["#".to_owned()],
-        rows: vec![vec!["1".to_owned()], vec!["2".to_owned()]],
-        refs: Vec::new(),
-    }];
-    app.focus = Focus::List;
-    app.row_index = 1;
-    let start = std::time::Instant::now();
-    assert!(!app.press_g(start));
-    assert_eq!(app.row_index, 1);
-    assert!(app.press_g(start + std::time::Duration::from_millis(200)));
-    assert_eq!(app.row_index, 0);
-}
-
-#[test]
-fn delete_requires_double_press_flag() {
-    let mut app = App::new();
-    assert!(!app.delete_armed);
-    app.delete_armed = true;
-    assert!(app.delete_armed);
-    app.delete_armed = false;
-    assert!(!app.delete_armed);
-}
-
-#[test]
 fn left_view_selection_changes_middle_source() {
     let mut app = App::new();
     app.views = vec![
@@ -369,41 +299,6 @@ fn left_view_selection_changes_middle_source() {
     assert_eq!(app.selected_view().unwrap().rows[0][0], "queue");
     app.move_view(false);
     assert_eq!(app.selected_view().unwrap().rows[0][0], "lib");
-}
-
-#[test]
-fn tab_changes_focus_border_color() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let mut app = App::new();
-    app.views = vec![ViewData {
-        title: "媒体库".to_owned(),
-        columns: vec!["#".to_owned(), "标题".to_owned()],
-        rows: vec![vec!["1".to_owned(), "晴天".to_owned()]],
-        refs: Vec::new(),
-    }];
-    let audio = TuiAudio::empty();
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    terminal
-        .draw(|frame| draw(frame, &mut app, &audio))
-        .unwrap();
-    let controller_x = 1;
-    let controller_y = 1 + vertical_heights(28).0 + vertical_heights(28).1;
-    let line_before = terminal.backend().buffer()[(controller_x, controller_y)]
-        .style()
-        .fg;
-    app.toggle_focus();
-    app.toggle_focus();
-    assert_eq!(app.focus, Focus::Controller);
-    terminal
-        .draw(|frame| draw(frame, &mut app, &audio))
-        .unwrap();
-    let line_after = terminal.backend().buffer()[(controller_x, controller_y)]
-        .style()
-        .fg;
-    assert_ne!(line_before, line_after);
-    assert_eq!(line_after, Some(Palette::terminal().accent));
 }
 
 #[test]
@@ -429,12 +324,12 @@ fn missing_theme_setting_defaults_to_milkgreen() {
 
 #[test]
 fn layout_heights_for_three_window_sizes() {
-    assert_eq!(vertical_heights(28), (13, 11, 3, 1)); // 100x30
-    assert_eq!(vertical_heights(38), (20, 14, 3, 1)); // 140x40
-    assert_eq!(vertical_heights(22), (10, 8, 3, 1)); // 80x24
-    let (top, player, controller, status) = vertical_heights(28);
-    assert!(top + player + controller + status == 28);
-    assert!((8..=14).contains(&player));
+    assert_eq!(vertical_heights(28), (12, 13, 3)); // 100x30
+    assert_eq!(vertical_heights(38), (17, 18, 3)); // 140x40
+    assert_eq!(vertical_heights(22), (9, 10, 3)); // 72/80x24
+    let (top, player, controller) = vertical_heights(28);
+    assert!(top + player + controller == 28);
+    assert!(player >= 10);
     assert!(top.saturating_sub(3) >= 8); // block borders + header
 }
 
@@ -447,7 +342,7 @@ fn layout_areas_stay_inside_outer_border() {
             width,
             height,
         };
-        let [top, player, controller, status] = layout_areas(outer);
+        let [top, player, controller] = layout_areas(outer);
         assert!(top.y > outer.y, "{width}x{height} top {top:?}");
         assert!(
             player.y >= top.bottom(),
@@ -457,11 +352,7 @@ fn layout_areas_stay_inside_outer_border() {
             controller.y >= player.bottom(),
             "{width}x{height} controller {controller:?}"
         );
-        assert!(
-            status.y >= controller.bottom(),
-            "{width}x{height} status {status:?}"
-        );
-        assert_eq!(status.bottom(), outer.bottom() - 1);
+        assert_eq!(controller.bottom(), outer.bottom() - 1);
         assert_eq!(outer.width, width);
     }
 }
@@ -490,7 +381,6 @@ fn controller_is_always_visible_and_colon_focuses_it() {
     assert!(text.replace(' ', "").contains("Controller"));
     app.enter_command();
     assert_eq!(app.focus, Focus::Controller);
-    assert_eq!(app.mode, UiMode::Normal);
     app.leave_command();
     assert_eq!(app.focus, Focus::List);
     assert!(app.input.is_empty());
@@ -545,17 +435,6 @@ fn test_backend_renders_title_and_input() {
 }
 
 #[test]
-fn np_app_completion_has_search_for_sea() {
-    let audio = TuiAudio::empty();
-    let completion = complete_for(&audio, "sea", 3);
-    assert!(
-        completion.items.iter().any(|item| item.text == "search"),
-        "{:?}",
-        completion.items
-    );
-}
-
-#[test]
 fn settings_file_is_read_as_theme_id() {
     let dir = std::env::temp_dir().join(format!("np-tui-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -581,37 +460,6 @@ fn theme_switch_updates_palette_without_restart() {
 }
 
 #[test]
-fn tab_accepts_highlighted_completion() {
-    let mut app = App::new();
-    app.input = "sea".chars().collect();
-    app.cursor = 3;
-    app.completion = Some(np_core::Completion {
-        replace_start: 0,
-        replace_end: 3,
-        items: vec![np_core::CompletionItem {
-            text: "search".to_owned(),
-            kind: np_core::CompletionKind::Command,
-            summary: "搜索".to_owned(),
-            usage: "search [关键词]".to_owned(),
-        }],
-    });
-    assert!(app.accept_completion());
-    assert_eq!(app.input_text(), "search ");
-    assert_eq!(app.cursor, 7);
-}
-
-#[test]
-fn history_navigation_suppresses_completion() {
-    let mut app = App::new();
-    app.history = vec!["help".to_owned()];
-    app.history_up();
-    let audio = TuiAudio::empty();
-    app.refresh_completion(&audio);
-    assert!(app.completion.is_none());
-    assert_eq!(app.input_text(), "help");
-}
-
-#[test]
 fn output_table_maps_to_header_separator_and_rows() {
     let mut lines = Vec::new();
     output_lines(
@@ -630,4 +478,117 @@ fn output_table_maps_to_header_separator_and_rows() {
             .iter()
             .any(|span| span.content.contains("标题"))
     );
+}
+
+fn browse_app() -> App {
+    let mut app = App::new();
+    app.views = vec![
+        ViewData {
+            title: "歌单".to_owned(),
+            columns: vec!["歌单".to_owned(), "条目".to_owned()],
+            rows: Vec::new(),
+            refs: Vec::new(),
+        },
+        ViewData {
+            title: "Like".to_owned(),
+            columns: vec!["序号".to_owned(), "标题".to_owned()],
+            rows: Vec::new(),
+            refs: Vec::new(),
+        },
+        ViewData {
+            title: "媒体库".to_owned(),
+            columns: vec!["序号".to_owned(), "标题".to_owned()],
+            rows: vec![vec!["1".to_owned(), "晴天".to_owned()]],
+            refs: Vec::new(),
+        },
+        ViewData {
+            title: "搜索".to_owned(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            refs: Vec::new(),
+        },
+        ViewData {
+            title: "队列".to_owned(),
+            columns: vec!["序号".to_owned(), "标题".to_owned()],
+            rows: Vec::new(),
+            refs: Vec::new(),
+        },
+        ViewData {
+            title: "设置".to_owned(),
+            columns: vec!["设置项".to_owned(), "值".to_owned()],
+            rows: Vec::new(),
+            refs: Vec::new(),
+        },
+    ];
+    app.view_depth = vec![0, 1, 0, 0, 0, 0];
+    app.view_kind = vec![
+        BrowseKind::PlaylistRoot,
+        BrowseKind::Playlist("Like".to_owned()),
+        BrowseKind::Library,
+        BrowseKind::Search,
+        BrowseKind::Queue,
+        BrowseKind::Settings,
+    ];
+    app.playlist_children = vec![app.views[1].clone()];
+    app.playlist_expanded = true;
+    app.view_index = 0;
+    app
+}
+
+#[test]
+fn browse_tree_starts_at_playlist_and_toggles_children() {
+    let mut app = browse_app();
+    assert_eq!(
+        app.selected_view().map(|view| view.title.as_str()),
+        Some("歌单")
+    );
+    assert_eq!(app.views.len(), 6);
+    app.toggle_playlist();
+    assert!(!app.playlist_expanded);
+    assert_eq!(app.views.len(), 5);
+    assert_eq!(app.views[1].title, "媒体库");
+    app.toggle_playlist();
+    assert!(app.playlist_expanded);
+    assert_eq!(app.views[1].title, "Like");
+}
+
+#[test]
+fn player_content_is_sixty_eight_columns_on_72x24() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let progress_row = (0..24)
+        .find(|y| (0..72).any(|x| buffer[(x, *y)].symbol() == glyphs::PROGRESS_TODO))
+        .expect("progress row");
+    let filled = (0..72)
+        .filter(|x| buffer[(*x, progress_row)].symbol() == glyphs::PROGRESS_TODO)
+        .count();
+    assert_eq!(filled, 68);
+    let top = (0..24)
+        .find(|y| {
+            (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
+        })
+        .expect("player title");
+    assert_eq!(buffer[(1, top)].symbol(), "╭");
+    assert_eq!(buffer[(2, top)].symbol(), " ");
+}
+
+#[test]
+fn status_bar_is_embedded_in_bottom_border() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text: String = (0..72).map(|x| buffer[(x, 23)].symbol()).collect();
+    assert!(text.starts_with('╰'), "{text:?}");
+    let compact = text.replace(' ', "");
+    assert!(compact.contains("退出"), "{text:?}");
+    assert!(!text.contains("就绪"), "{text:?}");
 }

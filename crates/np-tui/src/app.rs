@@ -10,8 +10,8 @@ use crate::tray;
 use crate::{osc, startup};
 use np_app::{
     Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi, SearchHit, Services,
-    SettingsHandle, ThemeApi, complete_for, execute_with_services, online_play_hit,
-    online_play_started_block, run_online_play,
+    SettingsHandle, ThemeApi, execute_with_services, online_play_hit, online_play_started_block,
+    run_online_play,
 };
 use np_core::{Block, BlockStatus, Output};
 pub(crate) struct App {
@@ -21,18 +21,12 @@ pub(crate) struct App {
     pub(crate) history_cursor: Option<usize>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) status: String,
-    pub(crate) panel_visible: bool,
-    pub(crate) immersive: bool,
     pub(crate) spectrum: Vec<f32>,
     pub(crate) waveform: Vec<f32>,
     pub(crate) stereo_left: Vec<f32>,
     pub(crate) stereo_right: Vec<f32>,
     pub(crate) spectrum_generation: u64,
     pub(crate) visual_mode: VisualMode,
-    pub(crate) completion: Option<np_core::Completion>,
-    pub(crate) completion_index: usize,
-    pub(crate) last_edit: std::time::Instant,
-    pub(crate) history_nav: bool,
     pub(crate) search_id: u64,
     pub(crate) search_pending: bool,
     pub(crate) no_color_ignored: bool,
@@ -42,13 +36,13 @@ pub(crate) struct App {
     pub(crate) theme_id: String,
     pub(crate) theme_name: String,
     pub(crate) focus: Focus,
-    pub(crate) mode: UiMode,
-    pub(crate) filter: String,
-    pub(crate) g_pending: Option<std::time::Instant>,
     pub(crate) quit_armed: bool,
-    pub(crate) delete_armed: bool,
     pub(crate) remote_tx: Option<std::sync::mpsc::Sender<String>>,
     pub(crate) views: Vec<ViewData>,
+    pub(crate) view_depth: Vec<u8>,
+    pub(crate) view_kind: Vec<BrowseKind>,
+    pub(crate) playlist_children: Vec<ViewData>,
+    pub(crate) playlist_expanded: bool,
     pub(crate) view_index: usize,
     pub(crate) row_index: usize,
 }
@@ -62,34 +56,28 @@ impl App {
             history_cursor: None,
             blocks: Vec::new(),
             status: "就绪".to_owned(),
-            panel_visible: true,
-            immersive: false,
             spectrum: vec![0.0; 16],
             waveform: vec![0.0; 2048],
             stereo_left: vec![0.0; 2048],
             stereo_right: vec![0.0; 2048],
             spectrum_generation: 0,
             visual_mode: VisualMode::Spectrum,
-            completion: None,
-            completion_index: 0,
-            last_edit: std::time::Instant::now(),
-            history_nav: false,
             search_id: 0,
             search_pending: false,
             no_color_ignored: false,
             #[cfg(windows)]
             tray_rx: None,
             palette: Palette::terminal(),
-            theme_id: "terminal".to_owned(),
-            theme_name: "跟随终端".to_owned(),
+            theme_id: "milkgreen".to_owned(),
+            theme_name: "MilkGreen".to_owned(),
             focus: Focus::Browse,
-            mode: UiMode::Normal,
-            filter: String::new(),
-            g_pending: None,
             quit_armed: false,
-            delete_armed: false,
             remote_tx: None,
             views: Vec::new(),
+            view_depth: Vec::new(),
+            view_kind: Vec::new(),
+            playlist_children: Vec::new(),
+            playlist_expanded: false,
             view_index: 0,
             row_index: 0,
         }
@@ -103,9 +91,6 @@ impl App {
         self.input.insert(self.cursor, character);
         self.cursor += 1;
         self.history_cursor = None;
-        self.history_nav = false;
-        self.last_edit = std::time::Instant::now();
-        self.completion = None;
     }
 
     pub(crate) fn backspace(&mut self) {
@@ -113,9 +98,6 @@ impl App {
             self.cursor -= 1;
             self.input.remove(self.cursor);
             self.history_cursor = None;
-            self.history_nav = false;
-            self.last_edit = std::time::Instant::now();
-            self.completion = None;
         }
     }
 
@@ -137,8 +119,6 @@ impl App {
             .history_cursor
             .map_or(self.history.len() - 1, |index| index.saturating_sub(1));
         self.history_cursor = Some(next);
-        self.history_nav = true;
-        self.completion = None;
         self.input = self.history[next].chars().collect();
         self.cursor = self.input.len();
     }
@@ -149,13 +129,10 @@ impl App {
         };
         if index + 1 >= self.history.len() {
             self.history_cursor = None;
-            self.history_nav = false;
             self.input.clear();
             self.cursor = 0;
         } else {
             self.history_cursor = Some(index + 1);
-            self.history_nav = true;
-            self.completion = None;
             self.input = self.history[index + 1].chars().collect();
             self.cursor = self.input.len();
         }
@@ -224,24 +201,111 @@ impl App {
         false
     }
 
-    pub(crate) fn load_views(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
-        // library list 必须最后执行：它会设置 np-app 的 active_listing，
-        // 否则 Enter 的 play <n> 会解析到 queue/playlist 的空列表。
-        let queue = capture_table(player, library, "queue list", "队列");
-        let playlist = capture_table(player, library, "playlist list", "歌单");
+    pub(crate) fn load_views(
+        &mut self,
+        player: &dyn PlayerApi,
+        library: &dyn LibraryApi,
+        settings: &SettingsHandle,
+    ) {
+        let playlist_root = capture_table(player, library, "playlist list", "歌单");
         let library_view = capture_table(player, library, "library list --limit=200", "媒体库");
-        self.views = vec![library_view, queue, playlist];
-        self.views.insert(
-            1,
-            ViewData {
-                title: "搜索结果".to_owned(),
-                columns: Vec::new(),
-                rows: Vec::new(),
-                refs: Vec::new(),
-            },
-        );
+        let queue = capture_table(player, library, "queue list", "队列");
+        let search = ViewData {
+            title: "搜索".to_owned(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            refs: Vec::new(),
+        };
+        let settings_view = ViewData {
+            title: "设置".to_owned(),
+            columns: vec!["设置项".to_owned(), "值".to_owned()],
+            rows: settings
+                .entries()
+                .into_iter()
+                .map(|(key, value)| vec![key, value.display()])
+                .collect(),
+            refs: Vec::new(),
+        };
+        let playlists = library.playlist_list().unwrap_or_default();
+        let playlist_children: Vec<ViewData> = playlists
+            .iter()
+            .map(|playlist| {
+                let command = format!("playlist show \"{}\"", playlist.name.replace('"', "\\\""));
+                capture_table(player, library, &command, &playlist.name)
+            })
+            .collect();
+        let playlist_expanded = playlist_children.len() <= 5;
+
+        let mut views = vec![playlist_root];
+        let mut view_depth = vec![0];
+        let mut view_kind = vec![BrowseKind::PlaylistRoot];
+        if playlist_expanded {
+            for (index, child) in playlist_children.iter().enumerate() {
+                views.push(child.clone());
+                view_depth.push(1);
+                view_kind.push(BrowseKind::Playlist(
+                    playlists
+                        .get(index)
+                        .map(|playlist| playlist.name.clone())
+                        .unwrap_or_default(),
+                ));
+            }
+        }
+        for (view, kind) in [
+            (library_view, BrowseKind::Library),
+            (search, BrowseKind::Search),
+            (queue, BrowseKind::Queue),
+            (settings_view, BrowseKind::Settings),
+        ] {
+            views.push(view);
+            view_depth.push(0);
+            view_kind.push(kind);
+        }
+        self.views = views;
+        self.view_depth = view_depth;
+        self.view_kind = view_kind;
+        self.playlist_children = playlist_children;
+        self.playlist_expanded = playlist_expanded;
         self.view_index = 0;
         self.row_index = 0;
+    }
+
+    pub(crate) fn toggle_playlist(&mut self) {
+        if self.playlist_children.is_empty() {
+            return;
+        }
+        let Some(root) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::PlaylistRoot)
+        else {
+            return;
+        };
+        if self.playlist_expanded {
+            let count = self.playlist_children.len();
+            let selected_child = self
+                .view_kind
+                .get(self.view_index)
+                .is_some_and(|kind| matches!(kind, BrowseKind::Playlist(_)));
+            self.views.drain(root + 1..root + 1 + count);
+            self.view_depth.drain(root + 1..root + 1 + count);
+            self.view_kind.drain(root + 1..root + 1 + count);
+            self.playlist_expanded = false;
+            if selected_child {
+                self.view_index = root;
+                self.row_index = 0;
+            }
+        } else {
+            let children = self.playlist_children.clone();
+            for (offset, child) in children.into_iter().enumerate() {
+                let kind = BrowseKind::Playlist(child.title.clone());
+                self.views.insert(root + 1 + offset, child);
+                self.view_depth.insert(root + 1 + offset, 1);
+                self.view_kind.insert(root + 1 + offset, kind);
+            }
+            self.playlist_expanded = true;
+        }
+        self.view_index = self.view_index.min(self.views.len().saturating_sub(1));
     }
 
     pub(crate) fn selected_view(&self) -> Option<&ViewData> {
@@ -252,11 +316,7 @@ impl App {
         let Some(view) = self.selected_view() else {
             return Vec::new();
         };
-        view.rows
-            .iter()
-            .filter(|row| filter_matches(row, &self.filter))
-            .cloned()
-            .collect()
+        view.rows.clone()
     }
 
     pub(crate) fn filtered_row_count(&self) -> usize {
@@ -264,33 +324,54 @@ impl App {
     }
 
     pub(crate) fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
-        let refs = library
-            .search_hits()
-            .into_iter()
+        let hits = library.search_hits();
+        let refs = hits
+            .iter()
             .map(|hit| match hit {
-                SearchHit::Local(track) => TrackRef::Local(PathBuf::from(track.path)),
+                SearchHit::Local(track) => TrackRef::Local(PathBuf::from(&track.path)),
                 SearchHit::Online(track) => TrackRef::Remote {
                     source: track.source.as_str().to_owned(),
-                    id: track.source_id,
+                    id: track.source_id.clone(),
                 },
             })
             .collect();
-        if let Some(view) = self.views.get_mut(1) {
+        let rows = hits
+            .iter()
+            .enumerate()
+            .map(|(index, hit)| {
+                let (title, artist, duration) = match hit {
+                    SearchHit::Local(track) => (
+                        track.title.clone(),
+                        track.artist.clone(),
+                        u64::try_from(track.duration_ms).unwrap_or(0),
+                    ),
+                    SearchHit::Online(track) => {
+                        (track.title.clone(), track.artist.clone(), track.duration_ms)
+                    }
+                };
+                vec![
+                    (index + 1).to_string(),
+                    title,
+                    artist,
+                    crate::player_bar::format_time(duration),
+                ]
+            })
+            .collect();
+        if let Some(index) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::Search)
+            && let Some(view) = self.views.get_mut(index)
+        {
+            view.columns = vec![
+                "序号".to_owned(),
+                "标题".to_owned(),
+                "艺人".to_owned(),
+                "时长".to_owned(),
+            ];
+            view.rows = rows;
             view.refs = refs;
         }
-    }
-
-    pub(crate) fn press_g(&mut self, now: std::time::Instant) -> bool {
-        let repeated = self
-            .g_pending
-            .is_some_and(|at| now.duration_since(at) <= std::time::Duration::from_millis(300));
-        if repeated {
-            self.row_index = 0;
-            self.g_pending = None;
-        } else {
-            self.g_pending = Some(now);
-        }
-        repeated
     }
 
     pub(crate) fn move_view(&mut self, down: bool) {
@@ -317,116 +398,16 @@ impl App {
         };
     }
 
-    pub(crate) fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Browse => Focus::List,
-            Focus::List => Focus::Controller,
-            Focus::Controller => Focus::Browse,
-        };
-    }
-
-    pub(crate) fn enter_filter(&mut self) {
-        self.mode = UiMode::Filter;
-        self.filter.clear();
-        self.input.clear();
-        self.cursor = 0;
-        self.completion = None;
-        self.row_index = 0;
-    }
-
-    pub(crate) fn leave_filter(&mut self, clear: bool) {
-        if clear {
-            self.filter.clear();
-        }
-        self.mode = UiMode::Normal;
-        self.input.clear();
-        self.cursor = 0;
-    }
-
     pub(crate) fn enter_command(&mut self) {
         self.focus = Focus::Controller;
-        self.mode = UiMode::Normal;
         self.input.clear();
         self.cursor = 0;
-        self.completion = None;
     }
 
     pub(crate) fn leave_command(&mut self) {
         self.focus = Focus::List;
-        self.mode = UiMode::Normal;
         self.input.clear();
         self.cursor = 0;
-        self.completion = None;
-    }
-
-    pub(crate) fn refresh_completion(&mut self, player: &dyn PlayerApi) -> bool {
-        if self.input.is_empty() {
-            self.completion = None;
-            return false;
-        }
-        if self.history_nav {
-            return self.completion.take().is_some();
-        }
-        if self.last_edit.elapsed() < std::time::Duration::from_millis(80) {
-            return false;
-        }
-        let completion = complete_for(player, &self.input_text(), self.cursor);
-        let changed = self.completion.as_ref().is_none_or(|old| {
-            old.items.len() != completion.items.len()
-                || old
-                    .items
-                    .iter()
-                    .zip(&completion.items)
-                    .any(|(left, right)| left.text != right.text)
-        }) && !completion.items.is_empty();
-        self.completion = if completion.items.is_empty() {
-            None
-        } else {
-            Some(completion)
-        };
-        if changed {
-            self.completion_index = 0;
-        } else if let Some(completion) = &self.completion {
-            self.completion_index = self.completion_index.min(completion.items.len() - 1);
-        }
-        changed
-    }
-
-    pub(crate) fn move_completion(&mut self, down: bool) -> bool {
-        let Some(completion) = &self.completion else {
-            return false;
-        };
-        let len = completion.items.len();
-        if len == 0 {
-            return false;
-        }
-        if down {
-            self.completion_index = (self.completion_index + 1) % len;
-        } else {
-            self.completion_index = (self.completion_index + len - 1) % len;
-        }
-        true
-    }
-
-    pub(crate) fn accept_completion(&mut self) -> bool {
-        let Some(completion) = self.completion.take() else {
-            return false;
-        };
-        let Some(item) = completion.items.get(self.completion_index) else {
-            return false;
-        };
-        let start = completion.replace_start.min(self.input.len());
-        let end = completion.replace_end.min(self.input.len());
-        let replacement = if item.kind == np_core::CompletionKind::Command {
-            format!("{} ", item.text.trim_end())
-        } else {
-            item.text.clone()
-        };
-        self.input.splice(start..end, replacement.chars());
-        self.cursor = start + replacement.chars().count();
-        self.history_nav = false;
-        self.last_edit = std::time::Instant::now();
-        true
     }
 
     pub(crate) fn upsert_block(&mut self, block: Block) {
@@ -566,10 +547,20 @@ impl App {
             }
         }
         if let Ok(Some(parsed)) = np_core::command::parse(&input) {
-            if parsed.spec.name == "queue" {
-                self.views[2] = capture_table(player, &**library, "queue list", "队列");
-            } else if parsed.spec.name == "playlist" {
-                self.views[3] = capture_table(player, &**library, "playlist list", "歌单");
+            if parsed.spec.name == "queue"
+                && let Some(index) = self
+                    .view_kind
+                    .iter()
+                    .position(|kind| *kind == BrowseKind::Queue)
+            {
+                self.views[index] = capture_table(player, &**library, "queue list", "队列");
+            } else if parsed.spec.name == "playlist"
+                && let Some(index) = self
+                    .view_kind
+                    .iter()
+                    .position(|kind| *kind == BrowseKind::PlaylistRoot)
+            {
+                self.views[index] = capture_table(player, &**library, "playlist list", "歌单");
             }
         }
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
@@ -604,19 +595,6 @@ impl BlockStatusExt for Block {
 trait BlockStatusExt {
     fn status_label(&self) -> &'static str;
 }
-pub(crate) fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-pub(crate) fn filter_matches(row: &[String], filter: &str) -> bool {
-    let filter = filter.trim().to_lowercase();
-    filter.is_empty() || row.iter().any(|cell| cell.to_lowercase().contains(&filter))
-}
-
 pub(crate) fn capture_table(
     player: &dyn PlayerApi,
     library: &dyn LibraryApi,
@@ -671,4 +649,12 @@ pub(crate) fn capture_table(
             .collect();
     }
     view
+}
+
+pub(crate) fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }

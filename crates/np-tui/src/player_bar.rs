@@ -1,9 +1,10 @@
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span as TuiSpan};
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
-use ratatui::widgets::{Block as TuiBlock, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, VisualMode};
 use crate::audio::TuiAudio;
@@ -17,74 +18,28 @@ pub(crate) fn draw_player_strip(
     app: &App,
     player: &TuiAudio,
 ) {
-    let block = TuiBlock::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(app.palette.line_strong))
-        .style(
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
-        );
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 || inner.width == 0 {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    draw_player_frame(frame, area, app);
+    let content = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    if content.width == 0 || content.height < 2 {
         return;
     }
 
-    let title = truncate_width(
-        &format!("{} · {}", player.title(), player.artist()),
-        inner.width as usize,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(TuiSpan::styled(
-            title,
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg)
-                .add_modifier(Modifier::BOLD),
-        ))),
-        Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: 1,
-        },
-    );
-
-    let duration = player.duration_ms().unwrap_or(0);
-    let position = player.position_ms().min(duration);
-    let ratio = if duration == 0 {
-        0.0
-    } else {
-        position as f64 / duration as f64
-    };
-    let bar_width = inner.width.saturating_sub(14).max(4) as usize;
-    let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
-    let progress = format!(
-        "{}{}  {} / {}",
-        glyphs::PROGRESS_DONE.repeat(filled),
-        glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled)),
-        format_time(position),
-        format_time(duration)
-    );
-    frame.render_widget(
-        Paragraph::new(progress),
-        Rect {
-            x: inner.x,
-            y: inner.y + 1,
-            width: inner.width,
-            height: 1,
-        },
-    );
-
-    let visual_height = inner.height.saturating_sub(3).min(2);
+    let visual_height = content.height.saturating_sub(2);
     if visual_height > 0 {
         draw_visual(
             frame,
             Rect {
-                x: inner.x,
-                y: inner.y + 2,
-                width: inner.width,
+                x: content.x,
+                y: content.y,
+                width: content.width,
                 height: visual_height,
             },
             app,
@@ -92,21 +47,87 @@ pub(crate) fn draw_player_strip(
             app.palette.bg,
         );
     }
+
+    let duration = player.duration_ms().unwrap_or(0);
+    let position = player.position_ms().min(duration);
+    let title = truncate_width(
+        &format!(
+            "{} — {}  {} / {}",
+            player.title(),
+            player.artist(),
+            format_time(position),
+            format_time(duration)
+        ),
+        content.width as usize,
+    );
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}   {}   {}   [{}]",
-            glyphs::PREV,
-            glyphs::PLAY,
-            glyphs::NEXT,
-            app.visual_mode.label()
-        ))
-        .style(Style::default().fg(app.palette.accent)),
+        Paragraph::new(Line::from(TuiSpan::styled(
+            title,
+            Style::default()
+                .fg(app.palette.muted)
+                .bg(app.palette.bg.unwrap_or(Color::Reset)),
+        )))
+        .alignment(Alignment::Right),
         Rect {
-            x: inner.x,
-            y: inner.y + 2 + visual_height,
-            width: inner.width,
+            x: content.x,
+            y: content.y + visual_height,
+            width: content.width,
             height: 1,
         },
+    );
+
+    let ratio = if duration == 0 {
+        0.0
+    } else {
+        position as f64 / duration as f64
+    };
+    let bar_width = content.width as usize;
+    let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
+    let progress = format!(
+        "{}{}",
+        glyphs::PROGRESS_DONE.repeat(filled),
+        glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled))
+    );
+    frame.render_widget(
+        Paragraph::new(progress).style(Style::default().fg(app.palette.accent)),
+        Rect {
+            x: content.x,
+            y: content.bottom().saturating_sub(1),
+            width: content.width,
+            height: 1,
+        },
+    );
+}
+
+fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let width = area.width as usize;
+    if width < 4 {
+        return;
+    }
+    let title = " Player ";
+    let mode = " Mode ↻ ";
+    let title_w = UnicodeWidthStr::width(title);
+    let mode_w = UnicodeWidthStr::width(mode);
+    let top_fill = width.saturating_sub(2 + title_w);
+    let bottom_fill = width.saturating_sub(2 + mode_w);
+    let top = format!("╭{title}{}╮", "─".repeat(top_fill));
+    let bottom = format!("╰{}{mode}╯", "─".repeat(bottom_fill));
+    let line = Style::default().fg(app.palette.line_strong);
+    frame.buffer_mut().set_string(area.x, area.y, &top, line);
+    frame.buffer_mut().set_string(
+        area.x.saturating_add(1),
+        area.y,
+        title,
+        Style::default().fg(app.palette.accent),
+    );
+    frame
+        .buffer_mut()
+        .set_string(area.x, area.bottom().saturating_sub(1), &bottom, line);
+    frame.buffer_mut().set_string(
+        area.right().saturating_sub(mode_w as u16 + 1),
+        area.bottom().saturating_sub(1),
+        mode,
+        Style::default().fg(app.palette.muted),
     );
 }
 

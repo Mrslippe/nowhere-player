@@ -141,26 +141,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &theme_api,
         settings.theme_id().as_deref().unwrap_or("milkgreen"),
     );
-    app.load_views(&player, &*library);
+    app.load_views(&player, &*library, &settings);
     if let Ok(view) = std::env::var("NP_TUI_VIEW") {
-        app.view_index = match view.trim().to_ascii_lowercase().as_str() {
-            "search" => 1,
-            "queue" => 2,
-            "playlist" | "playlists" => 3,
-            _ => 0,
+        let wanted = match view.trim().to_ascii_lowercase().as_str() {
+            "search" => Some(BrowseKind::Search),
+            "queue" => Some(BrowseKind::Queue),
+            "playlist" | "playlists" => Some(BrowseKind::PlaylistRoot),
+            "library" => Some(BrowseKind::Library),
+            "settings" => Some(BrowseKind::Settings),
+            _ => None,
         };
-    }
-    if std::env::var_os("NP_TUI_IMMERSIVE").is_some() {
-        app.immersive = true;
-    }
-    if let Ok(mode) = std::env::var("NP_TUI_MODE") {
-        if mode.trim() == "help" {
-            app.mode = UiMode::Help;
-        } else if let Some(filter) = mode.strip_prefix("filter:") {
-            app.enter_filter();
-            app.input = filter.chars().collect();
-            app.cursor = app.input.len();
-            app.filter = filter.to_owned();
+        if let Some(wanted) = wanted
+            && let Some(index) = app.view_kind.iter().position(|kind| *kind == wanted)
+        {
+            app.view_index = index;
         }
     }
     if let Ok(mode) = std::env::var("NP_TUI_VISUAL") {
