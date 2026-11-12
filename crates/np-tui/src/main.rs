@@ -33,16 +33,17 @@ use crossterm::terminal::{
 };
 use fft::spectrum;
 use np_app::SearchHit;
+
 use np_app::{
     Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, Paths, PlaybackTarget, PlayerApi,
     Services, SettingsHandle, ThemeApi, complete_for, execute_with_services, online_play_hit,
     online_play_started_block, run_online_play,
 };
-use np_core::{Block, BlockStatus, Output, Span, SpanColor, Tone};
+use np_core::{Block, BlockStatus, Output, SettingValue, Span, SpanColor, Tone};
 use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols::Marker,
     text::{Line, Span as TuiSpan},
@@ -890,7 +891,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     app.load_theme(
         &theme_api,
-        settings.theme_id().as_deref().unwrap_or("terminal"),
+        settings.theme_id().as_deref().unwrap_or("milkgreen"),
     );
     app.load_views(&player, &*library);
     if let Ok(view) = std::env::var("NP_TUI_VIEW") {
@@ -931,6 +932,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    if selftest.is_none() && !run_splash(&mut terminal, &mut app, &settings, &theme_api)? {
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableBracketedPaste
+        )?;
+        osc::restore();
+        return Ok(());
+    }
     draw_synced(&mut terminal, &mut app, &player)?;
     if let Ok(path) = std::env::var("NP_TUI_STARTUP_FILE") {
         std::fs::write(path, started.elapsed().as_millis().to_string())?;
@@ -1128,6 +1139,128 @@ fn run_selftest(
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn splash_art(width: u16) -> &'static str {
+    if width < 60 {
+        "NOWHERE"
+    } else {
+        "██████╗  ██╗ ██████╗ ██╗    ██╗██╗  ██╗███████╗██████╗ \n\
+         ████╗  ██║██╔═══██╗██║    ██║██║  ██║██╔════╝██╔══██╗\n\
+         ██╔██╗ ██║██║   ██║██║ █╗ ██║███████║█████╗  ██████╔╝\n\
+         ██║╚████║██║   ██║██║███╗██║██╔══██║██╔══╝  ██╔══██╗\n\
+         ██║ ╚███║╚██████╔╝╚███╔███╔╝██║  ██║███████╗██║  ██║\n\
+         ╚═╝  ╚══╝ ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝"
+    }
+}
+
+fn splash_theme_ids() -> Vec<&'static str> {
+    np_core::theme::BUILTIN_THEMES
+        .iter()
+        .map(|theme| theme.id)
+        .collect()
+}
+
+fn splash_step(current: &str, delta: i32) -> &'static str {
+    let ids = splash_theme_ids();
+    let Some(index) = ids.iter().position(|id| *id == current) else {
+        return ids.first().copied().unwrap_or("milkgreen");
+    };
+    let len = ids.len() as i32;
+    let next = (index as i32 + delta).rem_euclid(len) as usize;
+    ids[next]
+}
+
+fn draw_splash<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &App,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: std::error::Error + 'static,
+{
+    execute!(io::stdout(), BeginSynchronizedUpdate)?;
+    let result = terminal.draw(|frame| {
+        let area = frame.area();
+        frame.buffer_mut().set_style(
+            area,
+            Style::default()
+                .bg(app.palette.bg.unwrap_or(Color::Reset))
+                .fg(app.palette.fg),
+        );
+        let block = TuiBlock::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(app.palette.line))
+            .style(
+                Style::default()
+                    .bg(app.palette.bg.unwrap_or(Color::Reset))
+                    .fg(app.palette.fg),
+            );
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let mut lines = vec![Line::from("")];
+        lines.extend(splash_art(inner.width).lines().map(Line::from));
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("◄  {}  ►", app.theme_name)));
+        lines.push(Line::from(""));
+        lines.push(Line::from("Press [Enter] to Start"));
+        frame.render_widget(
+            Paragraph::new(lines).alignment(Alignment::Center).style(
+                Style::default()
+                    .bg(app.palette.bg.unwrap_or(Color::Reset))
+                    .fg(app.palette.fg),
+            ),
+            inner,
+        );
+    });
+    let end = execute!(io::stdout(), EndSynchronizedUpdate);
+    result?;
+    end?;
+    Ok(())
+}
+
+fn run_splash<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    settings: &SettingsHandle,
+    theme: &dyn ThemeApi,
+) -> Result<bool, Box<dyn std::error::Error>>
+where
+    B::Error: std::error::Error + 'static,
+{
+    if std::env::var_os("NP_TUI_NO_SPLASH").is_some()
+        || settings.get_bool("ui.splash") == Some(false)
+        || terminal.size()?.height < 20
+    {
+        return Ok(true);
+    }
+    draw_splash(terminal, app)?;
+    loop {
+        if event::poll(std::time::Duration::from_millis(200))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Left => {
+                        let id = splash_step(&app.theme_id, -1);
+                        app.load_theme(theme, id);
+                        draw_splash(terminal, app)?;
+                    }
+                    KeyCode::Right => {
+                        let id = splash_step(&app.theme_id, 1);
+                        app.load_theme(theme, id);
+                        draw_splash(terminal, app)?;
+                    }
+                    KeyCode::Enter => {
+                        let _ = settings
+                            .set_and_save("theme.id", SettingValue::Str(app.theme_id.clone()));
+                        return Ok(true);
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
+                    _ => {}
+                },
+                Event::Resize(_, _) => draw_splash(terminal, app)?,
+                _ => {}
+            }
+        }
+    }
 }
 
 fn draw_synced<B: Backend>(
@@ -2690,6 +2823,33 @@ mod tests {
         assert_ne!(left_before, left_after);
         assert_eq!(left_before, Some(Palette::terminal().accent));
         assert_eq!(left_after, Some(Palette::terminal().faint));
+    }
+
+    #[test]
+    fn splash_cycles_themes_and_wraps() {
+        assert_eq!(splash_step("milkgreen", 1), "graphite");
+        assert_eq!(splash_step("milkgreen", -1), "tui-paper");
+        assert_eq!(splash_theme_ids().first().copied(), Some("milkgreen"));
+    }
+
+    #[test]
+    fn splash_degrades_to_one_line_on_narrow_screens() {
+        assert_eq!(splash_art(59), "NOWHERE");
+        assert!(splash_art(80).contains('█'));
+    }
+
+    #[test]
+    fn missing_theme_setting_defaults_to_milkgreen() {
+        let dir =
+            std::env::temp_dir().join(format!("np-splash-{}-{}", std::process::id(), now_millis()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = SettingsHandle::load(dir.clone());
+        assert_eq!(settings.theme_id(), None);
+        assert_eq!(
+            settings.theme_id().as_deref().unwrap_or("milkgreen"),
+            "milkgreen"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

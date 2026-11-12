@@ -832,7 +832,29 @@ impl BuiltinTheme {
 }
 
 /// 七个内置主题（原有四个 + 三个 TUI 预设；`theme.list` 会按 id 排序）。
-pub static BUILTIN_THEMES: [BuiltinTheme; 7] = [
+pub static BUILTIN_THEMES: [BuiltinTheme; 8] = [
+    BuiltinTheme {
+        id: "milkgreen",
+        name: "MilkGreen",
+        skin: Skin::Plain,
+        structure: ResolvedStructure::preset(Skin::Plain),
+        tokens: [
+            ("bg", "#eef1ea"),
+            ("bgElev", "#e4e9df"),
+            ("bgHover", "#d9e0d4"),
+            ("fg", "#1e2a22"),
+            ("fgMuted", "#4a5850"),
+            ("fgFaint", "#8a978e"),
+            ("accent", "#3f7d5b"),
+            ("accentSoft", "#3f7d5b22"),
+            ("accentFg", "#eef1ea"),
+            ("danger", "#a33a2a"),
+            ("warn", "#8a6d1f"),
+            ("success", "#3f6b3a"),
+            ("line", "#c3ccbf"),
+            ("lineStrong", "#a3ad9e"),
+        ],
+    },
     BuiltinTheme {
         id: "graphite",
         name: "石墨",
@@ -1265,6 +1287,7 @@ mod tests {
         assert_eq!(
             ids,
             [
+                "milkgreen",
                 "graphite",
                 "amber",
                 "ice",
