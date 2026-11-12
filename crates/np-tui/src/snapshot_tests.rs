@@ -6,6 +6,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::*;
 use crate::audio::TuiAudio;
 use crate::input::*;
+use crate::logo::{GLYPHS, compose};
 use crate::render::*;
 use crate::splash::*;
 use crate::theme::TuiThemeApi;

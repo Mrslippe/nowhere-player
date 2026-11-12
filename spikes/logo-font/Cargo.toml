@@ -1,0 +1,13 @@
+[package]
+name = "logo-font"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# 独立实验，不属于主 workspace。
+[workspace]
+
+[dependencies]
+crossterm = "0.29"
+ratatui = "0.30.1"
+unicode-width = "0.2"

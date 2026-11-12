@@ -15,6 +15,7 @@ mod input;
 mod instance;
 mod launcher;
 mod layout;
+mod logo;
 mod model;
 mod osc;
 mod player_bar;
