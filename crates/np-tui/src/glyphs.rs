@@ -2,8 +2,6 @@
 
 /// 进度已完成。
 pub const PROGRESS_DONE: &str = "▰";
-/// 进度未完成。
-pub const PROGRESS_TODO: &str = "▱";
 /// 当前选中 / 播放。
 pub const SELECT: &str = "►";
 /// 块字符八级（Braille 不可用时的备份）。
@@ -15,7 +13,7 @@ mod tests {
 
     #[test]
     fn every_glyph_is_non_empty_and_not_emoji() {
-        let glyphs = [PROGRESS_DONE, PROGRESS_TODO, SELECT];
+        let glyphs = [PROGRESS_DONE, SELECT];
         for glyph in glyphs {
             assert!(!glyph.is_empty());
             assert!(!is_emoji(glyph), "{glyph}");

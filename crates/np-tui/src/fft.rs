@@ -37,9 +37,17 @@ pub fn spectrum(samples: &[f32], sample_rate: u32, bands: usize) -> Vec<f32> {
             let magnitude = (value.0 * value.0 + value.1 * value.1).sqrt();
             peak = peak.max(magnitude);
         }
-        // 对数幅度：-60dB..0dB 映射到 0..1，避免线性谱全挤在左侧。
-        let db = 20.0 * (peak + 1.0e-6).log10();
-        *slot = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+        *slot = peak;
+    }
+    // 用本帧最大峰值做相对刻度：音量只影响整体响度，不再让频谱整体铺满。
+    let max = out.iter().copied().fold(0.0f32, f32::max);
+    if max < 1.0e-4 {
+        return vec![0.0; bands];
+    }
+    for value in &mut out {
+        let relative = (*value / max).clamp(0.0, 1.0);
+        let db = 20.0 * (relative + 1.0e-6).log10();
+        *value = ((db + 55.0) / 55.0).clamp(0.0, 1.0).powf(0.8);
     }
     out
 }

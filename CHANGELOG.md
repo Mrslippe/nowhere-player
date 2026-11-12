@@ -19,7 +19,7 @@
 
 ### Removed
 
-- 补全、候选弹层、过滤、沉浸、Tab 焦点切换
+- 过滤、沉浸、Tab 焦点切换
 - `a` 入队、`d` 删除、`f` 视觉、`gg/G`、`:`/`?` 入口
 - `graphite` / `amber` / `ice` / `phosphor` / `tui-block` / `tui-wire` / `tui-paper` 内置主题
 

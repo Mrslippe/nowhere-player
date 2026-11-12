@@ -84,6 +84,9 @@ where
         if app.poll_tray(player) {
             return Ok(());
         }
+        if app.refresh_completion(player) {
+            draw_needed = true;
+        }
         if draw_needed {
             update_spectrum(app, player);
             draw_synced(terminal, app, player)?;
@@ -114,6 +117,15 @@ where
                                     theme_ctx.api,
                                     theme_ctx.settings,
                                 );
+                            }
+                            KeyCode::Tab => {
+                                app.accept_completion();
+                            }
+                            KeyCode::Up if app.completion.is_some() => {
+                                app.move_completion(false);
+                            }
+                            KeyCode::Down if app.completion.is_some() => {
+                                app.move_completion(true);
                             }
                             KeyCode::Up => app.history_up(),
                             KeyCode::Down => app.history_down(),
@@ -155,18 +167,57 @@ where
                             KeyCode::Enter => {
                                 if app.focus == Focus::Browse {
                                     app.focus = Focus::List;
-                                } else if let Some(row) =
-                                    app.filtered_rows().get(app.row_index).cloned()
-                                    && let Some(sequence) = row.first()
-                                {
-                                    app.run(
-                                        format!("play {sequence}"),
-                                        player,
-                                        library,
-                                        search.tx,
-                                        theme_ctx.api,
-                                        theme_ctx.settings,
-                                    );
+                                } else {
+                                    let kind = app.view_kind.get(app.view_index).cloned();
+                                    match kind {
+                                        Some(BrowseKind::PlaylistRoot) => {
+                                            let name = app
+                                                .filtered_rows()
+                                                .get(app.row_index)
+                                                .and_then(|row| row.first())
+                                                .cloned();
+                                            if let Some(name) = name {
+                                                if !app.playlist_expanded {
+                                                    app.toggle_playlist();
+                                                }
+                                                if let Some(index) = app.view_kind.iter().position(
+                                                    |kind| matches!(kind, BrowseKind::Playlist(title) if title == &name),
+                                                ) {
+                                                    app.view_index = index;
+                                                    app.row_index = 0;
+                                                    app.focus = Focus::List;
+                                                }
+                                            }
+                                        }
+                                        Some(BrowseKind::Settings) => {}
+                                        _ => {
+                                            let local_path = app.selected_view().and_then(|view| {
+                                                match view.refs.get(app.row_index) {
+                                                    Some(TrackRef::Local(path)) => {
+                                                        Some(path.to_string_lossy().into_owned())
+                                                    }
+                                                    _ => None,
+                                                }
+                                            });
+                                            if let Some(path) = local_path {
+                                                match player.play(Some(path)) {
+                                                    Ok(_) => app.status = "播放中".to_owned(),
+                                                    Err(error) => {
+                                                        app.status = error.message.clone()
+                                                    }
+                                                }
+                                            } else {
+                                                app.run(
+                                                    format!("play {}", app.row_index + 1),
+                                                    player,
+                                                    library,
+                                                    search.tx,
+                                                    theme_ctx.api,
+                                                    theme_ctx.settings,
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Esc => {

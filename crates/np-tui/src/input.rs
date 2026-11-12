@@ -217,11 +217,58 @@ pub(crate) fn format_row(row: &[String], widths: &[usize]) -> String {
     (0..widths.len())
         .map(|index| {
             let value = row.get(index).map_or("", String::as_str);
-            let pad = widths[index].saturating_sub(display_width(value));
+            let value = truncate_width(value, widths[index]);
+            let pad = widths[index].saturating_sub(display_width(&value));
             format!("{value}{}", " ".repeat(pad))
         })
         .collect::<Vec<_>>()
         .join("  ")
+}
+
+/// 在固定宽度内分配列宽：首列/末列保留，中间列按比例压缩。
+pub(crate) fn fit_table_widths(
+    columns: &[String],
+    rows: &[Vec<String>],
+    available: usize,
+) -> Vec<usize> {
+    let natural = table_widths(columns, rows);
+    let count = natural.len();
+    if count == 0 {
+        return natural;
+    }
+    let separators = 2 * count.saturating_sub(1);
+    if natural.iter().sum::<usize>() + separators <= available {
+        return natural;
+    }
+    let mut widths = vec![1; count];
+    if count == 1 {
+        widths[0] = available.max(1);
+        return widths;
+    }
+    let first = natural[0].min(4).min(available);
+    let last = natural[count - 1].min(available.saturating_sub(first + separators).max(1));
+    widths[0] = first;
+    widths[count - 1] = last;
+    let budget = available.saturating_sub(first + last + separators);
+    let flexible = count - 2;
+    if flexible == 0 {
+        return widths;
+    }
+    if budget <= flexible {
+        return widths;
+    }
+    let natural_flex: usize = natural[1..count - 1].iter().sum();
+    let mut assigned = 0;
+    for index in 1..count - 1 {
+        let width = if index + 1 == count - 1 {
+            budget.saturating_sub(assigned).max(1)
+        } else {
+            (natural[index] * budget / natural_flex.max(1)).max(1)
+        };
+        widths[index] = width;
+        assigned += width;
+    }
+    widths
 }
 
 pub(crate) fn display_width(value: &str) -> usize {

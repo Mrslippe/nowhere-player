@@ -559,10 +559,10 @@ fn player_content_is_sixty_eight_columns_on_72x24() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let progress_row = (0..24)
-        .find(|y| (0..72).any(|x| buffer[(x, *y)].symbol() == glyphs::PROGRESS_TODO))
+        .find(|y| (0..72).any(|x| buffer[(x, *y)].symbol() == glyphs::PROGRESS_DONE))
         .expect("progress row");
     let filled = (0..72)
-        .filter(|x| buffer[(*x, progress_row)].symbol() == glyphs::PROGRESS_TODO)
+        .filter(|x| buffer[(*x, progress_row)].symbol() == glyphs::PROGRESS_DONE)
         .count();
     assert_eq!(filled, 34);
     let gaps = (0..72)
@@ -612,11 +612,11 @@ fn focus_and_status_styles_follow_the_focused_pane() {
     let corners_accent = buffer
         .content()
         .iter()
-        .filter(|cell| cell.symbol() == "┏" && cell.style().fg == accent)
+        .filter(|cell| cell.symbol() == "┓" && cell.style().fg == accent)
         .count();
     assert!(
         corners_accent >= 1,
-        "focused Browse corner missing: {corners_accent}"
+        "focused List corner missing: {corners_accent}"
     );
 
     app.focus = Focus::Controller;
@@ -714,4 +714,39 @@ fn more_than_five_playlists_start_collapsed() {
     assert!(app.playlist_expanded);
     assert!(app.views.iter().any(|view| view.title == "P0"));
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn controller_completion_still_accepts_a_command() {
+    let audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.input = "sea".chars().collect();
+    app.cursor = 3;
+    app.last_edit = std::time::Instant::now() - std::time::Duration::from_millis(100);
+    assert!(app.refresh_completion(&audio));
+    assert!(app.completion.is_some());
+    assert!(app.accept_completion());
+    assert!(app.input_text().starts_with("search"));
+}
+
+#[test]
+fn long_title_does_not_displace_artist_or_duration() {
+    let columns = vec![
+        "序号".to_owned(),
+        "标题".to_owned(),
+        "艺人".to_owned(),
+        "时长".to_owned(),
+    ];
+    let rows = vec![vec![
+        "1".to_owned(),
+        "一个非常非常非常非常非常非常非常长的歌曲标题".to_owned(),
+        "艺人".to_owned(),
+        "03:00".to_owned(),
+    ]];
+    let widths = fit_table_widths(&columns, &rows, 46);
+    assert!(widths.iter().sum::<usize>() + 2 * (widths.len() - 1) <= 46);
+    assert!(widths[0] <= 4);
+    assert_eq!(widths[3], 5);
+    let line = format_row(&rows[0], &widths);
+    assert!(display_width(&line) <= 46);
 }

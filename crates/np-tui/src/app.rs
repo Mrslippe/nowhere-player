@@ -10,8 +10,8 @@ use crate::tray;
 use crate::{osc, startup};
 use np_app::{
     Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi, SearchHit, Services,
-    SettingsHandle, ThemeApi, execute_with_services, online_play_hit, online_play_started_block,
-    run_online_play,
+    SettingsHandle, ThemeApi, complete_for, execute_with_services, online_play_hit,
+    online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus, Output};
 pub(crate) struct App {
@@ -26,6 +26,10 @@ pub(crate) struct App {
     pub(crate) stereo_left: Vec<f32>,
     pub(crate) stereo_right: Vec<f32>,
     pub(crate) spectrum_generation: u64,
+    pub(crate) completion: Option<np_core::Completion>,
+    pub(crate) completion_index: usize,
+    pub(crate) last_edit: std::time::Instant,
+    pub(crate) history_nav: bool,
     pub(crate) visual_mode: VisualMode,
     pub(crate) search_id: u64,
     pub(crate) search_pending: bool,
@@ -61,6 +65,10 @@ impl App {
             stereo_left: vec![0.0; 2048],
             stereo_right: vec![0.0; 2048],
             spectrum_generation: 0,
+            completion: None,
+            completion_index: 0,
+            last_edit: std::time::Instant::now(),
+            history_nav: false,
             visual_mode: VisualMode::Spectrum,
             search_id: 0,
             search_pending: false,
@@ -91,6 +99,9 @@ impl App {
         self.input.insert(self.cursor, character);
         self.cursor += 1;
         self.history_cursor = None;
+        self.history_nav = false;
+        self.last_edit = std::time::Instant::now();
+        self.completion = None;
     }
 
     pub(crate) fn backspace(&mut self) {
@@ -98,6 +109,9 @@ impl App {
             self.cursor -= 1;
             self.input.remove(self.cursor);
             self.history_cursor = None;
+            self.history_nav = false;
+            self.last_edit = std::time::Instant::now();
+            self.completion = None;
         }
     }
 
@@ -133,6 +147,8 @@ impl App {
             self.cursor = 0;
         } else {
             self.history_cursor = Some(index + 1);
+            self.history_nav = true;
+            self.completion = None;
             self.input = self.history[index + 1].chars().collect();
             self.cursor = self.input.len();
         }
@@ -232,7 +248,25 @@ impl App {
             .iter()
             .map(|playlist| {
                 let command = format!("playlist show \"{}\"", playlist.name.replace('"', "\\\""));
-                capture_table(player, library, &command, &playlist.name)
+                let mut view = capture_table(player, library, &command, &playlist.name);
+                if let Ok(Some(playlist)) = library.playlist_by_name(&playlist.name)
+                    && let Ok((_, items)) = library.playlist_get(playlist.id)
+                {
+                    view.refs = items
+                        .into_iter()
+                        .map(|item| {
+                            if item.kind == "local" {
+                                TrackRef::Local(PathBuf::from(item.path))
+                            } else {
+                                TrackRef::Remote {
+                                    source: item.source,
+                                    id: item.source_id,
+                                }
+                            }
+                        })
+                        .collect();
+                }
+                view
             })
             .collect();
         let playlist_expanded = playlist_children.len() <= 5;
@@ -406,12 +440,84 @@ impl App {
         self.focus = Focus::Controller;
         self.input.clear();
         self.cursor = 0;
+        self.completion = None;
     }
 
     pub(crate) fn leave_command(&mut self) {
         self.focus = Focus::List;
         self.input.clear();
         self.cursor = 0;
+        self.completion = None;
+    }
+
+    pub(crate) fn refresh_completion(&mut self, player: &dyn PlayerApi) -> bool {
+        if self.input.is_empty() {
+            self.completion = None;
+            return false;
+        }
+        if self.history_nav {
+            return self.completion.take().is_some();
+        }
+        if self.last_edit.elapsed() < std::time::Duration::from_millis(80) {
+            return false;
+        }
+        let completion = complete_for(player, &self.input_text(), self.cursor);
+        let changed = self.completion.as_ref().is_none_or(|old| {
+            old.items.len() != completion.items.len()
+                || old
+                    .items
+                    .iter()
+                    .zip(&completion.items)
+                    .any(|(left, right)| left.text != right.text)
+        }) && !completion.items.is_empty();
+        self.completion = if completion.items.is_empty() {
+            None
+        } else {
+            Some(completion)
+        };
+        if changed {
+            self.completion_index = 0;
+        } else if let Some(completion) = &self.completion {
+            self.completion_index = self.completion_index.min(completion.items.len() - 1);
+        }
+        changed
+    }
+
+    pub(crate) fn move_completion(&mut self, down: bool) -> bool {
+        let Some(completion) = &self.completion else {
+            return false;
+        };
+        let len = completion.items.len();
+        if len == 0 {
+            return false;
+        }
+        if down {
+            self.completion_index = (self.completion_index + 1) % len;
+        } else {
+            self.completion_index = (self.completion_index + len - 1) % len;
+        }
+        true
+    }
+
+    pub(crate) fn accept_completion(&mut self) -> bool {
+        let Some(completion) = self.completion.take() else {
+            return false;
+        };
+        let Some(item) = completion.items.get(self.completion_index) else {
+            return false;
+        };
+        let start = completion.replace_start.min(self.input.len());
+        let end = completion.replace_end.min(self.input.len());
+        let replacement = if item.kind == np_core::CompletionKind::Command {
+            format!("{} ", item.text.trim_end())
+        } else {
+            item.text.clone()
+        };
+        self.input.splice(start..end, replacement.chars());
+        self.cursor = start + replacement.chars().count();
+        self.history_nav = false;
+        self.last_edit = std::time::Instant::now();
+        true
     }
 
     pub(crate) fn upsert_block(&mut self, block: Block) {

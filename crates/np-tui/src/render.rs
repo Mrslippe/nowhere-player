@@ -49,6 +49,18 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     draw_browse_list(frame, top, app);
     draw_player_strip(frame, player_area, app, player);
     draw_controller(frame, controller_area, app);
+    if app.completion.is_some() && controller_area.y > top.y + 3 {
+        let height = 7.min(controller_area.y - top.y - 1);
+        let width = 58.min(controller_area.width.saturating_sub(4));
+        let popup = Rect {
+            x: controller_area.x + 2,
+            y: controller_area.y - height,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, popup);
+        draw_completion(frame, popup, app);
+    }
     draw_status_border(frame, full, app);
 }
 
@@ -57,38 +69,45 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
     let y = area.bottom().saturating_sub(1);
-    let version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-    let version_width = display_width(&version) as u16;
-    let version_x = area.right().saturating_sub(version_width + 1);
-    frame.buffer_mut().set_string(
-        version_x,
-        y,
-        &version,
-        Style::default().fg(app.palette.faint),
-    );
+    let max_x = area.right().saturating_sub(2);
 
     let hints: &[(&str, &str)] = match app.focus {
-        Focus::Controller => &[("←→", " 光标"), ("Enter", " 执行"), ("Esc", " 返回")],
+        Focus::Controller => &[
+            ("←→", "光标"),
+            ("Tab", "补全"),
+            ("Enter", "执行"),
+            ("Esc", "返回"),
+        ],
         Focus::Browse => &[
-            ("↑↓", " 选择"),
-            ("←→", " 焦点"),
-            ("Enter", " 进入"),
-            ("/", " 命令"),
-            ("q", " 退出"),
+            ("↑↓", "选择"),
+            ("←→", "焦点"),
+            ("Enter", "进入"),
+            ("/", "命令"),
+            ("q", "退出"),
         ],
         Focus::List => &[
-            ("↑↓", " 选择"),
-            ("←→", " 焦点"),
-            ("Enter", " 播放"),
-            ("Space", " 暂停"),
-            ("n/p", " 切歌"),
-            ("/", " 命令"),
-            ("q", " 退出"),
+            ("↑↓", "选择"),
+            ("←→", "焦点"),
+            ("Enter", "播放"),
+            ("Space", "暂停"),
+            ("n/p", "切歌"),
+            ("/", "命令"),
+            ("q", "退出"),
         ],
     };
     let mut x = area.x.saturating_add(2);
-    let max_x = version_x.saturating_sub(1);
-    for (key, description) in hints {
+    for (index, (key, description)) in hints.iter().enumerate() {
+        if index > 0 {
+            let separator = " · ";
+            let separator_width = display_width(separator) as u16;
+            if x.saturating_add(separator_width) > max_x {
+                break;
+            }
+            frame
+                .buffer_mut()
+                .set_string(x, y, separator, Style::default().fg(app.palette.faint));
+            x = x.saturating_add(separator_width);
+        }
         let key_width = display_width(key) as u16;
         let description_width = display_width(description) as u16;
         if x.saturating_add(key_width + description_width) > max_x {
@@ -133,16 +152,48 @@ fn border_text(
     frame.buffer_mut().set_string(x, y, text, style);
 }
 
+fn paint_browse_borders(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    split: u16,
+    focused: bool,
+    app: &App,
+) {
+    let line = Style::default().fg(app.palette.line);
+    let accent = Style::default().fg(app.palette.accent);
+    let browse_style = if app.focus == Focus::Browse {
+        accent
+    } else {
+        line
+    };
+    let list_style = if app.focus == Focus::List {
+        accent
+    } else {
+        line
+    };
+    let divider_style = if focused { accent } else { line };
+    let bottom = area.bottom().saturating_sub(1);
+    for x in area.x..=split {
+        frame.buffer_mut()[(x, area.y)].set_style(browse_style);
+        frame.buffer_mut()[(x, bottom)].set_style(browse_style);
+    }
+    for x in split.saturating_add(1)..area.right() {
+        frame.buffer_mut()[(x, area.y)].set_style(list_style);
+        frame.buffer_mut()[(x, bottom)].set_style(list_style);
+    }
+    for y in area.y..=bottom {
+        frame.buffer_mut()[(area.x, y)].set_style(browse_style);
+        frame.buffer_mut()[(area.right().saturating_sub(1), y)].set_style(list_style);
+        frame.buffer_mut()[(split, y)].set_style(divider_style);
+    }
+}
+
 fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let focused = app.focus != Focus::Controller;
     let block = TuiBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(if focused {
-            app.palette.accent
-        } else {
-            app.palette.line
-        }))
+        .border_style(Style::default().fg(app.palette.line))
         .style(
             Style::default()
                 .bg(app.palette.bg.unwrap_or(Color::Reset))
@@ -150,6 +201,11 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         );
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let split = inner
+        .x
+        .saturating_add(22)
+        .min(inner.right().saturating_sub(1));
+    paint_browse_borders(frame, area, split, focused, app);
     let browse_title_style = Style::default()
         .fg(if app.focus == Focus::Browse {
             app.palette.accent
@@ -165,10 +221,6 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         })
         .add_modifier(Modifier::BOLD);
     border_text(frame, area, area.y, " Browse ", false, browse_title_style);
-    let split = inner
-        .x
-        .saturating_add(22)
-        .min(inner.right().saturating_sub(1));
     frame
         .buffer_mut()
         .set_string(split.saturating_add(1), area.y, " List ", list_title_style);
@@ -211,7 +263,11 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     draw_library(frame, left, app);
     draw_list(frame, right, app);
-    let line_style = Style::default().fg(app.palette.line);
+    let line_style = Style::default().fg(if focused {
+        app.palette.accent
+    } else {
+        app.palette.line
+    });
     for y in inner.y..inner.bottom() {
         frame.buffer_mut().set_string(split, y, "┃", line_style);
     }
@@ -326,7 +382,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
     let rows = app.filtered_rows();
-    let mut widths = table_widths(&view.columns, &rows);
+    let mut widths = fit_table_widths(&view.columns, &rows, inner.width as usize);
     let used: usize = widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1);
     if used < inner.width as usize {
         let flex = view
@@ -360,6 +416,44 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             truncate_width(&format_row(row, &widths), inner.width as usize),
             style,
         ));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+pub(crate) fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(app.palette.line))
+        .title(" 候选 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(completion) = &app.completion else {
+        return;
+    };
+    let mut lines = Vec::new();
+    for (index, item) in completion.items.iter().take(5).enumerate() {
+        let selected = index == app.completion_index;
+        let marker = if selected { glyphs::SELECT } else { " " };
+        let text = format!("{marker} {}  {}", item.text, item.summary);
+        let style = if selected {
+            Style::default()
+                .bg(app.palette.fg)
+                .fg(app.palette.bg.unwrap_or(Color::Reset))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.palette.fg)
+        };
+        lines.push(Line::from(TuiSpan::styled(
+            truncate_width(&text, inner.width as usize),
+            style,
+        )));
+    }
+    if let Some(item) = completion.items.get(app.completion_index) {
+        lines.push(Line::from(TuiSpan::styled(
+            truncate_width(&item.usage, inner.width as usize),
+            Style::default().fg(app.palette.muted),
+        )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }

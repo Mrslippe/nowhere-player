@@ -32,21 +32,20 @@ pub(crate) fn draw_player_strip(
         return;
     }
 
-    let visual_height = content.height.saturating_sub(2);
+    let visual_height = content.height.saturating_sub(1);
+    let visual_area = Rect {
+        x: content.x,
+        y: content.y,
+        width: content.width,
+        height: visual_height,
+    };
+    let idle =
+        app.visual_mode == VisualMode::Spectrum && app.spectrum.iter().all(|value| *value == 0.0);
     if visual_height > 0 {
-        let visual_area = Rect {
-            x: content.x,
-            y: content.y,
-            width: content.width,
-            height: visual_height,
-        };
-        let idle = app.visual_mode == VisualMode::Spectrum
-            && app.spectrum.iter().all(|value| *value == 0.0);
         if idle {
             let line = "░".repeat(content.width as usize);
             let style = Style::default().fg(app.palette.faint);
-            let last = content.y.saturating_add(visual_height);
-            for y in visual_area.y..=last {
+            for y in visual_area.y..visual_area.bottom() {
                 frame
                     .buffer_mut()
                     .set_string(visual_area.x, y, &line, style);
@@ -58,6 +57,8 @@ pub(crate) fn draw_player_strip(
 
     let duration = player.duration_ms().unwrap_or(0);
     let position = player.position_ms().min(duration);
+    let overlay_y = content.bottom().saturating_sub(2);
+    let max_text = content.width.saturating_sub(2) as usize;
     let title = truncate_width(
         &format!(
             "{} — {}  {} / {}",
@@ -66,23 +67,33 @@ pub(crate) fn draw_player_strip(
             format_time(position),
             format_time(duration)
         ),
-        content.width as usize,
+        max_text,
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(TuiSpan::styled(
-            title,
-            Style::default()
-                .fg(app.palette.muted)
-                .bg(app.palette.bg.unwrap_or(Color::Reset)),
-        )))
-        .alignment(Alignment::Right),
-        Rect {
-            x: content.x,
-            y: content.y + visual_height,
-            width: content.width,
-            height: 1,
-        },
-    );
+    let title_width = UnicodeWidthStr::width(title.as_str()) as u16;
+    if title_width > 0 {
+        let patch_width = title_width.saturating_add(2).min(content.width);
+        let patch_x = content.right().saturating_sub(patch_width);
+        let bg = app.palette.bg.unwrap_or(Color::Reset);
+        frame.buffer_mut().set_string(
+            patch_x,
+            overlay_y,
+            " ".repeat(patch_width as usize),
+            Style::default().bg(bg),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(TuiSpan::styled(
+                title,
+                Style::default().fg(app.palette.muted).bg(bg),
+            )))
+            .alignment(Alignment::Right),
+            Rect {
+                x: patch_x,
+                y: overlay_y,
+                width: patch_width,
+                height: 1,
+            },
+        );
+    }
 
     let ratio = if duration == 0 {
         0.0
@@ -91,18 +102,24 @@ pub(crate) fn draw_player_strip(
     };
     let bar_width = content.width as usize;
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
-    let mut progress = String::with_capacity(bar_width);
+    let mut spans = Vec::with_capacity(bar_width);
     for column in 0..bar_width {
         if column % 2 == 1 {
-            progress.push(' ');
+            spans.push(TuiSpan::raw(" "));
         } else if column < filled {
-            progress.push_str(glyphs::PROGRESS_DONE);
+            spans.push(TuiSpan::styled(
+                glyphs::PROGRESS_DONE,
+                Style::default().fg(app.palette.accent),
+            ));
         } else {
-            progress.push_str(glyphs::PROGRESS_TODO);
+            spans.push(TuiSpan::styled(
+                glyphs::PROGRESS_DONE,
+                Style::default().fg(app.palette.faint),
+            ));
         }
     }
     frame.render_widget(
-        Paragraph::new(progress).style(Style::default().fg(app.palette.accent)),
+        Paragraph::new(Line::from(spans)),
         Rect {
             x: content.x,
             y: content.bottom().saturating_sub(1),
