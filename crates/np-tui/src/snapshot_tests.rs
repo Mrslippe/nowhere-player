@@ -242,6 +242,7 @@ fn composed_rows_are_equal_width() {
         .map(|row| UnicodeWidthStr::width(row.as_str()))
         .collect();
     assert_eq!(widths.len(), 1, "composed rows differ: {widths:?}");
+    assert_eq!(widths.iter().next().copied(), Some(67));
     assert_eq!(composed.len(), 6);
 }
 
