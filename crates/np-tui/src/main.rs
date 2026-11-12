@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod app_dirs;
 mod audio;
-mod cover;
 mod fft;
 mod glyphs;
 mod instance;
@@ -23,7 +22,6 @@ mod theme;
 mod tray;
 
 use audio::TuiAudio;
-use cover::CoverView;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -736,20 +734,6 @@ fn now_millis() -> u64 {
         })
 }
 
-fn resolve_cover(player: &TuiAudio, library: &Arc<LibraryHandle>) -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("NP_TUI_COVER") {
-        return Some(PathBuf::from(path));
-    }
-    let track = library
-        .track_by_path(player.source_path()?.to_str()?)
-        .ok()
-        .flatten()?;
-    let key = track.cover_key?;
-    let dir = library.covers_dir();
-    let path = dir.join(format!("{key}.jpg"));
-    path.is_file().then_some(path)
-}
-
 fn filter_matches(row: &[String], filter: &str) -> bool {
     let filter = filter.trim().to_lowercase();
     filter.is_empty() || row.iter().any(|cell| cell.to_lowercase().contains(&filter))
@@ -947,12 +931,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let cover_path = resolve_cover(&player, &library);
-    let mut cover = cover_path
-        .as_deref()
-        .map(CoverView::load)
-        .unwrap_or_else(CoverView::empty);
-    draw_synced(&mut terminal, &mut app, &player, &mut cover)?;
+    draw_synced(&mut terminal, &mut app, &player)?;
     if let Ok(path) = std::env::var("NP_TUI_STARTUP_FILE") {
         std::fs::write(path, started.elapsed().as_millis().to_string())?;
     }
@@ -960,7 +939,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut terminal,
         &mut app,
         &mut player,
-        &mut cover,
         &library,
         SearchContext {
             tx: &search_tx,
@@ -1156,13 +1134,12 @@ fn draw_synced<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     player: &TuiAudio,
-    cover: &mut CoverView,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: std::error::Error + 'static,
 {
     execute!(io::stdout(), BeginSynchronizedUpdate)?;
-    let result = terminal.draw(|frame| draw(frame, app, player, cover));
+    let result = terminal.draw(|frame| draw(frame, app, player));
     let end = execute!(io::stdout(), EndSynchronizedUpdate);
     result?;
     end?;
@@ -1173,7 +1150,6 @@ fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     player: &mut TuiAudio,
-    cover: &mut CoverView,
     library: &Arc<LibraryHandle>,
     search: SearchContext<'_>,
     theme_ctx: ThemeContext<'_>,
@@ -1203,12 +1179,12 @@ where
         if app.poll_tray(player) {
             return Ok(());
         }
-        if app.refresh_completion(player) || cover.poll() {
+        if app.refresh_completion(player) {
             draw_needed = true;
         }
         if draw_needed {
             update_spectrum(app, player);
-            draw_synced(terminal, app, player, cover)?;
+            draw_synced(terminal, app, player)?;
             draw_needed = false;
         }
         let timeout = if app.search_pending || !app.input.is_empty() {
@@ -1522,7 +1498,11 @@ fn update_spectrum(app: &mut App, player: &TuiAudio) {
 }
 
 #[allow(dead_code)]
-fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mut CoverView) {
+fn player_height_for(area_height: u16) -> u16 {
+    6.min(area_height.saturating_sub(3).max(3))
+}
+
+fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
     let full = frame.area();
     if let Some(bg) = app.palette.bg {
         frame.buffer_mut().set_style(full, Style::default().bg(bg));
@@ -1541,8 +1521,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
         full
     };
 
-    let player_height =
-        if area.height < 24 { 6 } else { 10 }.min(area.height.saturating_sub(3).max(3));
+    let player_height = player_height_for(area.height);
     let input_height = u16::from(matches!(app.mode, UiMode::Command | UiMode::Filter));
     let body_height = area
         .height
@@ -1576,7 +1555,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
     frame.render_widget(title, rows[0]);
 
     if app.immersive {
-        draw_player_strip(frame, rows[1].union(rows[2]), app, player, cover);
+        draw_player_strip(frame, rows[1].union(rows[2]), app, player);
     } else {
         if area.width < 80 {
             draw_list(frame, rows[1], app);
@@ -1588,7 +1567,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio, cover: &mu
             draw_library(frame, columns[0], app);
             draw_list(frame, columns[1], app);
         }
-        draw_player_strip(frame, rows[2], app, player, cover);
+        draw_player_strip(frame, rows[2], app, player);
     }
 
     if matches!(app.mode, UiMode::Command | UiMode::Filter) {
@@ -1803,13 +1782,7 @@ fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_player_strip(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    app: &App,
-    player: &TuiAudio,
-    cover: &mut CoverView,
-) {
+fn draw_player_strip(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAudio) {
     let block = TuiBlock::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(app.palette.line))
@@ -1823,33 +1796,10 @@ fn draw_player_strip(
     if inner.height == 0 || inner.width == 0 {
         return;
     }
-    let cover_width = if app.immersive {
-        inner.width.min(44)
-    } else {
-        inner.width.min(24)
-    };
-    let cover_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: cover_width,
-        height: inner.height,
-    };
-    if let Some(bg) = app.palette.bg {
-        let fill = " ".repeat(cover_area.width as usize);
-        let lines = vec![Line::from(fill); cover_area.height as usize];
-        frame.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(bg)),
-            cover_area,
-        );
-    }
-    cover.render(cover_area, frame, app.palette.faint, app.palette.bg);
 
-    let text_x = inner.x + cover_width + 1;
-    let text_width = inner.width.saturating_sub(cover_width + 1);
-    let mut y = inner.y;
     let title = truncate_width(
         &format!("{} · {}", player.title(), player.artist()),
-        text_width as usize,
+        inner.width as usize,
     );
     frame.render_widget(
         Paragraph::new(Line::from(TuiSpan::styled(
@@ -1860,13 +1810,13 @@ fn draw_player_strip(
                 .add_modifier(Modifier::BOLD),
         ))),
         Rect {
-            x: text_x,
-            y,
-            width: text_width,
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
             height: 1,
         },
     );
-    y += 1;
+
     let duration = player.duration_ms().unwrap_or(0);
     let position = player.position_ms().min(duration);
     let ratio = if duration == 0 {
@@ -1874,58 +1824,56 @@ fn draw_player_strip(
     } else {
         position as f64 / duration as f64
     };
-    let bar_width = text_width.saturating_sub(14).max(4) as usize;
+    let bar_width = inner.width.saturating_sub(14).max(4) as usize;
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
+    let progress = format!(
+        "{}{}  {} / {}",
+        glyphs::PROGRESS_DONE.repeat(filled),
+        glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled)),
+        format_time(position),
+        format_time(duration)
+    );
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}{}  {} / {}",
-            glyphs::PROGRESS_DONE.repeat(filled),
-            glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled)),
-            format_time(position),
-            format_time(duration)
-        )),
+        Paragraph::new(progress),
         Rect {
-            x: text_x,
-            y,
-            width: text_width,
+            x: inner.x,
+            y: inner.y + 1,
+            width: inner.width,
             height: 1,
         },
     );
-    y += 1;
-    let visual_height = inner.height.saturating_sub(3).min(4);
-    if visual_height > 0 && y + visual_height <= inner.y + inner.height {
+
+    let visual_height = inner.height.saturating_sub(3).min(2);
+    if visual_height > 0 {
         draw_visual(
             frame,
             Rect {
-                x: text_x,
-                y,
-                width: text_width,
+                x: inner.x,
+                y: inner.y + 2,
+                width: inner.width,
                 height: visual_height,
             },
             app,
             app.palette.accent,
             app.palette.bg,
         );
-        y += visual_height;
     }
-    if y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{}   {}   {}   [{}]",
-                glyphs::PREV,
-                glyphs::PLAY,
-                glyphs::NEXT,
-                app.visual_mode.label()
-            ))
-            .style(Style::default().fg(app.palette.accent)),
-            Rect {
-                x: text_x,
-                y,
-                width: text_width,
-                height: 1,
-            },
-        );
-    }
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}   {}   {}   [{}]",
+            glyphs::PREV,
+            glyphs::PLAY,
+            glyphs::NEXT,
+            app.visual_mode.label()
+        ))
+        .style(Style::default().fg(app.palette.accent)),
+        Rect {
+            x: inner.x,
+            y: inner.y + 2 + visual_height,
+            width: inner.width,
+            height: 1,
+        },
+    );
 }
 
 fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1989,168 +1937,6 @@ fn draw_output(frame: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false })
         .scroll((app.scroll, 0));
     frame.render_widget(output, area);
-}
-
-fn draw_panel(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    app: &App,
-    player: &TuiAudio,
-    cover: &mut CoverView,
-    immersive: bool,
-) {
-    let block = TuiBlock::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.palette.line))
-        .style(
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
-        )
-        .title(format!(" 播放 · {} ", cover.protocol()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width < 4 || inner.height < 4 {
-        return;
-    }
-
-    let cover_height = if immersive {
-        inner.height.saturating_mul(6) / 10
-    } else {
-        inner.height.saturating_sub(10).clamp(2, 8)
-    };
-    let cover_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: if immersive {
-            inner.width.saturating_mul(40) / 100
-        } else {
-            inner.width
-        },
-        height: cover_height,
-    };
-    // 主题模式下先铺封面区域的底色，避免 Placeholder / Sixel 未就绪时出现黑块。
-    if let Some(bg) = app.palette.bg {
-        let fill = " ".repeat(cover_area.width as usize);
-        let lines = vec![Line::from(fill); cover_area.height as usize];
-        frame.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(bg)),
-            cover_area,
-        );
-    }
-    cover.render(cover_area, frame, app.palette.faint, app.palette.bg);
-
-    let text_x = if immersive {
-        cover_area.x + cover_area.width + 2
-    } else {
-        inner.x
-    };
-    let text_width = if immersive {
-        inner.width.saturating_sub(cover_area.width + 2)
-    } else {
-        inner.width
-    };
-    let mut y = if immersive {
-        inner.y
-    } else {
-        inner.y + cover_height
-    };
-    let title = truncate_width(&player.title(), text_width as usize);
-    let artist = truncate_width(&player.artist(), text_width as usize);
-    if y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(Line::from(TuiSpan::styled(
-                title,
-                Style::default()
-                    .bg(app.palette.bg.unwrap_or(Color::Reset))
-                    .fg(app.palette.fg)
-                    .add_modifier(Modifier::BOLD),
-            ))),
-            Rect {
-                x: text_x,
-                y,
-                width: text_width,
-                height: 1,
-            },
-        );
-        y += 1;
-    }
-    if y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(Line::from(TuiSpan::styled(
-                artist,
-                Style::default()
-                    .bg(app.palette.bg.unwrap_or(Color::Reset))
-                    .fg(app.palette.muted),
-            ))),
-            Rect {
-                x: text_x,
-                y,
-                width: text_width,
-                height: 1,
-            },
-        );
-        y += 1;
-    }
-
-    let remaining = (inner.y + inner.height).saturating_sub(y);
-    let spectrum_height = remaining.saturating_sub(2).min(4);
-    if spectrum_height > 0 && text_width > 0 {
-        let area = Rect {
-            x: text_x,
-            y,
-            width: text_width,
-            height: spectrum_height,
-        };
-        draw_visual(frame, area, app, app.palette.accent, app.palette.bg);
-    }
-    y += spectrum_height;
-
-    let duration = player.duration_ms().unwrap_or(0);
-    let position = player.position_ms().min(duration);
-    let ratio = if duration == 0 {
-        0.0
-    } else {
-        position as f64 / duration as f64
-    };
-    let bar_width = text_width.saturating_sub(14).max(4) as usize;
-    let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
-    let progress = format!(
-        "{}{}  {} / {}",
-        glyphs::PROGRESS_DONE.repeat(filled),
-        glyphs::PROGRESS_TODO.repeat(bar_width.saturating_sub(filled)),
-        format_time(position),
-        format_time(duration)
-    );
-    if y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(Line::from(TuiSpan::styled(
-                progress,
-                Style::default().fg(app.palette.fg),
-            ))),
-            Rect {
-                x: text_x,
-                y,
-                width: text_width,
-                height: 1,
-            },
-        );
-        y += 1;
-    }
-    if y < inner.y + inner.height {
-        frame.render_widget(
-            Paragraph::new(Line::from(TuiSpan::styled(
-                format!("{}   {}   {}", glyphs::PREV, glyphs::PLAY, glyphs::NEXT),
-                Style::default().fg(app.palette.accent),
-            ))),
-            Rect {
-                x: text_x,
-                y,
-                width: text_width,
-                height: 1,
-            },
-        );
-    }
 }
 
 fn draw_spectrum(
@@ -2590,9 +2376,8 @@ mod tests {
             }],
         });
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let text: String = terminal
             .backend()
@@ -2616,9 +2401,8 @@ mod tests {
         app.stereo_right = app.stereo_left.clone();
         let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let braille = terminal
             .backend()
@@ -2645,9 +2429,8 @@ mod tests {
             .collect();
         let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let braille = terminal
             .backend()
@@ -2673,9 +2456,8 @@ mod tests {
         ];
         let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let braille = terminal
             .backend()
@@ -2713,10 +2495,9 @@ mod tests {
         let mut terminal = Terminal::new(CrosstermBackend::new(sink.clone())).unwrap();
         let mut app = App::new();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         for _ in 0..20 {
             terminal
-                .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+                .draw(|frame| draw(frame, &mut app, &audio))
                 .unwrap();
         }
         let bytes = sink.0.lock().unwrap().clone();
@@ -2752,9 +2533,8 @@ mod tests {
         let theme = TuiThemeApi::new(std::env::temp_dir().join("np-tui-paper-writer"));
         app.load_theme(&theme, "tui-paper");
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let bytes = sink.0.lock().unwrap().clone();
         let text = String::from_utf8_lossy(&bytes);
@@ -2775,9 +2555,8 @@ mod tests {
         app.load_theme(&theme, "tui-paper");
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         assert_eq!(
             terminal.backend().buffer()[(0, 0)].style().bg,
@@ -2898,15 +2677,14 @@ mod tests {
             refs: Vec::new(),
         }];
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let left_before = terminal.backend().buffer()[(1, 1)].style().fg;
         app.toggle_focus();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let left_after = terminal.backend().buffer()[(1, 1)].style().fg;
         assert_ne!(left_before, left_after);
@@ -2915,13 +2693,25 @@ mod tests {
     }
 
     #[test]
+    fn player_strip_is_six_rows_and_list_gets_the_rest() {
+        assert_eq!(player_height_for(30), 6);
+        assert_eq!(player_height_for(20), 6);
+        assert_eq!(player_height_for(8), 5);
+    }
+
+    #[test]
+    fn chinese_title_truncates_by_display_width() {
+        let text = truncate_width("晴天 · Jay Chou", 8);
+        assert_eq!(UnicodeWidthStr::width(text.as_str()), 8);
+    }
+
+    #[test]
     fn normal_mode_hides_command_input() {
         let mut app = App::new();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let text: String = terminal
             .backend()
@@ -2933,7 +2723,7 @@ mod tests {
         assert!(!text.replace(' ', "").contains("输入命令"));
         app.enter_command();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .unwrap();
         let text: String = terminal
             .backend()
@@ -2954,9 +2744,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::new();
         let audio = TuiAudio::empty();
-        let mut cover = CoverView::empty();
         terminal
-            .draw(|frame| draw(frame, &mut app, &audio, &mut cover))
+            .draw(|frame| draw(frame, &mut app, &audio))
             .expect("draw");
         let buffer = terminal.backend().buffer();
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
