@@ -224,3 +224,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod event_loop;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod snapshot_tests;
