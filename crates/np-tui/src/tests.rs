@@ -646,3 +646,68 @@ fn focus_and_status_styles_follow_the_focused_pane() {
     assert_eq!(status.style().fg, accent);
     assert!(status.style().add_modifier.contains(Modifier::BOLD));
 }
+
+#[test]
+fn load_views_keeps_search_node_and_playlist_first() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-load-views-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    let cache = root.join("cache");
+    let data = root.join("data");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: cache,
+        data_dir: data,
+    });
+    let settings = np_app::SettingsHandle::load(config);
+    let audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &library, &settings);
+
+    let titles: Vec<&str> = app.views.iter().map(|view| view.title.as_str()).collect();
+    assert_eq!(titles.first().copied(), Some("歌单"));
+    assert!(titles.contains(&"媒体库"));
+    assert!(titles.contains(&"搜索"));
+    assert!(titles.contains(&"队列"));
+    assert!(titles.contains(&"设置"));
+    assert_eq!(app.view_index, 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn more_than_five_playlists_start_collapsed() {
+    use np_app::LibraryApi;
+
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-playlists-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    let cache = root.join("cache");
+    let data = root.join("data");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: cache,
+        data_dir: data,
+    });
+    for index in 0..6 {
+        library.playlist_create(&format!("P{index}")).unwrap();
+    }
+    let settings = np_app::SettingsHandle::load(config);
+    let audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &library, &settings);
+
+    assert!(!app.playlist_expanded);
+    assert!(!app.views.iter().any(|view| view.title.starts_with('P')));
+    app.toggle_playlist();
+    assert!(app.playlist_expanded);
+    assert!(app.views.iter().any(|view| view.title == "P0"));
+    let _ = std::fs::remove_dir_all(root);
+}

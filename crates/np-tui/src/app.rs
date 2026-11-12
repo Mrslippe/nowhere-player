@@ -282,6 +282,9 @@ impl App {
         else {
             return;
         };
+        if self.view_index != root {
+            return;
+        }
         if self.playlist_expanded {
             let count = self.playlist_children.len();
             let selected_child = self
