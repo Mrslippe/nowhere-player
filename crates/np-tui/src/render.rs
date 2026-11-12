@@ -23,7 +23,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     let outer = TuiBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(app.palette.line))
+        .border_style(Style::default().fg(app.palette.line_strong))
         .style(
             Style::default()
                 .bg(app.palette.bg.unwrap_or(Color::Reset))

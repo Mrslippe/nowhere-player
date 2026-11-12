@@ -34,18 +34,25 @@ pub(crate) fn draw_player_strip(
 
     let visual_height = content.height.saturating_sub(2);
     if visual_height > 0 {
-        draw_visual(
-            frame,
-            Rect {
-                x: content.x,
-                y: content.y,
-                width: content.width,
-                height: visual_height,
-            },
-            app,
-            app.palette.accent,
-            app.palette.bg,
-        );
+        let visual_area = Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width,
+            height: visual_height,
+        };
+        let idle = app.visual_mode == VisualMode::Spectrum
+            && app.spectrum.iter().all(|value| *value == 0.0);
+        if idle {
+            let line = "░".repeat(content.width as usize);
+            let style = Style::default().fg(app.palette.faint);
+            for y in visual_area.y..visual_area.bottom() {
+                frame
+                    .buffer_mut()
+                    .set_string(visual_area.x, y, &line, style);
+            }
+        } else {
+            draw_visual(frame, visual_area, app, app.palette.accent, app.palette.bg);
+        }
     }
 
     let duration = player.duration_ms().unwrap_or(0);
