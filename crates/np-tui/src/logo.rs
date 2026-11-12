@@ -113,7 +113,7 @@ fn padded(row: &str, width: usize) -> String {
     out
 }
 
-pub(crate) fn compose(letters: &[Glyph; 7]) -> Vec<String> {
+pub(crate) fn compose(letters: &[Glyph]) -> Vec<String> {
     (0..6)
         .map(|row| {
             letters
