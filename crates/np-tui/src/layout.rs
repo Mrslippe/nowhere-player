@@ -22,10 +22,11 @@ pub(crate) fn vertical_heights(inner_height: u16) -> (u16, u16, u16) {
 }
 
 pub(crate) fn layout_inner(area: Rect) -> Rect {
+    // 外框左右各 1 格，工作区再左右各留 1 格；纵向只去掉外框。
     Rect {
-        x: area.x.saturating_add(1),
+        x: area.x.saturating_add(2),
         y: area.y.saturating_add(1),
-        width: area.width.saturating_sub(2),
+        width: area.width.saturating_sub(4),
         height: area.height.saturating_sub(2),
     }
 }
@@ -61,6 +62,10 @@ mod tests {
         let [top, player, controller] = layout_areas(outer);
         assert_eq!(top.height + player.height + controller.height, 22);
         assert_eq!(top.y, 1);
+        assert_eq!(top.x, 2);
+        assert_eq!(top.width, 68);
+        assert_eq!(player.x, 2);
+        assert_eq!(player.width, 68);
         assert_eq!(controller.bottom(), 23);
     }
 }

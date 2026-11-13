@@ -170,6 +170,12 @@ fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App, volume: 
         mode,
         Style::default().fg(app.palette.muted),
     );
+    for y in area.y.saturating_add(1)..area.bottom().saturating_sub(1) {
+        frame.buffer_mut().set_string(area.x, y, "┃", line);
+        frame
+            .buffer_mut()
+            .set_string(area.right().saturating_sub(1), y, "┃", line);
+    }
     let volume_width = 20u16;
     if area.width > volume_width + 8 {
         let filled =

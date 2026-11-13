@@ -153,10 +153,10 @@ fn border_text(
 }
 
 fn browse_width(inner_width: u16) -> u16 {
-    let proportional = (u32::from(inner_width) * 25 / 100) as u16;
+    let proportional = (u32::from(inner_width) * 23 / 100) as u16;
     proportional
-        .clamp(18, 26)
-        .min(inner_width.saturating_sub(10))
+        .clamp(15, 28)
+        .min(inner_width.saturating_sub(20))
 }
 
 fn paint_browse_borders(
@@ -351,9 +351,10 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             };
             let indent = "  ".repeat(depth.saturating_sub(1));
             let mut text = format!("{marker} {indent}{branch}{}", view.title);
+            let text_width = inner.width.saturating_sub(1) as usize;
             if active {
                 let width = display_width(&text);
-                let pad = (inner.width as usize).saturating_sub(width);
+                let pad = text_width.saturating_sub(width);
                 text.push_str(&" ".repeat(pad));
             }
             let style = if active {
@@ -364,10 +365,7 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             } else {
                 Style::default().fg(app.palette.fg)
             };
-            Line::from(TuiSpan::styled(
-                truncate_width(&text, inner.width as usize),
-                style,
-            ))
+            Line::from(TuiSpan::styled(truncate_width(&text, text_width), style))
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -380,7 +378,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = Rect {
         x: area.x.saturating_add(1),
         y: area.y,
-        width: area.width.saturating_sub(3),
+        width: area.width.saturating_sub(2),
         height: area.height,
     };
     let Some(view) = app.selected_view() else {

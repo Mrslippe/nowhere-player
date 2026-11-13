@@ -578,8 +578,8 @@ fn player_content_is_sixty_eight_columns_on_72x24() {
             (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
         })
         .expect("player title");
-    assert_eq!(buffer[(1, top)].symbol(), "┏");
-    assert_eq!(buffer[(2, top)].symbol(), " ");
+    assert_eq!(buffer[(2, top)].symbol(), "┏");
+    assert_eq!(buffer[(3, top)].symbol(), " ");
 }
 
 #[test]
@@ -855,4 +855,28 @@ fn volume_bar_is_contiguous_and_has_one_corner_gap() {
     assert!(positions.windows(2).all(|pair| pair[1] == pair[0] + 1));
     let last = *positions.last().unwrap();
     assert_eq!(buffer[(last + 1, row)].symbol(), " ");
+}
+
+#[test]
+fn baseline_72x24_horizontal_coordinates() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(0, 1)].symbol(), "┃");
+    assert_eq!(buffer[(1, 1)].symbol(), " ");
+    assert_eq!(buffer[(2, 1)].symbol(), "┏");
+    assert_eq!(buffer[(18, 1)].symbol(), "┳");
+    assert_eq!(buffer[(69, 1)].symbol(), "┓");
+    assert_eq!(buffer[(70, 1)].symbol(), " ");
+    assert_eq!(buffer[(71, 1)].symbol(), "┃");
+    assert_eq!(buffer[(2, 10)].symbol(), "┏");
+    assert_eq!(buffer[(69, 10)].symbol(), "┓");
+    assert_eq!(buffer[(2, 11)].symbol(), "┃");
+    assert_eq!(buffer[(69, 11)].symbol(), "┃");
+    assert_eq!(buffer[(2, 20)].symbol(), "┏");
+    assert_eq!(buffer[(69, 20)].symbol(), "┓");
 }
