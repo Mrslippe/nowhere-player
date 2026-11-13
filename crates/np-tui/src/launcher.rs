@@ -1,6 +1,5 @@
 //! 单二进制启动器：双击时用 Windows Terminal 重新拉起自己。
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,11 +7,6 @@ use np_app::SettingsHandle;
 
 pub const LAUNCHED_ENV: &str = "NP_TUI_LAUNCHED";
 pub const FALLBACK_ENV: &str = "NP_TUI_FALLBACK";
-
-/// 是否运行在可交互终端里。测试通过 [`should_relaunch`] 注入。
-pub fn is_tty() -> bool {
-    std::io::stdout().is_terminal()
-}
 
 pub fn should_relaunch(is_tty: bool, already_launched: bool) -> bool {
     !is_tty && !already_launched
@@ -72,6 +66,10 @@ pub const FRAGMENT_JSON: &str = r##"{
 
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+pub fn in_windows_terminal() -> bool {
+    std::env::var_os("WT_SESSION").is_some()
 }
 
 pub fn detect_font_face() -> Option<&'static str> {
@@ -287,7 +285,7 @@ fn fallback_args(cwd: &str, exe: &str, size: bool) -> Vec<String> {
 /// 如果当前 Windows Terminal 不是 72×24，尝试开一个指定尺寸的新窗口。
 /// 用临时 marker 避免尺寸设置失败时无限重开。
 pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
-    if (cols, rows) == (72, 24) || std::env::var_os("WT_SESSION").is_none() {
+    if std::env::var_os("WT_SESSION").is_none() || (cols == 72 && (23..=24).contains(&rows)) {
         return false;
     }
     let marker = std::env::temp_dir().join("nowhere-tui-size-attempt");

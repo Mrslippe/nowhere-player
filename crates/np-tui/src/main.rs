@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let selftest = std::env::var("NP_TUI_SELFTEST")
         .ok()
         .filter(|text| !text.trim().is_empty());
-    if selftest.is_none() && !launcher::is_tty() {
+    if selftest.is_none() && !launcher::in_windows_terminal() {
         let _ = launcher::relaunch_from_explorer();
         return Ok(());
     }
