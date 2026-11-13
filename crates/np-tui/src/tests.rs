@@ -777,3 +777,56 @@ fn list_uses_designed_default_columns_and_stretches_title_artist() {
     assert!(wider[2] > 10);
     assert_eq!(wider.iter().sum::<usize>() + 3, 59);
 }
+
+#[test]
+fn player_volume_bar_has_twenty_cells() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = (0..24)
+        .find(|y| {
+            (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
+        })
+        .expect("player row");
+    let count = (0..72)
+        .filter(|x| buffer[(*x, row)].symbol() == glyphs::PROGRESS_DONE)
+        .count();
+    assert_eq!(count, 20);
+}
+
+#[test]
+fn list_hides_source_column_even_when_view_has_it() {
+    let mut app = browse_app();
+    app.views[0].columns = vec![
+        "序号".to_owned(),
+        "标题".to_owned(),
+        "艺人".to_owned(),
+        "时长".to_owned(),
+        "来源".to_owned(),
+    ];
+    app.views[0].rows = vec![vec![
+        "1".to_owned(),
+        "歌".to_owned(),
+        "人".to_owned(),
+        "03:00".to_owned(),
+        "B 站".to_owned(),
+    ]];
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(!text.contains("来 源"));
+    assert!(!text.contains("B 站"));
+}

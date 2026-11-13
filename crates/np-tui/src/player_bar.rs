@@ -170,9 +170,9 @@ fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App, volume: 
         mode,
         Style::default().fg(app.palette.muted),
     );
-    let volume_width = 9u16;
+    let volume_width = 20u16;
     if area.width > volume_width + 4 {
-        let start = area.right().saturating_sub(volume_width + 2);
+        let start = area.right().saturating_sub(volume_width + 1);
         let filled =
             ((volume.clamp(0.0, 1.0) * f32::from(volume_width)).round() as u16).min(volume_width);
         for offset in 0..volume_width {

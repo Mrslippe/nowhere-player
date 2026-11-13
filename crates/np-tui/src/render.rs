@@ -397,11 +397,30 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         );
         return;
     }
-    let rows = app.filtered_rows();
-    let widths = list_widths(&view.columns, &rows, inner.width as usize);
+    let all_rows = app.filtered_rows();
+    let keep: Vec<usize> = view
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.as_str() != "来源")
+        .map(|(index, _)| index)
+        .collect();
+    let columns: Vec<String> = keep
+        .iter()
+        .filter_map(|index| view.columns.get(*index).cloned())
+        .collect();
+    let rows: Vec<Vec<String>> = all_rows
+        .iter()
+        .map(|row| {
+            keep.iter()
+                .filter_map(|index| row.get(*index).cloned())
+                .collect()
+        })
+        .collect();
+    let widths = list_widths(&columns, &rows, inner.width as usize);
     let mut lines = Vec::new();
     lines.push(Line::styled(
-        format_row(&view.columns, &widths),
+        format_row(&columns, &widths),
         Style::default()
             .fg(app.palette.accent)
             .add_modifier(Modifier::BOLD),
