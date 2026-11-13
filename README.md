@@ -18,6 +18,12 @@ cargo build --release -p np-tui
 target/release/np-tui.exe
 ```
 
+推荐用桌面快捷方式启动，避免 console 自举闪窗并保证 72×24：
+
+```powershell
+pwsh -File scripts/install-nowhere-shortcut.ps1
+```
+
 没有 `npm install`、没有 `pnpm`、没有 WebView2。首次编译会拉取 Rust 依赖，约 2–5 分钟。
 
 无头自检（不打开界面，适合脚本/验收）：
