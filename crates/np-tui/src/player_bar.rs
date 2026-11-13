@@ -11,6 +11,7 @@ use crate::audio::TuiAudio;
 use crate::fft::spectrum;
 use crate::glyphs;
 use crate::truncate_width;
+use np_core::{PlaybackMode, RepeatMode};
 
 pub(crate) fn draw_player_strip(
     frame: &mut ratatui::Frame,
@@ -21,7 +22,7 @@ pub(crate) fn draw_player_strip(
     if area.width < 8 || area.height < 3 {
         return;
     }
-    draw_player_frame(frame, area, app, player.volume());
+    draw_player_frame(frame, area, app, player.volume(), player.mode());
     let content = Rect {
         x: area.x.saturating_add(1),
         y: area.y.saturating_add(1),
@@ -140,13 +141,24 @@ pub(crate) fn draw_player_strip(
     );
 }
 
-fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App, volume: f32) {
+fn draw_player_frame(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    volume: f32,
+    mode: PlaybackMode,
+) {
     let width = area.width as usize;
     if width < 4 {
         return;
     }
     let title = " Player ";
-    let mode = " Mode ↻ ";
+    let mode = match (mode.repeat, mode.shuffle) {
+        (_, true) => " Mode ⇄ ",
+        (RepeatMode::One, false) => " Mode ↺ ",
+        (RepeatMode::All, false) => " Mode ↻ ",
+        (RepeatMode::Off, false) => " Mode · ",
+    };
     let title_w = UnicodeWidthStr::width(title);
     let mode_w = UnicodeWidthStr::width(mode);
     let top_fill = width.saturating_sub(2 + title_w);

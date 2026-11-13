@@ -17,6 +17,7 @@ pub struct TuiAudio {
     duration_ms: Cell<Option<u64>>,
     source_path: RefCell<Option<PathBuf>>,
     volume: Cell<f32>,
+    mode: Cell<PlaybackMode>,
     queue: Mutex<QueueView>,
 }
 
@@ -47,6 +48,7 @@ impl TuiAudio {
             duration_ms: Cell::new(None),
             source_path: RefCell::new(None),
             volume: Cell::new(1.0),
+            mode: Cell::new(PlaybackMode::default()),
             queue: Mutex::new(QueueView {
                 tracks: Vec::new(),
                 index: None,
@@ -57,6 +59,7 @@ impl TuiAudio {
     fn open_path(&self, path: &Path) -> Result<(), CmdError> {
         let player = Player::open(path)
             .map_err(|error| CmdError::new("E_AUDIO", format!("打开音频失败：{error}")))?;
+        player.set_volume(self.volume.get());
         let tap = player.sample_tap();
         player
             .play()
@@ -119,6 +122,10 @@ impl TuiAudio {
         self.volume.get()
     }
 
+    pub fn mode(&self) -> PlaybackMode {
+        self.mode.get()
+    }
+
     pub fn toggle(&mut self) {
         let player = self.player.borrow();
         let Some(player) = player.as_ref() else {
@@ -153,7 +160,7 @@ impl TuiAudio {
             position_ms: self.position_ms(),
             duration_ms: self.duration_ms(),
             volume: self.volume.get(),
-            mode: PlaybackMode::default(),
+            mode: self.mode.get(),
             error: None,
             queue_length: Some(self.queue_view().tracks.len()),
             queue_index: self.queue_view().index,
@@ -243,7 +250,8 @@ impl PlayerApi for TuiAudio {
         Ok(self.state())
     }
 
-    fn mode(&self, _mode: PlaybackMode) -> Result<PlaybackState, CmdError> {
+    fn mode(&self, mode: PlaybackMode) -> Result<PlaybackState, CmdError> {
+        self.mode.set(mode);
         Ok(self.state())
     }
 
@@ -359,7 +367,18 @@ mod tests {
             .unwrap();
         PlayerApi::volume(&audio, 0.5).unwrap();
         assert!((audio.snapshot().unwrap().volume - 0.5).abs() < 0.001);
+        let mode = PlaybackMode {
+            repeat: np_core::RepeatMode::All,
+            shuffle: true,
+        };
+        PlayerApi::mode(&audio, mode).unwrap();
         audio.next().unwrap();
         assert!(audio.is_playing());
+        let state = audio.snapshot().unwrap();
+        assert!(
+            (state.volume - 0.5).abs() < 0.001,
+            "volume must survive track change"
+        );
+        assert_eq!(state.mode, mode, "mode must survive track change");
     }
 }

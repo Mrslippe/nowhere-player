@@ -191,30 +191,53 @@ where
                                         }
                                         Some(BrowseKind::Settings) => {}
                                         _ => {
-                                            let local_path = app.selected_view().and_then(|view| {
-                                                match view.refs.get(app.row_index) {
-                                                    Some(TrackRef::Local(path)) => {
-                                                        Some(path.to_string_lossy().into_owned())
+                                            let selected_ref = app
+                                                .selected_view()
+                                                .and_then(|view| view.refs.get(app.row_index))
+                                                .cloned();
+                                            match selected_ref {
+                                                Some(TrackRef::Local(path)) => {
+                                                    match player.play(Some(
+                                                        path.to_string_lossy().into_owned(),
+                                                    )) {
+                                                        Ok(_) => app.status = "播放中".to_owned(),
+                                                        Err(error) => {
+                                                            app.status = error.message.clone()
+                                                        }
                                                     }
-                                                    _ => None,
                                                 }
-                                            });
-                                            if let Some(path) = local_path {
-                                                match player.play(Some(path)) {
-                                                    Ok(_) => app.status = "播放中".to_owned(),
-                                                    Err(error) => {
-                                                        app.status = error.message.clone()
-                                                    }
+                                                Some(TrackRef::Remote { .. }) => {
+                                                    let command = match &kind {
+                                                        Some(BrowseKind::Playlist(name)) => {
+                                                            format!(
+                                                                "playlist play \"{}\" {}",
+                                                                name.replace('"', "\\\""),
+                                                                app.row_index + 1
+                                                            )
+                                                        }
+                                                        _ => {
+                                                            format!("play {}", app.row_index + 1)
+                                                        }
+                                                    };
+                                                    app.run(
+                                                        command,
+                                                        player,
+                                                        library,
+                                                        search.tx,
+                                                        theme_ctx.api,
+                                                        theme_ctx.settings,
+                                                    );
                                                 }
-                                            } else {
-                                                app.run(
-                                                    format!("play {}", app.row_index + 1),
-                                                    player,
-                                                    library,
-                                                    search.tx,
-                                                    theme_ctx.api,
-                                                    theme_ctx.settings,
-                                                );
+                                                None => {
+                                                    app.run(
+                                                        format!("play {}", app.row_index + 1),
+                                                        player,
+                                                        library,
+                                                        search.tx,
+                                                        theme_ctx.api,
+                                                        theme_ctx.settings,
+                                                    );
+                                                }
                                             }
                                         }
                                     }
