@@ -351,7 +351,7 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             };
             let indent = "  ".repeat(depth.saturating_sub(1));
             let mut text = format!("{marker} {indent}{branch}{}", view.title);
-            let text_width = inner.width.saturating_sub(1) as usize;
+            let text_width = inner.width as usize;
             if active {
                 let width = display_width(&text);
                 let pad = text_width.saturating_sub(width);
