@@ -152,6 +152,13 @@ fn border_text(
     frame.buffer_mut().set_string(x, y, text, style);
 }
 
+fn browse_width(inner_width: u16) -> u16 {
+    let proportional = (u32::from(inner_width) * 25 / 100) as u16;
+    proportional
+        .clamp(18, 26)
+        .min(inner_width.saturating_sub(10))
+}
+
 fn paint_browse_borders(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -203,7 +210,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
     let split = inner
         .x
-        .saturating_add(22)
+        .saturating_add(browse_width(inner.width))
         .min(inner.right().saturating_sub(1));
     paint_browse_borders(frame, area, split, focused, app);
     let browse_title_style = Style::default()

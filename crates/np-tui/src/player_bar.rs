@@ -21,7 +21,7 @@ pub(crate) fn draw_player_strip(
     if area.width < 8 || area.height < 3 {
         return;
     }
-    draw_player_frame(frame, area, app);
+    draw_player_frame(frame, area, app, player.volume());
     let content = Rect {
         x: area.x.saturating_add(1),
         y: area.y.saturating_add(1),
@@ -58,15 +58,16 @@ pub(crate) fn draw_player_strip(
     let duration = player.duration_ms().unwrap_or(0);
     let position = player.position_ms().min(duration);
     let overlay_y = content.bottom().saturating_sub(2);
+    let time = format!("{} / {}", format_time(position), format_time(duration));
+    let time_width = UnicodeWidthStr::width(time.as_str()) as u16;
+    let bar_width = content
+        .width
+        .saturating_sub(time_width)
+        .saturating_sub(2)
+        .max(4) as usize;
     let max_text = content.width.saturating_sub(2) as usize;
     let title = truncate_width(
-        &format!(
-            "{} — {}  {} / {}",
-            player.title(),
-            player.artist(),
-            format_time(position),
-            format_time(duration)
-        ),
+        &format!("{} — {}", player.title(), player.artist()),
         max_text,
     );
     let title_width = UnicodeWidthStr::width(title.as_str()) as u16;
@@ -100,7 +101,6 @@ pub(crate) fn draw_player_strip(
     } else {
         position as f64 / duration as f64
     };
-    let bar_width = content.width as usize;
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
     let mut spans = Vec::with_capacity(bar_width);
     for column in 0..bar_width {
@@ -123,13 +123,24 @@ pub(crate) fn draw_player_strip(
         Rect {
             x: content.x,
             y: content.bottom().saturating_sub(1),
-            width: content.width,
+            width: bar_width as u16,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(time)
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(app.palette.muted)),
+        Rect {
+            x: content.right().saturating_sub(time_width),
+            y: content.bottom().saturating_sub(1),
+            width: time_width,
             height: 1,
         },
     );
 }
 
-fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App, volume: f32) {
     let width = area.width as usize;
     if width < 4 {
         return;
@@ -159,6 +170,22 @@ fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         mode,
         Style::default().fg(app.palette.muted),
     );
+    let volume_width = 9u16;
+    if area.width > volume_width + 4 {
+        let start = area.right().saturating_sub(volume_width + 2);
+        let filled =
+            ((volume.clamp(0.0, 1.0) * f32::from(volume_width)).round() as u16).min(volume_width);
+        for offset in 0..volume_width {
+            let color = if offset < filled {
+                app.palette.accent
+            } else {
+                app.palette.faint
+            };
+            frame
+                .buffer_mut()
+                .set_string(start + offset, area.y, "▰", Style::default().fg(color));
+        }
+    }
 }
 
 pub(crate) fn draw_spectrum(

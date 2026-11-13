@@ -247,8 +247,9 @@ fn try_wt(args: &[String]) -> bool {
     }
 }
 
-/// 新窗口默认终端尺寸；72×24 是 DES-014 的设计基准。
-const DEFAULT_WINDOW_SIZE: [&str; 2] = ["--size", "72,24"];
+/// 目标内容尺寸 72×24；Windows Terminal 的 `--size` 会计入窗口 chrome/padding，
+/// 本机实测需请求 77×26 才能得到 72×24 的终端网格。
+const DEFAULT_WINDOW_SIZE: [&str; 2] = ["--size", "77,26"];
 
 fn profile_args(focus: bool, size: bool) -> Vec<String> {
     let mut args = Vec::new();
@@ -300,7 +301,7 @@ pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
     let _ = std::fs::write(&marker, std::process::id().to_string());
     let mut args = vec![
         "--size".to_owned(),
-        "72,24".to_owned(),
+        "77,26".to_owned(),
         "-w".to_owned(),
         "new".to_owned(),
         "-p".to_owned(),
@@ -319,7 +320,7 @@ pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
     };
     args = vec![
         "--size".to_owned(),
-        "72,24".to_owned(),
+        "77,26".to_owned(),
         "-w".to_owned(),
         "new".to_owned(),
         "-d".to_owned(),
@@ -396,7 +397,7 @@ mod tests {
     #[test]
     fn window_opens_at_designed_size() {
         let args = profile_args(false, true);
-        assert!(args.windows(2).any(|pair| pair == ["--size", "72,24"]));
+        assert!(args.windows(2).any(|pair| pair == ["--size", "77,26"]));
         assert!(args.windows(2).any(|pair| pair == ["-w", "new"]));
         assert!(!profile_args(false, false).iter().any(|arg| arg == "--size"));
     }

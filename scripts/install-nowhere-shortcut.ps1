@@ -3,7 +3,7 @@
 .SYNOPSIS
 在当前用户桌面创建 "Nowhere Player" 快捷方式。
 
-快捷方式直接调用 wt.exe --size 72,24，因此不会先出现默认 console 再自举。
+快捷方式直接调用 wt.exe --size 77,26，因此不会先出现默认 console 再自举。
 #>
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -18,7 +18,7 @@ $linkPath = Join-Path $desktop 'Nowhere Player.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $link = $shell.CreateShortcut($linkPath)
 $link.TargetPath = $wt
-$link.Arguments = '--size 72,24 -w new -p "Nowhere Player"'
+$link.Arguments = '--size 77,26 -w new -p "Nowhere Player"'
 $link.WorkingDirectory = $root
 $link.IconLocation = "$app,0"
 $link.Description = 'Nowhere Player · 72×24'

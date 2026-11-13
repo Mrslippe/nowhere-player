@@ -18,7 +18,7 @@ cargo build --release -p np-tui
 target/release/np-tui.exe
 ```
 
-推荐用桌面快捷方式启动，避免 console 自举闪窗并保证 72×24：
+推荐用桌面快捷方式启动，避免 console 自举闪窗并保证 72×24（WT 请求 77×26）：
 
 ```powershell
 pwsh -File scripts/install-nowhere-shortcut.ps1
