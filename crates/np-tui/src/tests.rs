@@ -830,3 +830,33 @@ fn list_hides_source_column_even_when_view_has_it() {
     assert!(!text.contains("来 源"));
     assert!(!text.contains("B 站"));
 }
+
+#[test]
+fn volume_bar_has_a_blank_at_the_bright_dark_boundary() {
+    use np_app::PlayerApi;
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    PlayerApi::volume(&audio, 0.55).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = (0..24)
+        .find(|y| {
+            (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
+        })
+        .expect("player row");
+    let glyphs: Vec<(u16, &str)> = (0..72)
+        .filter(|x| buffer[(*x, row)].symbol() != " ")
+        .map(|x| (x, buffer[(x, row)].symbol()))
+        .collect();
+    let volume_glyphs: Vec<u16> = glyphs
+        .iter()
+        .filter(|(_, symbol)| *symbol == glyphs::PROGRESS_DONE)
+        .map(|(x, _)| *x)
+        .collect();
+    assert_eq!(volume_glyphs.len(), 20);
+    let boundary = volume_glyphs[10] + 1;
+    assert_eq!(buffer[(boundary, row)].symbol(), " ");
+}

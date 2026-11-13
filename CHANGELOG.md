@@ -11,7 +11,7 @@
 - Browse 树：歌单子项、媒体库、搜索、队列、设置；5 条折叠阈值与 `Shift+Enter`
 - 方角粗边框、焦点 accent、计数 italic/faint、状态栏键名分色
 - 默认字体 Maple Mono NF CN；启动时兜底 72×24（WT 请求 77×26）
-- 音量条 20 格、List 隐藏来源列/固定列宽/自动填满宽度/内嵌滚动条、进度与歌曲信息分行
+- 音量条 20 格（亮暗间空白、右端留边框格）、List 隐藏来源列/固定列宽/自动填满宽度/内嵌滚动条、进度与歌曲信息分行
 - `scripts/install-nowhere-shortcut.ps1` 桌面快捷方式，直接 `wt --size 77,26` 启动（内容 72×24）
 
 ### Changed

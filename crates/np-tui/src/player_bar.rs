@@ -171,19 +171,32 @@ fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App, volume: 
         Style::default().fg(app.palette.muted),
     );
     let volume_width = 20u16;
-    if area.width > volume_width + 4 {
-        let start = area.right().saturating_sub(volume_width + 1);
+    if area.width > volume_width + 6 {
         let filled =
             ((volume.clamp(0.0, 1.0) * f32::from(volume_width)).round() as u16).min(volume_width);
-        for offset in 0..volume_width {
-            let color = if offset < filled {
-                app.palette.accent
+        let separator = u16::from(filled > 0 && filled < volume_width);
+        let total = volume_width + separator;
+        let start = area.right().saturating_sub(total + 2);
+        let bright = Style::default().fg(app.palette.accent);
+        let dark = Style::default().fg(app.palette.faint);
+        if separator == 1 {
+            frame.buffer_mut().set_string(
+                start + filled,
+                area.y,
+                " ",
+                Style::default().bg(app.palette.bg.unwrap_or(Color::Reset)),
+            );
+        }
+        for index in 0..volume_width {
+            if index < filled {
+                frame
+                    .buffer_mut()
+                    .set_string(start + index, area.y, "▰", bright);
             } else {
-                app.palette.faint
-            };
-            frame
-                .buffer_mut()
-                .set_string(start + offset, area.y, "▰", Style::default().fg(color));
+                frame
+                    .buffer_mut()
+                    .set_string(start + index + separator, area.y, "▰", dark);
+            }
         }
     }
 }
