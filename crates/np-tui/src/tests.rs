@@ -36,7 +36,7 @@ fn table_width_uses_display_width_for_cjk() {
     assert_eq!(widths[0], 6);
     assert_eq!(widths[1], 6);
     let line = format_row(&rows[0], &widths);
-    assert_eq!(display_width(&line), 6 + 2 + 6);
+    assert_eq!(display_width(&line), 6 + 1 + 6);
 }
 
 #[test]
@@ -753,4 +753,27 @@ fn long_title_does_not_displace_artist_or_duration() {
     assert_eq!(widths[3], 5);
     let line = format_row(&rows[0], &widths);
     assert!(display_width(&line) <= 46);
+}
+
+#[test]
+fn list_uses_designed_default_columns_and_stretches_title_artist() {
+    let columns = vec![
+        "#".to_owned(),
+        "Title".to_owned(),
+        "Artist".to_owned(),
+        "Duration".to_owned(),
+    ];
+    let rows = vec![vec![
+        "1".to_owned(),
+        "Song".to_owned(),
+        "Artist".to_owned(),
+        "03:00".to_owned(),
+    ]];
+    assert_eq!(list_widths(&columns, &rows, 49), vec![4, 24, 10, 8]);
+    let wider = list_widths(&columns, &rows, 59);
+    assert_eq!(wider[0], 4);
+    assert_eq!(wider[3], 8);
+    assert!(wider[1] > 24);
+    assert!(wider[2] > 10);
+    assert_eq!(wider.iter().sum::<usize>() + 3, 59);
 }

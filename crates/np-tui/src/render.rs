@@ -270,6 +270,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     draw_library(frame, left, app);
     draw_list(frame, right, app);
+    draw_list_scrollbar(frame, area, app);
     let line_style = Style::default().fg(if focused {
         app.palette.accent
     } else {
@@ -373,7 +374,15 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let inner = area;
+    if area.width < 3 {
+        return;
+    }
+    let inner = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    };
     let Some(view) = app.selected_view() else {
         return;
     };
@@ -389,18 +398,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
     let rows = app.filtered_rows();
-    let mut widths = fit_table_widths(&view.columns, &rows, inner.width as usize);
-    let used: usize = widths.iter().sum::<usize>() + 2 * widths.len().saturating_sub(1);
-    if used < inner.width as usize {
-        let flex = view
-            .columns
-            .iter()
-            .position(|column| column == "标题")
-            .unwrap_or(1.min(widths.len().saturating_sub(1)));
-        if flex < widths.len() {
-            widths[flex] += inner.width as usize - used;
-        }
-    }
+    let widths = list_widths(&view.columns, &rows, inner.width as usize);
     let mut lines = Vec::new();
     lines.push(Line::styled(
         format_row(&view.columns, &widths),
@@ -425,6 +423,43 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         ));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_list_scrollbar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.height < 4 || area.width < 2 {
+        return;
+    }
+    let x = area.right().saturating_sub(1);
+    let track_start = area.y.saturating_add(1);
+    let track_end = area.bottom().saturating_sub(1);
+    if track_end <= track_start {
+        return;
+    }
+    let track_len = usize::from(track_end - track_start);
+    let total = app.filtered_row_count();
+    let visible = usize::from(area.height.saturating_sub(1));
+    let track_style = Style::default().fg(app.palette.line);
+    for y in track_start..track_end {
+        frame.buffer_mut().set_string(x, y, "│", track_style);
+    }
+    if total <= visible {
+        return;
+    }
+    let thumb_len = (track_len * visible / total).max(1).min(track_len);
+    let first = app.row_index.saturating_sub(visible.saturating_sub(1));
+    let max_first = total - visible;
+    let offset = first * (track_len - thumb_len) / max_first.max(1);
+    let thumb_start = track_start.saturating_add(offset as u16);
+    let style = Style::default().fg(if app.focus == Focus::List {
+        app.palette.accent
+    } else {
+        app.palette.muted
+    });
+    for offset in 0..thumb_len {
+        frame
+            .buffer_mut()
+            .set_string(x, thumb_start.saturating_add(offset as u16), "█", style);
+    }
 }
 
 pub(crate) fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App) {

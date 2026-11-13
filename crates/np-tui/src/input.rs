@@ -222,7 +222,46 @@ pub(crate) fn format_row(row: &[String], widths: &[usize]) -> String {
             format!("{value}{}", " ".repeat(pad))
         })
         .collect::<Vec<_>>()
-        .join("  ")
+        .join(" ")
+}
+
+/// List 的固定列宽规则：# 4、标题 24、作者 10、时长 8，列间 1 格。
+/// 标题/作者随窗口伸缩；可用宽度不足 49 时只压缩这两列。
+pub(crate) fn list_widths(
+    columns: &[String],
+    rows: &[Vec<String>],
+    available: usize,
+) -> Vec<usize> {
+    if columns.len() != 4 {
+        return fit_table_widths(columns, rows, available);
+    }
+    let fixed = [4usize, 24, 10, 8];
+    let gaps = 3usize;
+    if available == fixed.iter().sum::<usize>() + gaps {
+        return fixed.to_vec();
+    }
+    if available > fixed.iter().sum::<usize>() + gaps {
+        let extra = available - fixed.iter().sum::<usize>() - gaps;
+        let title_extra = extra.div_ceil(2);
+        return vec![4, 24 + title_extra, 10 + extra / 2, 8];
+    }
+    let budget = available.saturating_sub(4 + 10 + 8 + 3);
+    if budget >= 34 {
+        return fixed.to_vec();
+    }
+    let title = (budget * 24 / 34).max(8);
+    let author = budget.saturating_sub(title).max(6);
+    let mut widths = vec![4, title, author, 8];
+    let used: usize = widths.iter().sum::<usize>() + 3;
+    if used > available {
+        let mut overflow = used - available;
+        for index in [1, 2] {
+            let cut = overflow.min(widths[index].saturating_sub(1));
+            widths[index] -= cut;
+            overflow -= cut;
+        }
+    }
+    widths
 }
 
 /// 在固定宽度内分配列宽：首列/末列保留，中间列按比例压缩。

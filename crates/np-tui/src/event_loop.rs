@@ -238,12 +238,14 @@ where
                                 app.status = "上一首".to_owned();
                             }
                             KeyCode::Char('+') | KeyCode::Char('=') => {
-                                let volume = (player.volume() + 0.05).clamp(0.0, 1.0);
+                                let step = (player.volume() * 20.0).round() as i32;
+                                let volume = (step + 1).clamp(0, 20) as f32 / 20.0;
                                 let _ = PlayerApi::volume(player, volume);
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
                             }
                             KeyCode::Char('-') => {
-                                let volume = (player.volume() - 0.05).clamp(0.0, 1.0);
+                                let step = (player.volume() * 20.0).round() as i32;
+                                let volume = (step - 1).clamp(0, 20) as f32 / 20.0;
                                 let _ = PlayerApi::volume(player, volume);
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
                             }
