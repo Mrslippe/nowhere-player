@@ -380,7 +380,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = Rect {
         x: area.x.saturating_add(1),
         y: area.y,
-        width: area.width.saturating_sub(2),
+        width: area.width.saturating_sub(3),
         height: area.height,
     };
     let Some(view) = app.selected_view() else {

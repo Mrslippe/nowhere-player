@@ -769,6 +769,7 @@ fn list_uses_designed_default_columns_and_stretches_title_artist() {
         "Artist".to_owned(),
         "03:00".to_owned(),
     ]];
+    assert_eq!(list_widths(&columns, &rows, 48), vec![4, 24, 9, 8]);
     assert_eq!(list_widths(&columns, &rows, 49), vec![4, 24, 10, 8]);
     let wider = list_widths(&columns, &rows, 59);
     assert_eq!(wider[0], 4);

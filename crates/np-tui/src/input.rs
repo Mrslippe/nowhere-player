@@ -235,23 +235,25 @@ pub(crate) fn list_widths(
     if columns.len() != 4 {
         return fit_table_widths(columns, rows, available);
     }
-    let fixed = [4usize, 24, 10, 8];
-    let gaps = 3usize;
-    if available == fixed.iter().sum::<usize>() + gaps {
-        return fixed.to_vec();
+    // 72 列下 List 内容 50：左间隔 1 + 表格 48 + 右间隔 1。
+    // 表格 48 时固定 Title 24、Artist 9；宽出来的 1 格先补 Artist。
+    let title = if available < 48 {
+        available.saturating_sub(4 + 9 + 8 + 3).max(8)
+    } else {
+        24
+    };
+    let mut widths = vec![4, title, 9, 8];
+    if available >= 48 {
+        let extra = available - 48;
+        if extra >= 1 {
+            widths[2] = 10;
+        }
+        if extra > 1 {
+            let rest = extra - 1;
+            widths[1] += rest.div_ceil(2);
+            widths[2] += rest / 2;
+        }
     }
-    if available > fixed.iter().sum::<usize>() + gaps {
-        let extra = available - fixed.iter().sum::<usize>() - gaps;
-        let title_extra = extra.div_ceil(2);
-        return vec![4, 24 + title_extra, 10 + extra / 2, 8];
-    }
-    let budget = available.saturating_sub(4 + 10 + 8 + 3);
-    if budget >= 34 {
-        return fixed.to_vec();
-    }
-    let title = (budget * 24 / 34).max(8);
-    let author = budget.saturating_sub(title).max(6);
-    let mut widths = vec![4, title, author, 8];
     let used: usize = widths.iter().sum::<usize>() + 3;
     if used > available {
         let mut overflow = used - available;
