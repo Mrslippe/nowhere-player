@@ -417,7 +417,11 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 .collect()
         })
         .collect();
-    let widths = list_widths(&columns, &rows, inner.width as usize);
+    let mut widths = list_widths(&columns, &rows, inner.width as usize);
+    let used: usize = widths.iter().sum::<usize>() + widths.len().saturating_sub(1);
+    if used < inner.width as usize && widths.len() > 1 {
+        widths[1] += inner.width as usize - used;
+    }
     let mut lines = Vec::new();
     lines.push(Line::styled(
         format_row(&columns, &widths),
