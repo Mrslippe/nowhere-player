@@ -832,7 +832,7 @@ fn list_hides_source_column_even_when_view_has_it() {
 }
 
 #[test]
-fn volume_bar_has_a_blank_at_the_bright_dark_boundary() {
+fn volume_bar_is_contiguous_and_has_one_corner_gap() {
     use np_app::PlayerApi;
     let mut app = browse_app();
     let audio = TuiAudio::empty();
@@ -847,16 +847,11 @@ fn volume_bar_has_a_blank_at_the_bright_dark_boundary() {
             (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
         })
         .expect("player row");
-    let glyphs: Vec<(u16, &str)> = (0..72)
-        .filter(|x| buffer[(*x, row)].symbol() != " ")
-        .map(|x| (x, buffer[(x, row)].symbol()))
+    let positions: Vec<u16> = (0..72)
+        .filter(|x| buffer[(*x, row)].symbol() == glyphs::PROGRESS_DONE)
         .collect();
-    let volume_glyphs: Vec<u16> = glyphs
-        .iter()
-        .filter(|(_, symbol)| *symbol == glyphs::PROGRESS_DONE)
-        .map(|(x, _)| *x)
-        .collect();
-    assert_eq!(volume_glyphs.len(), 20);
-    let boundary = volume_glyphs[10] + 1;
-    assert_eq!(buffer[(boundary, row)].symbol(), " ");
+    assert_eq!(positions.len(), 20);
+    assert!(positions.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    let last = *positions.last().unwrap();
+    assert_eq!(buffer[(last + 1, row)].symbol(), " ");
 }

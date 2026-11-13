@@ -171,33 +171,33 @@ fn draw_player_frame(frame: &mut ratatui::Frame, area: Rect, app: &App, volume: 
         Style::default().fg(app.palette.muted),
     );
     let volume_width = 20u16;
-    if area.width > volume_width + 6 {
+    if area.width > volume_width + 8 {
         let filled =
             ((volume.clamp(0.0, 1.0) * f32::from(volume_width)).round() as u16).min(volume_width);
-        let separator = u16::from(filled > 0 && filled < volume_width);
-        let total = volume_width + separator;
-        let start = area.right().saturating_sub(total + 2);
+        let gap_x = area.right().saturating_sub(2);
+        let start = gap_x.saturating_sub(volume_width);
         let bright = Style::default().fg(app.palette.accent);
         let dark = Style::default().fg(app.palette.faint);
-        if separator == 1 {
+        let bg = app.palette.bg.unwrap_or(Color::Reset);
+        for index in 0..volume_width {
             frame.buffer_mut().set_string(
-                start + filled,
+                start + index,
                 area.y,
-                " ",
-                Style::default().bg(app.palette.bg.unwrap_or(Color::Reset)),
+                "▰",
+                if index < filled { bright } else { dark },
             );
         }
-        for index in 0..volume_width {
-            if index < filled {
-                frame
-                    .buffer_mut()
-                    .set_string(start + index, area.y, "▰", bright);
-            } else {
-                frame
-                    .buffer_mut()
-                    .set_string(start + index + separator, area.y, "▰", dark);
-            }
-        }
+        frame
+            .buffer_mut()
+            .set_string(gap_x, area.y, " ", Style::default().bg(bg));
+        let label = " Vol ";
+        let label_width = UnicodeWidthStr::width(label) as u16;
+        frame.buffer_mut().set_string(
+            start.saturating_sub(label_width),
+            area.y,
+            label,
+            Style::default().fg(app.palette.muted),
+        );
     }
 }
 
