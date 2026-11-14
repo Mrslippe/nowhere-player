@@ -346,6 +346,16 @@ impl App {
         self.view_index = self.view_index.min(self.views.len().saturating_sub(1));
     }
 
+    pub(crate) fn refresh_queue_view(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
+        if let Some(index) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::Queue)
+        {
+            self.views[index] = capture_table(player, library, "queue list", "队列");
+        }
+    }
+
     pub(crate) fn selected_view(&self) -> Option<&ViewData> {
         self.views.get(self.view_index)
     }
@@ -673,6 +683,7 @@ impl App {
             {
                 self.views[index] = capture_table(player, &**library, "playlist list", "歌单");
             }
+            self.refresh_queue_view(player, &**library);
         }
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "config"

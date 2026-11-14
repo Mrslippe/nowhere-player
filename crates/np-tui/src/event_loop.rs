@@ -103,6 +103,7 @@ where
                 Ok(_) => app.status = "播放中".to_owned(),
                 Err(error) => app.status = error.message.clone(),
             }
+            app.refresh_queue_view(player, &**library);
             draw_needed = true;
         }
         #[cfg(windows)]
@@ -273,6 +274,7 @@ where
                                                             app.status = error.message.clone()
                                                         }
                                                     }
+                                                    app.refresh_queue_view(player, &**library);
                                                 }
                                                 Some(TrackRef::Remote { .. }) => {
                                                     let command = match &kind {
