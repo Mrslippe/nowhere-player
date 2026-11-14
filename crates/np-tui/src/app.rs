@@ -404,14 +404,16 @@ impl App {
     }
 
     pub(crate) fn insert_search_char(&mut self, character: char) {
-        self.search_input.insert(self.search_cursor, character);
+        let byte = char_to_byte_index(&self.search_input, self.search_cursor);
+        self.search_input.insert(byte, character);
         self.search_cursor += 1;
     }
 
     pub(crate) fn backspace_search_char(&mut self) {
         if self.search_cursor > 0 {
             self.search_cursor -= 1;
-            self.search_input.remove(self.search_cursor);
+            let byte = char_to_byte_index(&self.search_input, self.search_cursor);
+            self.search_input.remove(byte);
         }
     }
 
@@ -808,6 +810,13 @@ fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {
         rows,
         refs: Vec::new(),
     }
+}
+
+fn char_to_byte_index(input: &str, char_index: usize) -> usize {
+    input
+        .char_indices()
+        .nth(char_index)
+        .map_or(input.len(), |(byte, _)| byte)
 }
 
 pub(crate) fn search_command_from_input(input: &str) -> Result<String, String> {

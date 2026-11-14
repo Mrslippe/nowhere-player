@@ -979,3 +979,20 @@ fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAud
         .map(|cell| cell.symbol())
         .collect()
 }
+
+#[test]
+fn search_input_handles_cjk_without_byte_boundary_panic() {
+    let mut app = App::new();
+    app.insert_search_char('花');
+    app.insert_search_char('骨');
+    app.insert_search_char('朵');
+    assert_eq!(app.search_input, "花骨朵");
+    app.move_search_cursor(false);
+    app.insert_search_char('X');
+    assert_eq!(app.search_input, "花骨X朵");
+    app.backspace_search_char();
+    assert_eq!(app.search_input, "花骨朵");
+    app.move_search_cursor(false);
+    app.backspace_search_char();
+    assert_eq!(app.search_input, "骨朵");
+}
