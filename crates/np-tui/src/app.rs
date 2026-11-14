@@ -357,12 +357,18 @@ impl App {
     }
 
     pub(crate) fn refresh_queue_view(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
+        // `queue list` 会改写 active listing；恢复调用前的列表上下文，
+        // 否则紧接着对搜索结果执行 `play N` 会解析到队列而不是 Search。
+        let previous_listing = library.active_listing();
         if let Some(index) = self
             .view_kind
             .iter()
             .position(|kind| *kind == BrowseKind::Queue)
         {
             self.views[index] = capture_table(player, library, "queue list", "队列");
+        }
+        if let Some(listing) = previous_listing {
+            library.set_active_listing(listing);
         }
     }
 
