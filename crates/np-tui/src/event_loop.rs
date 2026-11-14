@@ -122,6 +122,9 @@ where
         if app.poll_tray(player) {
             return Ok(());
         }
+        if app.poll_playlist_prepare(player, &**library) {
+            draw_needed = true;
+        }
         if app.refresh_completion(player) {
             draw_needed = true;
         }
@@ -341,15 +344,12 @@ where
                                                         {
                                                             let index = app.row_index;
                                                             if let Err(error) = app
-                                                                .play_playlist_item(
-                                                                    name, index, player, library,
+                                                                .start_playlist_prepare(
+                                                                    name, index, library,
                                                                 )
                                                             {
                                                                 app.status = error;
                                                             }
-                                                            app.refresh_queue_view(
-                                                                player, &**library,
-                                                            );
                                                         } else {
                                                             app.status =
                                                                 "远程条目缺少播放上下文".to_owned();

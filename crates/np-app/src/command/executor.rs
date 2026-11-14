@@ -96,12 +96,14 @@ pub fn execute_with_services(
     };
 
     let clock = Instant::now();
+    let listing = library.active_listing();
     let result = match &parsed {
         Ok(parsed) => Executor {
             api,
             library,
             observer,
             services,
+            listing,
         }
         .run(parsed),
         // 引号未闭合这类错误定位不到命令，没有 usage / 建议，给一句通用提示
@@ -202,6 +204,7 @@ pub(crate) struct Executor<'a> {
     library: &'a dyn LibraryApi,
     observer: Arc<dyn LibraryObserver>,
     services: Services<'a>,
+    listing: Option<ActiveListing>,
 }
 
 impl Executor<'_> {
@@ -257,7 +260,7 @@ impl Executor<'_> {
 
         if is_unsigned_integer(value) {
             let index = user_index(value)?;
-            let listing = self.library.active_listing().ok_or_else(|| {
+            let listing = self.listing.clone().ok_or_else(|| {
                 CmdError::new("E_CMD_ARG", "没有可用的序号列表")
                     .with_hint("先执行 search / queue list 等命令，再用序号")
             })?;
@@ -615,7 +618,7 @@ impl Executor<'_> {
 
     /// `queue add <path>` 收窄为真实存在的本地文件；`--from-search <n>` 从最近搜索结果入队。
     fn add_paths(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
-        let previous_listing = self.library.active_listing();
+        let previous_listing = self.listing.clone();
         let from_search = parsed.flags.get("from-search");
 
         let path = if let Some(raw) = from_search {
@@ -627,7 +630,7 @@ impl Executor<'_> {
                 .with_hint("queue add <path> | queue add --from-search <n>"));
             }
             let index = user_index(raw)?;
-            let listing = self.library.active_listing().ok_or_else(|| {
+            let listing = self.listing.clone().ok_or_else(|| {
                 CmdError::new("E_CMD_ARG", "没有可用的序号列表")
                     .with_hint("先执行 search / queue list 等命令，再用序号")
             })?;
@@ -875,7 +878,7 @@ impl Executor<'_> {
     }
 
     fn playlist_add(&self, name: &str, index: usize) -> Result<Outcome, CmdError> {
-        let listing = self.library.active_listing().ok_or_else(|| {
+        let listing = self.listing.clone().ok_or_else(|| {
             CmdError::new("E_CMD_ARG", "当前没有可用的列表")
                 .with_hint("先 search / queue list / playlist show，或先播放一首")
         })?;

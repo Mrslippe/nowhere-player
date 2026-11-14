@@ -10,12 +10,16 @@ use crate::theme::Palette;
 use crate::tray;
 use crate::{osc, startup};
 use np_app::{
-    DEFAULT_SEARCH_RESULTS, Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi,
-    SearchHit, SearchOptions, Services, SettingsHandle, SourceId, SourceTrack, ThemeApi,
-    complete_for, execute_with_services, online_play_hit, online_play_started_block,
-    run_online_play,
+    Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi, SearchHit, Services,
+    SettingsHandle, SourceId, SourceTrack, ThemeApi, complete_for, execute_with_services,
+    online_play_hit, online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus};
+pub(crate) struct PlaylistReady {
+    generation: u64,
+    result: Result<(Vec<QueueItem>, Option<TrackKey>), String>,
+}
+
 pub(crate) struct App {
     pub(crate) input: Vec<char>,
     pub(crate) cursor: usize,
@@ -41,6 +45,9 @@ pub(crate) struct App {
     pub(crate) search_input_active: bool,
     pub(crate) search_attempted: bool,
     pub(crate) no_color_ignored: bool,
+    playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
+    playlist_prepare_rx: std::sync::mpsc::Receiver<PlaylistReady>,
+    playlist_generation: u64,
     #[cfg(windows)]
     pub(crate) tray_rx: Option<std::sync::mpsc::Receiver<tray::TrayAction>>,
     pub(crate) palette: Palette,
@@ -60,6 +67,7 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new() -> Self {
+        let (playlist_prepare_tx, playlist_prepare_rx) = std::sync::mpsc::channel();
         Self {
             input: Vec::new(),
             cursor: 0,
@@ -85,6 +93,9 @@ impl App {
             search_input_active: false,
             search_attempted: false,
             no_color_ignored: false,
+            playlist_prepare_tx,
+            playlist_prepare_rx,
+            playlist_generation: 0,
             #[cfg(windows)]
             tray_rx: None,
             palette: Palette::terminal(),
@@ -476,84 +487,17 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn play_playlist_item(
-        &mut self,
-        name: &str,
-        index: usize,
-        player: &TuiAudio,
-        library: &Arc<LibraryHandle>,
-    ) -> Result<(), String> {
-        let playlist = library
-            .playlist_by_name(name)
-            .map_err(|error| error.message.clone())?
-            .ok_or_else(|| format!("歌单不存在：{name}"))?;
-        let (_, items) = library
-            .playlist_get(playlist.id)
-            .map_err(|error| error.message.clone())?;
-        if items.is_empty() {
-            return Err(format!("歌单《{name}》为空"));
-        }
-        self.status = "准备中…".to_owned();
-        let online = library.online();
-        let mut queue_items = Vec::with_capacity(items.len());
-        let mut selected = None;
-        for (item_index, item) in items.iter().enumerate() {
-            let path = if item.kind == "local" {
-                let path = PathBuf::from(&item.path);
-                if !path.is_file() {
-                    return Err(format!("文件不存在：{}", item.path));
-                }
-                path
-            } else {
-                let source = match item.source.as_str() {
-                    "bilibili" => SourceId::Bilibili,
-                    "netease" => SourceId::Netease,
-                    "ytdlp" => SourceId::Ytdlp,
-                    other => return Err(format!("未知音源：{other}")),
-                };
-                let track = SourceTrack {
-                    source,
-                    source_id: item.source_id.clone(),
-                    title: item.title.clone(),
-                    artist: item.artist.clone(),
-                    duration_ms: u64::try_from(item.duration_ms).unwrap_or(0),
-                    album: (!item.album.is_empty()).then(|| item.album.clone()),
-                    cover_url: None,
-                };
-                online
-                    .prepare(&track, &mut |_| {})
-                    .map_err(|error| error.message.clone())?
-                    .path
-            };
-            let key = TrackKey::Local(path.clone());
-            if item_index == index {
-                selected = Some(key.clone());
-            }
-            queue_items.push(QueueItem::new(
-                TrackRef::Local(path),
-                item.title.clone(),
-                item.artist.clone(),
-                u64::try_from(item.duration_ms).unwrap_or(0),
-            ));
-        }
-        player
-            .replace_playlist(queue_items, selected.as_ref())
-            .map_err(|error| error.message.clone())?;
-        self.status = "播放中".to_owned();
-        Ok(())
-    }
-
     pub(crate) fn start_search_draft(
         &mut self,
         draft: SearchDraft,
         library: &Arc<LibraryHandle>,
         tx: &std::sync::mpsc::Sender<(u64, Block)>,
     ) {
-        let options = SearchOptions {
+        let options = np_app::SearchOptions {
             keyword: draft.keyword,
             artist: draft.artist,
             source: draft.source,
-            limit: DEFAULT_SEARCH_RESULTS,
+            limit: np_app::DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
             has_keyword: true,
@@ -566,7 +510,7 @@ impl App {
 
     pub(crate) fn start_online_search(
         &mut self,
-        options: SearchOptions,
+        options: np_app::SearchOptions,
         library: &Arc<LibraryHandle>,
         tx: &std::sync::mpsc::Sender<(u64, Block)>,
     ) {
@@ -614,6 +558,48 @@ impl App {
                 );
             }
         });
+    }
+
+    pub(crate) fn start_playlist_prepare(
+        &mut self,
+        name: &str,
+        index: usize,
+        library: &Arc<LibraryHandle>,
+    ) -> Result<(), String> {
+        self.playlist_generation += 1;
+        let generation = self.playlist_generation;
+        let tx = self.playlist_prepare_tx.clone();
+        let name = name.to_owned();
+        let library = Arc::clone(library);
+        self.status = "准备中…".to_owned();
+        std::thread::spawn(move || {
+            let result = prepare_playlist(&name, index, &library);
+            let _ = tx.send(PlaylistReady { generation, result });
+        });
+        Ok(())
+    }
+
+    pub(crate) fn poll_playlist_prepare(
+        &mut self,
+        player: &TuiAudio,
+        library: &dyn LibraryApi,
+    ) -> bool {
+        let mut changed = false;
+        while let Ok(ready) = self.playlist_prepare_rx.try_recv() {
+            changed = true;
+            if ready.generation != self.playlist_generation {
+                continue;
+            }
+            match ready.result {
+                Ok((items, selected)) => match player.replace_playlist(items, selected.as_ref()) {
+                    Ok(_) => self.status = "播放中".to_owned(),
+                    Err(error) => self.status = error.message,
+                },
+                Err(error) => self.status = error,
+            }
+            self.refresh_queue_view(player, library);
+        }
+        changed
     }
 
     pub(crate) fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
@@ -1111,6 +1097,66 @@ fn playlist_child_view(library: &dyn LibraryApi, name: &str) -> ViewData {
         rows,
         refs,
     }
+}
+
+fn prepare_playlist(
+    name: &str,
+    index: usize,
+    library: &LibraryHandle,
+) -> Result<(Vec<QueueItem>, Option<TrackKey>), String> {
+    let playlist = library
+        .playlist_by_name(name)
+        .map_err(|error| error.message.clone())?
+        .ok_or_else(|| format!("歌单不存在：{name}"))?;
+    let (_, items) = library
+        .playlist_get(playlist.id)
+        .map_err(|error| error.message.clone())?;
+    if items.is_empty() {
+        return Err(format!("歌单《{name}》为空"));
+    }
+    let online = library.online();
+    let mut queue_items = Vec::with_capacity(items.len());
+    let mut selected = None;
+    for (item_index, item) in items.iter().enumerate() {
+        let path = if item.kind == "local" {
+            let path = PathBuf::from(&item.path);
+            if !path.is_file() {
+                return Err(format!("文件不存在：{}", item.path));
+            }
+            path
+        } else {
+            let source = match item.source.as_str() {
+                "bilibili" => SourceId::Bilibili,
+                "netease" => SourceId::Netease,
+                "ytdlp" => SourceId::Ytdlp,
+                other => return Err(format!("未知音源：{other}")),
+            };
+            let track = SourceTrack {
+                source,
+                source_id: item.source_id.clone(),
+                title: item.title.clone(),
+                artist: item.artist.clone(),
+                duration_ms: u64::try_from(item.duration_ms).unwrap_or(0),
+                album: (!item.album.is_empty()).then(|| item.album.clone()),
+                cover_url: None,
+            };
+            online
+                .prepare(&track, &mut |_| {})
+                .map_err(|error| error.message.clone())?
+                .path
+        };
+        let key = TrackKey::Local(path.clone());
+        if item_index == index {
+            selected = Some(key.clone());
+        }
+        queue_items.push(QueueItem::new(
+            TrackRef::Local(path),
+            item.title.clone(),
+            item.artist.clone(),
+            u64::try_from(item.duration_ms).unwrap_or(0),
+        ));
+    }
+    Ok((queue_items, selected))
 }
 
 fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {
