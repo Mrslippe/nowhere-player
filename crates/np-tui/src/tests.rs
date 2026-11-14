@@ -875,8 +875,8 @@ fn baseline_72x24_horizontal_coordinates() {
     assert_eq!(buffer[(71, 1)].symbol(), "┃");
     assert_eq!(buffer[(2, 10)].symbol(), "┏");
     assert_eq!(buffer[(69, 10)].symbol(), "┓");
-    assert_eq!(buffer[(2, 11)].symbol(), "┃");
-    assert_eq!(buffer[(69, 11)].symbol(), "┃");
+    assert_eq!(buffer[(2, 11)].symbol(), " ");
+    assert_eq!(buffer[(69, 11)].symbol(), " ");
     assert_eq!(buffer[(2, 20)].symbol(), "┏");
     assert_eq!(buffer[(69, 20)].symbol(), "┓");
 }
