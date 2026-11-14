@@ -334,6 +334,7 @@ where
                                                                     app.row_index,
                                                                     library,
                                                                     search.tx,
+                                                                    player,
                                                                 )
                                                             {
                                                                 app.status = error;
@@ -365,6 +366,10 @@ where
                                 }
                             }
                             KeyCode::Esc => {
+                                if app.pending_add.is_some() {
+                                    app.pending_add = None;
+                                    app.status = "已取消添加".to_owned();
+                                }
                                 if app.focus == Focus::List {
                                     app.focus = Focus::Browse;
                                 }
@@ -382,6 +387,16 @@ where
                                     ) || !app.filtered_rows().is_empty()) =>
                             {
                                 app.reset_search_to_empty();
+                            }
+                            KeyCode::Char('a') if app.focus == Focus::List => {
+                                let result = if app.pending_add.is_some() {
+                                    app.confirm_add_to_playlist(&**library)
+                                } else {
+                                    app.begin_add_to_playlist()
+                                };
+                                if let Err(error) = result {
+                                    app.status = error;
+                                }
                             }
                             KeyCode::Char('/') => app.enter_command(),
                             KeyCode::Char(' ') => {

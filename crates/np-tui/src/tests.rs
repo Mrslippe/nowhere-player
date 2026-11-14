@@ -1015,3 +1015,21 @@ fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAud
         .map(|cell| cell.symbol())
         .collect()
 }
+
+#[test]
+fn add_hotkey_starts_pending_track_and_jumps_to_playlist_root() {
+    let mut app = browse_app();
+    app.view_index = 2;
+    app.focus = Focus::List;
+    app.views[2].refs = vec![TrackRef::Local(PathBuf::from("/tmp/song.flac"))];
+    app.views[2].rows = vec![vec![
+        "1".to_owned(),
+        "Song".to_owned(),
+        "Artist".to_owned(),
+        "03:00".to_owned(),
+    ]];
+    app.begin_add_to_playlist().unwrap();
+    assert!(app.pending_add.is_some());
+    assert_eq!(app.view_index, 0);
+    assert_eq!(app.focus, Focus::List);
+}

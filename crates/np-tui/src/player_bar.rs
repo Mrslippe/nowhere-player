@@ -67,10 +67,7 @@ pub(crate) fn draw_player_strip(
         .saturating_sub(2)
         .max(4) as usize;
     let max_text = content.width.saturating_sub(2) as usize;
-    let title = truncate_width(
-        &format!("{} — {}", player.title(), player.artist()),
-        max_text,
-    );
+    let title = format_info_title(&player.title(), &player.artist(), max_text);
     let title_width = UnicodeWidthStr::width(title.as_str()) as u16;
     if title_width > 0 {
         let patch_width = title_width.saturating_add(2).min(content.width);
@@ -139,6 +136,20 @@ pub(crate) fn draw_player_strip(
             height: 1,
         },
     );
+}
+
+fn format_info_title(title: &str, artist: &str, max_width: usize) -> String {
+    let suffix = if artist.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" — {artist}")
+    };
+    let suffix_width = UnicodeWidthStr::width(suffix.as_str());
+    if suffix_width >= max_width {
+        return truncate_width(&suffix, max_width);
+    }
+    let title = truncate_width(title, max_width - suffix_width);
+    format!("{title}{suffix}")
 }
 
 fn draw_player_frame(

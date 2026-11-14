@@ -10,9 +10,9 @@ use crate::theme::Palette;
 use crate::tray;
 use crate::{osc, startup};
 use np_app::{
-    Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi, SearchHit, Services,
-    SettingsHandle, SourceId, SourceTrack, ThemeApi, complete_for, execute_with_services,
-    online_play_hit, online_play_started_block, run_online_play,
+    Execution, LibraryApi, LibraryHandle, NewPlaylistItem, NoopLibraryObserver, PlayerApi,
+    SearchHit, Services, SettingsHandle, SourceId, SourceTrack, ThemeApi, complete_for,
+    execute_with_services, online_play_hit, online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus};
 pub(crate) struct PlaylistReady {
@@ -63,6 +63,8 @@ pub(crate) struct App {
     pub(crate) playlist_expanded: bool,
     pub(crate) view_index: usize,
     pub(crate) row_index: usize,
+    pub(crate) queue_marker: Option<usize>,
+    pub(crate) pending_add: Option<QueueItem>,
 }
 
 impl App {
@@ -111,6 +113,8 @@ impl App {
             playlist_expanded: false,
             view_index: 0,
             row_index: 0,
+            queue_marker: None,
+            pending_add: None,
         }
     }
 
@@ -250,6 +254,7 @@ impl App {
         let playlist_root = playlist_root_view(library);
         let library_view = library_view(library);
         let queue = queue_view(player, library);
+        self.queue_marker = player.queue_list().ok().and_then(|view| view.index);
         let search = ViewData {
             title: "搜索".to_owned(),
             columns: Vec::new(),
@@ -349,6 +354,7 @@ impl App {
     }
 
     pub(crate) fn refresh_queue_view(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
+        self.queue_marker = player.queue_list().ok().and_then(|view| view.index);
         if let Some(index) = self
             .view_kind
             .iter()
@@ -390,6 +396,117 @@ impl App {
             return Some(SearchDisplay::NoResults);
         }
         None
+    }
+
+    pub(crate) fn begin_add_to_playlist(&mut self) -> Result<(), String> {
+        if self.pending_add.is_some() {
+            return Err("已有一首待添加歌曲，请先选择歌单".to_owned());
+        }
+        let Some(kind) = self.view_kind.get(self.view_index).cloned() else {
+            return Err("当前没有列表".to_owned());
+        };
+        if matches!(kind, BrowseKind::PlaylistRoot | BrowseKind::Settings) {
+            return Err("当前列表不是歌曲列表".to_owned());
+        }
+        let Some(view) = self.selected_view() else {
+            return Err("当前没有列表".to_owned());
+        };
+        let Some(track) = view.refs.get(self.row_index).cloned() else {
+            return Err("当前行不是歌曲".to_owned());
+        };
+        let Some(row) = view.rows.get(self.row_index) else {
+            return Err("当前行不是歌曲".to_owned());
+        };
+        let item = QueueItem::new(
+            track,
+            row.get(1).cloned().unwrap_or_default(),
+            row.get(2).cloned().unwrap_or_default(),
+            row.get(3)
+                .and_then(|value| parse_duration(value))
+                .unwrap_or(0),
+        );
+        let Some(root) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::PlaylistRoot)
+        else {
+            return Err("没有 Playlist 页面".to_owned());
+        };
+        self.pending_add = Some(item);
+        self.view_index = root;
+        self.row_index = 0;
+        self.focus = Focus::List;
+        self.status = "选择歌单后按 a 添加".to_owned();
+        Ok(())
+    }
+
+    pub(crate) fn confirm_add_to_playlist(
+        &mut self,
+        library: &dyn LibraryApi,
+    ) -> Result<(), String> {
+        let Some(item) = self.pending_add.take() else {
+            return Err("没有待添加歌曲".to_owned());
+        };
+        if !matches!(
+            self.view_kind.get(self.view_index),
+            Some(BrowseKind::PlaylistRoot)
+        ) {
+            self.pending_add = Some(item);
+            return Err("请选择 Playlist 页中的歌单".to_owned());
+        }
+        let Some(name) = self
+            .filtered_rows()
+            .get(self.row_index)
+            .and_then(|row| row.get(1).cloned())
+        else {
+            self.pending_add = Some(item);
+            return Err("没有选中歌单".to_owned());
+        };
+        let playlist = match library.playlist_by_name(&name) {
+            Ok(Some(playlist)) => playlist,
+            Ok(None) => {
+                self.pending_add = Some(item);
+                return Err(format!("歌单不存在：{name}"));
+            }
+            Err(error) => {
+                self.pending_add = Some(item);
+                return Err(error.message);
+            }
+        };
+        let (kind, path, source, source_id) = match &item.track {
+            TrackRef::Local(path) => (
+                "local",
+                path.to_string_lossy().into_owned(),
+                String::new(),
+                String::new(),
+            ),
+            TrackRef::Remote { source, id } => {
+                ("remote", String::new(), source.clone(), id.clone())
+            }
+        };
+        let draft = NewPlaylistItem {
+            kind: kind.to_owned(),
+            path,
+            source,
+            source_id,
+            title: item.title.clone(),
+            artist: item.artist.clone(),
+            album: String::new(),
+            duration_ms: i64::try_from(item.duration_ms).unwrap_or(i64::MAX),
+        };
+        if let Err(error) = library.playlist_add(playlist.id, &draft) {
+            self.pending_add = Some(item);
+            return Err(error.message);
+        }
+        if let Some(index) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::PlaylistRoot)
+        {
+            self.views[index] = playlist_root_view(library);
+        }
+        self.status = format!("已添加到歌单：{name}");
+        Ok(())
     }
 
     pub(crate) fn search_editing_input(&self) -> bool {
@@ -453,11 +570,13 @@ impl App {
         index: usize,
         library: &Arc<LibraryHandle>,
         tx: &std::sync::mpsc::Sender<(u64, Block)>,
+        player: &TuiAudio,
     ) -> Result<(), String> {
         let hits = library.search_hits();
         let Some(SearchHit::Online(track)) = hits.get(index) else {
             return Err("该搜索结果不是在线曲目".to_owned());
         };
+        player.set_pending_metadata(track.title.clone(), track.artist.clone());
         let remote_tx = self.remote_tx.clone().ok_or("远程播放通道未就绪")?;
         self.search_id += 1;
         let search_id = self.search_id;
@@ -1000,9 +1119,9 @@ fn library_view(library: &dyn LibraryApi) -> ViewData {
 }
 
 fn queue_view(player: &dyn PlayerApi, library: &dyn LibraryApi) -> ViewData {
-    let (tracks, current) = match player.queue_list() {
-        Ok(view) => (view.tracks, view.index),
-        Err(_) => (Vec::new(), None),
+    let tracks = match player.queue_list() {
+        Ok(view) => view.tracks,
+        Err(_) => Vec::new(),
     };
     let metadata = library.tracks_by_paths(&tracks).unwrap_or_default();
     let refs = tracks
@@ -1032,12 +1151,7 @@ fn queue_view(player: &dyn PlayerApi, library: &dyn LibraryApi) -> ViewData {
                     crate::player_bar::format_time(u64::try_from(track.duration_ms).unwrap_or(0))
                 })
                 .unwrap_or_else(|| "—".to_owned());
-            let sequence = if current == Some(index) {
-                format!("▶ {}", index + 1)
-            } else {
-                (index + 1).to_string()
-            };
-            vec![sequence, title, artist, duration]
+            vec![(index + 1).to_string(), title, artist, duration]
         })
         .collect();
     ViewData {
@@ -1157,6 +1271,13 @@ fn prepare_playlist(
         ));
     }
     Ok((queue_items, selected))
+}
+
+fn parse_duration(text: &str) -> Option<u64> {
+    let mut parts = text.split(':');
+    let minutes = parts.next()?.parse::<u64>().ok()?;
+    let seconds = parts.next()?.parse::<u64>().ok()?;
+    Some((minutes * 60 + seconds) * 1000)
 }
 
 fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {

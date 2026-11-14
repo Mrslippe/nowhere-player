@@ -13,6 +13,7 @@
 - 默认字体 Maple Mono NF CN；启动时兜底 72×24（WT 请求 77×26）
 - Search 空态 Enter 激活 Key Words，Esc 退出，c 回空态
 - Search 空态可在 Key Words 直接输入关键词与可选参数（支持中文，修复 char boundary panic）
+- List 英文标题、Queue 左游标、Player 标题—作者、a 添加到歌单
 - TUI 去命令化批次4：远程歌单后台准备、Executor listing 快照
 - TUI 去命令化批次3：Search 输入 typed、TUI 内部 app.run 仅剩 Controller
 - TUI 去命令化批次2：远程歌单 typed 播放、TUI 内部只剩用户命令入口

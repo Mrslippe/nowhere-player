@@ -8,6 +8,7 @@ pub mod paths;
 pub mod ports;
 
 pub use command::*;
+pub use np_library::NewPlaylistItem;
 pub use np_sources::{SourceId, SourceTrack};
 pub use paths::Paths;
 pub use ports::EventSink;

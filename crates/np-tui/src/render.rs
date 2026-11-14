@@ -457,16 +457,29 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         ));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+    if matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Queue))
+        && let Some(marker) = app.queue_marker
+        && marker >= first
+        && marker < first + visible
+    {
+        let y = inner.y.saturating_add(1 + (marker - first) as u16);
+        frame.buffer_mut().set_string(
+            area.x,
+            y,
+            glyphs::SELECT,
+            Style::default().fg(app.palette.accent),
+        );
+    }
 }
 
 fn list_title(app: &App) -> String {
     match app.view_kind.get(app.view_index) {
         Some(BrowseKind::PlaylistRoot) => "PlayList".to_owned(),
-        Some(BrowseKind::Playlist(name)) => name.clone(),
-        Some(BrowseKind::Library) => "媒体库".to_owned(),
+        Some(BrowseKind::Playlist(_)) => "Playlist".to_owned(),
+        Some(BrowseKind::Library) => "Library".to_owned(),
         Some(BrowseKind::Search) => "Search".to_owned(),
-        Some(BrowseKind::Queue) => "队列".to_owned(),
-        Some(BrowseKind::Settings) => "设置".to_owned(),
+        Some(BrowseKind::Queue) => "Queue".to_owned(),
+        Some(BrowseKind::Settings) => "Settings".to_owned(),
         None => "List".to_owned(),
     }
 }
