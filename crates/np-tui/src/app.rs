@@ -10,9 +10,10 @@ use crate::theme::Palette;
 use crate::tray;
 use crate::{osc, startup};
 use np_app::{
-    Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi, SearchHit, Services,
-    SettingsHandle, SourceId, SourceTrack, ThemeApi, complete_for, execute_with_services,
-    online_play_hit, online_play_started_block, run_online_play,
+    DEFAULT_SEARCH_RESULTS, Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi,
+    SearchHit, SearchOptions, Services, SettingsHandle, SourceId, SourceTrack, ThemeApi,
+    complete_for, execute_with_services, online_play_hit, online_play_started_block,
+    run_online_play,
 };
 use np_core::{Block, BlockStatus};
 pub(crate) struct App {
@@ -540,6 +541,79 @@ impl App {
             .map_err(|error| error.message.clone())?;
         self.status = "播放中".to_owned();
         Ok(())
+    }
+
+    pub(crate) fn start_search_draft(
+        &mut self,
+        draft: SearchDraft,
+        library: &Arc<LibraryHandle>,
+        tx: &std::sync::mpsc::Sender<(u64, Block)>,
+    ) {
+        let options = SearchOptions {
+            keyword: draft.keyword,
+            artist: draft.artist,
+            source: draft.source,
+            limit: DEFAULT_SEARCH_RESULTS,
+            local: false,
+            explicit_limit: false,
+            has_keyword: true,
+            up: None,
+            mid: None,
+            no_filter: false,
+        };
+        self.start_online_search(options, library, tx);
+    }
+
+    pub(crate) fn start_online_search(
+        &mut self,
+        options: SearchOptions,
+        library: &Arc<LibraryHandle>,
+        tx: &std::sync::mpsc::Sender<(u64, Block)>,
+    ) {
+        self.search_id += 1;
+        self.search_pending = true;
+        self.search_query = options.keyword.clone();
+        self.search_attempted = true;
+        let search_id = self.search_id;
+        let block_id = format!("tui-search-{}", now_millis());
+        let template = if options.up.is_some() || options.mid.is_some() {
+            np_app::up_started_block(
+                &block_id,
+                &options.keyword,
+                options.up.as_deref().unwrap_or("mid"),
+            )
+        } else {
+            np_app::search_started_block(&block_id, &options.keyword, &options.keyword)
+        };
+        self.upsert_block(template.clone());
+        self.status = "搜索中…（输入行仍可编辑）".to_owned();
+        let online = library.online();
+        let library = Arc::clone(library);
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let emit = move |block: &Block| {
+                let _ = tx.send((search_id, block.clone()));
+            };
+            if options.up.is_some() || options.mid.is_some() {
+                np_app::run_up_search(
+                    &options,
+                    &*online,
+                    &*library,
+                    &emit,
+                    &template,
+                    &np_app::now_millis,
+                );
+            } else {
+                np_app::run_online_search_with_options(
+                    &options,
+                    &*online,
+                    &*library,
+                    &emit,
+                    &template,
+                    &np_app::now_millis,
+                );
+            }
+        });
     }
 
     pub(crate) fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
@@ -1074,7 +1148,14 @@ fn char_to_byte_index(input: &str, char_index: usize) -> usize {
         .map_or(input.len(), |(byte, _)| byte)
 }
 
-pub(crate) fn search_command_from_input(input: &str) -> Result<String, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SearchDraft {
+    pub(crate) keyword: String,
+    pub(crate) artist: Option<String>,
+    pub(crate) source: Option<SourceId>,
+}
+
+pub(crate) fn parse_search_input(input: &str) -> Result<SearchDraft, String> {
     let tokens = split_search_args(input)?;
     let mut keyword = Vec::new();
     let mut artist: Option<String> = None;
@@ -1102,14 +1183,17 @@ pub(crate) fn search_command_from_input(input: &str) -> Result<String, String> {
     if keyword.is_empty() {
         return Err("请输入关键词".to_owned());
     }
-    let mut command = format!("search \"{}\"", keyword.join(" ").replace('"', "\\\""));
-    if let Some(artist) = artist {
-        command.push_str(&format!(" --artist \"{}\"", artist.replace('"', "\\\"")));
-    }
-    if let Some(source) = source {
-        command.push_str(&format!(" --source \"{}\"", source.replace('"', "\\\"")));
-    }
-    Ok(command)
+    let source = match source.as_deref() {
+        None | Some("all") => None,
+        Some("bilibili") => Some(SourceId::Bilibili),
+        Some("netease") => Some(SourceId::Netease),
+        Some(other) => return Err(format!("未知音源：{other}")),
+    };
+    Ok(SearchDraft {
+        keyword: keyword.join(" "),
+        artist,
+        source,
+    })
 }
 
 fn split_search_args(input: &str) -> Result<Vec<String>, String> {

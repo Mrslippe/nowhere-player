@@ -7,7 +7,7 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
-use crate::app::{App, search_command_from_input};
+use crate::app::{App, parse_search_input};
 use crate::audio::TuiAudio;
 use crate::model::*;
 use crate::playback::{QueueItem, TrackKey};
@@ -150,17 +150,10 @@ where
                             KeyCode::Backspace => app.backspace_search_char(),
                             KeyCode::Left => app.move_search_cursor(false),
                             KeyCode::Right => app.move_search_cursor(true),
-                            KeyCode::Enter => match search_command_from_input(&app.search_input) {
-                                Ok(command) => {
+                            KeyCode::Enter => match parse_search_input(&app.search_input) {
+                                Ok(draft) => {
                                     app.end_search_edit();
-                                    app.run(
-                                        command,
-                                        player,
-                                        library,
-                                        search.tx,
-                                        theme_ctx.api,
-                                        theme_ctx.settings,
-                                    );
+                                    app.start_search_draft(draft, library, search.tx);
                                 }
                                 Err(error) => app.status = error,
                             },

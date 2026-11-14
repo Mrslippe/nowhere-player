@@ -3,7 +3,7 @@ use crate::audio::TuiAudio;
 use crate::layout::*;
 use crate::render::*;
 use crate::theme::Palette;
-use np_app::PlaybackTarget;
+use np_app::{PlaybackTarget, SourceId};
 use np_core::{Block, BlockStatus, Output};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
@@ -956,28 +956,16 @@ fn playlist_root_uses_four_column_width_preset() {
 }
 
 #[test]
-fn search_input_builds_keyword_artist_and_source_command() {
-    assert_eq!(
-        search_command_from_input("Clarity -artist Mit3uri -source bilibili").unwrap(),
-        r#"search "Clarity" --artist "Mit3uri" --source "bilibili""#
-    );
-    assert_eq!(
-        search_command_from_input(r#""a b" --source netease"#).unwrap(),
-        r#"search "a b" --source "netease""#
-    );
-    assert!(search_command_from_input(" -artist x").is_err());
-    assert!(search_command_from_input("x -unknown y").is_err());
-}
-
-fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAudio) -> String {
-    terminal.draw(|frame| draw(frame, app, audio)).unwrap();
-    terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect()
+fn search_input_builds_keyword_artist_and_source_draft() {
+    let draft = parse_search_input("Clarity -artist Mit3uri -source bilibili").unwrap();
+    assert_eq!(draft.keyword, "Clarity");
+    assert_eq!(draft.artist.as_deref(), Some("Mit3uri"));
+    assert_eq!(draft.source, Some(SourceId::Bilibili));
+    let draft = parse_search_input(r#""a b" --source netease"#).unwrap();
+    assert_eq!(draft.keyword, "a b");
+    assert_eq!(draft.source, Some(SourceId::Netease));
+    assert!(parse_search_input(" -artist x").is_err());
+    assert!(parse_search_input("x -unknown y").is_err());
 }
 
 #[test]
@@ -1015,4 +1003,15 @@ fn search_input_requires_enter_and_esc_releases_editing() {
     assert!(!app.search_attempted);
     assert!(app.views[3].rows.is_empty());
     assert!(!app.search_editing_input());
+}
+
+fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAudio) -> String {
+    terminal.draw(|frame| draw(frame, app, audio)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
 }
