@@ -490,8 +490,38 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 .style(Style::default().bg(bg));
             let inner = block.inner(box_area);
             frame.render_widget(block, box_area);
+            let chars: Vec<char> = query.chars().collect();
+            let cursor = app.search_cursor.min(chars.len());
+            let width = usize::from(inner.width);
+            let start = if cursor >= width {
+                cursor + 1 - width
+            } else {
+                0
+            };
+            let end = (start + width).min(chars.len());
+            let mut spans = Vec::new();
+            for (index, character) in chars.iter().enumerate().take(end).skip(start) {
+                if index == cursor && app.focus == Focus::List {
+                    spans.push(TuiSpan::styled(
+                        character.to_string(),
+                        Style::default()
+                            .bg(app.palette.fg)
+                            .fg(app.palette.bg.unwrap_or(Color::Reset)),
+                    ));
+                } else {
+                    spans.push(TuiSpan::raw(character.to_string()));
+                }
+            }
+            if cursor == chars.len() && cursor - start < width && app.focus == Focus::List {
+                spans.push(TuiSpan::styled(
+                    " ",
+                    Style::default()
+                        .bg(app.palette.fg)
+                        .fg(app.palette.bg.unwrap_or(Color::Reset)),
+                ));
+            }
             frame.render_widget(
-                Paragraph::new(query).style(Style::default().fg(app.palette.fg).bg(bg)),
+                Paragraph::new(Line::from(spans)).style(Style::default().fg(app.palette.fg).bg(bg)),
                 inner,
             );
         }

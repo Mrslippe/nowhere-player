@@ -34,6 +34,8 @@ pub(crate) struct App {
     pub(crate) search_id: u64,
     pub(crate) search_pending: bool,
     pub(crate) search_query: String,
+    pub(crate) search_input: String,
+    pub(crate) search_cursor: usize,
     pub(crate) search_attempted: bool,
     pub(crate) no_color_ignored: bool,
     #[cfg(windows)]
@@ -75,6 +77,8 @@ impl App {
             search_id: 0,
             search_pending: false,
             search_query: String::new(),
+            search_input: String::new(),
+            search_cursor: 0,
             search_attempted: false,
             no_color_ignored: false,
             #[cfg(windows)]
@@ -385,13 +389,40 @@ impl App {
         }
         if !self.search_attempted {
             return Some(SearchDisplay::Empty {
-                query: self.search_query.clone(),
+                query: self.search_input.clone(),
             });
         }
         if self.filtered_row_count() == 0 {
             return Some(SearchDisplay::NoResults);
         }
         None
+    }
+
+    pub(crate) fn search_editing_input(&self) -> bool {
+        self.focus == Focus::List
+            && matches!(self.search_display(), Some(SearchDisplay::Empty { .. }))
+    }
+
+    pub(crate) fn insert_search_char(&mut self, character: char) {
+        self.search_input.insert(self.search_cursor, character);
+        self.search_cursor += 1;
+    }
+
+    pub(crate) fn backspace_search_char(&mut self) {
+        if self.search_cursor > 0 {
+            self.search_cursor -= 1;
+            self.search_input.remove(self.search_cursor);
+        }
+    }
+
+    pub(crate) fn move_search_cursor(&mut self, right: bool) {
+        if right {
+            if self.search_cursor < self.search_input.chars().count() {
+                self.search_cursor += 1;
+            }
+        } else {
+            self.search_cursor = self.search_cursor.saturating_sub(1);
+        }
     }
 
     pub(crate) fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
@@ -777,6 +808,68 @@ fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {
         rows,
         refs: Vec::new(),
     }
+}
+
+pub(crate) fn search_command_from_input(input: &str) -> Result<String, String> {
+    let tokens = split_search_args(input)?;
+    let mut keyword = Vec::new();
+    let mut artist: Option<String> = None;
+    let mut source: Option<String> = None;
+    let mut index = 0;
+    while index < tokens.len() {
+        match tokens[index].as_str() {
+            "-artist" | "--artist" | "-a" => {
+                index += 1;
+                let value = tokens.get(index).ok_or("参数缺少作者值")?;
+                artist = Some(value.clone());
+            }
+            "-source" | "--source" | "-s" => {
+                index += 1;
+                let value = tokens.get(index).ok_or("参数缺少来源平台值")?;
+                source = Some(value.clone());
+            }
+            token if token.starts_with('-') => {
+                return Err(format!("未知参数：{token}"));
+            }
+            token => keyword.push(token.to_owned()),
+        }
+        index += 1;
+    }
+    if keyword.is_empty() {
+        return Err("请输入关键词".to_owned());
+    }
+    let mut command = format!("search \"{}\"", keyword.join(" ").replace('"', "\\\""));
+    if let Some(artist) = artist {
+        command.push_str(&format!(" --artist \"{}\"", artist.replace('"', "\\\"")));
+    }
+    if let Some(source) = source {
+        command.push_str(&format!(" --source \"{}\"", source.replace('"', "\\\"")));
+    }
+    Ok(command)
+}
+
+fn split_search_args(input: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = false;
+    for character in input.chars() {
+        match character {
+            '"' => quote = !quote,
+            ' ' | '\t' if !quote => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+    if quote {
+        return Err("引号未闭合".to_owned());
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
 }
 
 fn format_date(ms: i64) -> String {

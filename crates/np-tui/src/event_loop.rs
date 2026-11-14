@@ -7,7 +7,7 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
-use crate::app::App;
+use crate::app::{App, search_command_from_input};
 use crate::audio::TuiAudio;
 use crate::model::*;
 use crate::playback::{QueueItem, TrackKey};
@@ -144,6 +144,29 @@ where
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if app.search_editing_input() {
+                        match key.code {
+                            KeyCode::Char(character) => app.insert_search_char(character),
+                            KeyCode::Backspace => app.backspace_search_char(),
+                            KeyCode::Left => app.move_search_cursor(false),
+                            KeyCode::Right => app.move_search_cursor(true),
+                            KeyCode::Enter => match search_command_from_input(&app.search_input) {
+                                Ok(command) => app.run(
+                                    command,
+                                    player,
+                                    library,
+                                    search.tx,
+                                    theme_ctx.api,
+                                    theme_ctx.settings,
+                                ),
+                                Err(error) => app.status = error,
+                            },
+                            KeyCode::Esc => app.focus = Focus::Browse,
+                            _ => {}
+                        }
+                        draw_needed = true;
+                        continue;
+                    }
                     if app.focus == Focus::Controller {
                         match key.code {
                             KeyCode::Esc => app.leave_command(),

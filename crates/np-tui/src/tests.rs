@@ -955,6 +955,20 @@ fn playlist_root_uses_four_column_width_preset() {
     assert_eq!(list_widths(&columns, &rows, 48), vec![4, 24, 12, 5]);
 }
 
+#[test]
+fn search_input_builds_keyword_artist_and_source_command() {
+    assert_eq!(
+        search_command_from_input("Clarity -artist Mit3uri -source bilibili").unwrap(),
+        r#"search "Clarity" --artist "Mit3uri" --source "bilibili""#
+    );
+    assert_eq!(
+        search_command_from_input(r#""a b" --source netease"#).unwrap(),
+        r#"search "a b" --source "netease""#
+    );
+    assert!(search_command_from_input(" -artist x").is_err());
+    assert!(search_command_from_input("x -unknown y").is_err());
+}
+
 fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAudio) -> String {
     terminal.draw(|frame| draw(frame, app, audio)).unwrap();
     terminal
