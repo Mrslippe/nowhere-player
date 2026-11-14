@@ -433,4 +433,29 @@ mod tests {
         );
         assert_eq!(state.mode, mode, "mode must survive track change");
     }
+
+    #[test]
+    fn prepend_duplicate_and_next_follow_unique_queue() {
+        let first =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/accept/tone.wav");
+        let second =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/accept/tone-440.wav");
+        if !first.is_file() || !second.is_file() {
+            return;
+        }
+        let audio = TuiAudio::empty();
+        audio
+            .play(Some(first.to_string_lossy().into_owned()))
+            .unwrap();
+        audio
+            .play(Some(second.to_string_lossy().into_owned()))
+            .unwrap();
+        assert_eq!(audio.queue_list().unwrap().tracks.len(), 2);
+        audio
+            .play(Some(second.to_string_lossy().into_owned()))
+            .unwrap();
+        assert_eq!(audio.queue_list().unwrap().tracks.len(), 2);
+        audio.next().unwrap();
+        assert_eq!(audio.source_path().as_deref(), Some(first.as_path()));
+    }
 }
