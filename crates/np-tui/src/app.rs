@@ -629,13 +629,14 @@ impl App {
             return;
         }
 
+        let online = library.online();
         let execution = execute_with_services(
             player,
             &**library,
             Services {
                 settings: Some(settings),
                 theme: Some(theme),
-                ..Services::default()
+                online: Some(&*online),
             },
             &block_id,
             &input,

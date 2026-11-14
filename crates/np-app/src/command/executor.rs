@@ -1008,43 +1008,36 @@ impl Executor<'_> {
                 format!("歌单《{}》里只有 {} 首", playlist.name, items.len()),
             )
         })?;
-        let all_local = items.iter().all(|item| item.kind == "local");
-        let state = if all_local {
-            let mut paths = Vec::with_capacity(items.len());
-            for item in &items {
+        let mut paths = Vec::with_capacity(items.len());
+        for item in &items {
+            if item.kind == "local" {
                 if !Path::new(&item.path).is_file() {
                     return Err(CmdError::new("E_CMD_ARG", "文件不存在，可能已移动"));
                 }
                 paths.push(item.path.clone());
+            } else {
+                let source = source_from_str(&item.source)?;
+                let track = SourceTrack {
+                    source,
+                    source_id: item.source_id.clone(),
+                    title: item.title.clone(),
+                    artist: item.artist.clone(),
+                    duration_ms: u64::try_from(item.duration_ms).unwrap_or(0),
+                    album: (!item.album.is_empty()).then(|| item.album.clone()),
+                    cover_url: None,
+                };
+                let online = self
+                    .services
+                    .online
+                    .ok_or_else(|| CmdError::new("E_SRC_UNAVAILABLE", "在线服务未接入"))?;
+                let prepared = online.prepare(&track, &mut |_| {})?;
+                paths.push(prepared.path.to_string_lossy().into_owned());
             }
-            self.api.queue_clear()?;
-            self.api.queue_add(paths)?;
-            self.api.queue_jump(index)?;
-            self.api.snapshot()?
-        } else if item.kind == "local" {
-            if !Path::new(&item.path).is_file() {
-                return Err(CmdError::new("E_CMD_ARG", "文件不存在，可能已移动"));
-            }
-            self.api.play(Some(item.path.clone()))?
-        } else {
-            let source = source_from_str(&item.source)?;
-            let track = SourceTrack {
-                source,
-                source_id: item.source_id.clone(),
-                title: item.title.clone(),
-                artist: item.artist.clone(),
-                duration_ms: u64::try_from(item.duration_ms).unwrap_or(0),
-                album: (!item.album.is_empty()).then(|| item.album.clone()),
-                cover_url: None,
-            };
-            let online = self
-                .services
-                .online
-                .ok_or_else(|| CmdError::new("E_SRC_UNAVAILABLE", "在线服务未接入"))?;
-            let prepared = online.prepare(&track, &mut |_| {})?;
-            self.api
-                .play(Some(prepared.path.to_string_lossy().into_owned()))?
-        };
+        }
+        self.api.queue_clear()?;
+        self.api.queue_add(paths)?;
+        self.api.queue_jump(index)?;
+        let state = self.api.snapshot()?;
         Ok(Outcome {
             outputs: vec![text_of(vec![
                 bold("播放"),
