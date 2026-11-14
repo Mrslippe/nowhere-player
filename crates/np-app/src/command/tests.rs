@@ -2403,9 +2403,14 @@ fn playlist_play_local_and_play_number_after_show() {
     assert!(
         api.calls()
             .iter()
-            .filter(|call| matches!(call, Call::Play(Some(path)) if path == &path_text))
+            .any(|call| matches!(call, Call::QueueAdd(paths) if paths.contains(&path_text)))
+    );
+    assert!(
+        api.calls()
+            .iter()
+            .filter(|call| matches!(call, Call::QueueJump(0)))
             .count()
-            >= 2
+            >= 1
     );
 }
 
@@ -2421,15 +2426,16 @@ fn playlist_play_remote_uses_prepare() {
     done_with_library(&api, &library, r#"playlist create "远程""#);
     done_with_library(&api, &library, r#"playlist add "远程" 1"#);
     let cached = PathBuf::from("/cache/remote.m4a");
+    let cached_text = cached.to_string_lossy().into_owned();
     let online = FakeQueueOnline {
         path: cached.clone(),
     };
     let block = done_with_playlist_online(&api, &library, &online, r#"playlist play "远程""#);
     assert_eq!(block.status, BlockStatus::Done, "{}", text_of_block(&block));
     assert!(
-        api.calls().iter().any(
-            |call| matches!(call, Call::Play(Some(path)) if path == &cached.to_string_lossy())
-        )
+        api.calls()
+            .iter()
+            .any(|call| matches!(call, Call::QueueAdd(paths) if paths.contains(&cached_text)))
     );
     assert!(text_of_block(&block).contains("来源：B站"));
 }

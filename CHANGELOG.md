@@ -11,7 +11,7 @@
 - Browse 树：歌单子项、媒体库、搜索、队列、设置；5 条折叠阈值与 `Shift+Enter`
 - 方角粗边框、焦点 accent、计数 italic/faint、状态栏键名分色
 - 默认字体 Maple Mono NF CN；启动时兜底 72×24（WT 请求 77×26）
-- 播放管线：新增唯一 PlaybackQueue（去重/四模式/队首插入/歌单替换），本地 TuiAudio 已接入
+- 播放管线：唯一 PlaybackQueue（去重/四模式/队首插入/歌单替换），TUI 与命令层接入
 - 音量/模式跨曲目保持；本地 `playlist play` 改为整体替换队列
 - 远程歌单 Enter 走 playlist play，预解析后整体替换队列
 - 音量条 20 格（Vol 标签、连续亮暗块、右端留一格空白）、List 隐藏来源列/表格 48 列/内嵌滚动条、进度与歌曲信息分行

@@ -262,6 +262,29 @@ impl TuiAudio {
         }
         Ok(self.state())
     }
+    pub fn handle_ended(&self) -> Result<bool, CmdError> {
+        let ended = self
+            .player
+            .borrow()
+            .as_ref()
+            .is_some_and(|player| player.is_ended());
+        if !ended {
+            return Ok(false);
+        }
+        let next = {
+            let mut queue = self.lock_queue();
+            queue.next()
+        };
+        if let Some(index) = next {
+            self.open_queue_item(index)?;
+        } else {
+            *self.player.borrow_mut() = None;
+            *self.tap.borrow_mut() = None;
+            self.playing.set(false);
+            *self.source_path.borrow_mut() = None;
+        }
+        Ok(true)
+    }
 }
 
 impl PlayerApi for TuiAudio {
@@ -353,6 +376,13 @@ impl PlayerApi for TuiAudio {
 
     fn queue_clear(&self) -> Result<QueueView, CmdError> {
         self.lock_queue().clear();
+        *self.player.borrow_mut() = None;
+        *self.tap.borrow_mut() = None;
+        self.playing.set(false);
+        *self.title.borrow_mut() = "未播放".to_owned();
+        *self.artist.borrow_mut() = "Nowhere Player".to_owned();
+        self.duration_ms.set(None);
+        *self.source_path.borrow_mut() = None;
         Ok(self.queue_view())
     }
 

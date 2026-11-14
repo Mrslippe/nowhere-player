@@ -106,6 +106,17 @@ where
             app.refresh_queue_view(player, &**library);
             draw_needed = true;
         }
+        match player.handle_ended() {
+            Ok(true) => {
+                app.refresh_queue_view(player, &**library);
+                draw_needed = true;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                app.status = error.message.clone();
+                draw_needed = true;
+            }
+        }
         #[cfg(windows)]
         if app.poll_tray(player) {
             return Ok(());
