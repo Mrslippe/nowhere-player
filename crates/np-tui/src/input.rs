@@ -235,6 +235,11 @@ pub(crate) fn list_widths(
     if columns.len() != 4 {
         return fit_table_widths(columns, rows, available);
     }
+    if columns.get(1).is_some_and(|value| value == "名称")
+        && columns.get(2).is_some_and(|value| value == "创建时间")
+    {
+        return vec![4, 24, 12, 5];
+    }
     // 72 列下 List 内容 50：左间隔 1 + 表格 48 + 右间隔 1。
     // 表格 48 时固定 Title 24、Artist 9；宽出来的 1 格先补 Artist。
     let title = if available < 48 {

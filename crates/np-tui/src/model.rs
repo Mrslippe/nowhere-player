@@ -2,6 +2,13 @@ use std::path::PathBuf;
 
 use np_app::PlaybackTarget;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SearchDisplay {
+    Empty { query: String },
+    Searching,
+    NoResults,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisualMode {
     Spectrum,

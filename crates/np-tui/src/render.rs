@@ -8,7 +8,7 @@ use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::*;
 use crate::layout::layout_areas;
-use crate::model::BrowseKind;
+use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
@@ -228,9 +228,13 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         })
         .add_modifier(Modifier::BOLD);
     border_text(frame, area, area.y, " Browse ", false, browse_title_style);
-    frame
-        .buffer_mut()
-        .set_string(split.saturating_add(1), area.y, " List ", list_title_style);
+    let list_title = format!(" {} ", list_title(app));
+    frame.buffer_mut().set_string(
+        split.saturating_add(1),
+        area.y,
+        &list_title,
+        list_title_style,
+    );
     let view_number = if app.views.is_empty() {
         0
     } else {
@@ -381,6 +385,10 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         width: area.width.saturating_sub(2),
         height: area.height,
     };
+    if let Some(display) = app.search_display() {
+        draw_search_state(frame, inner, app, display);
+        return;
+    }
     let Some(view) = app.selected_view() else {
         return;
     };
@@ -444,6 +452,76 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         ));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn list_title(app: &App) -> String {
+    match app.view_kind.get(app.view_index) {
+        Some(BrowseKind::PlaylistRoot) => "PlayList".to_owned(),
+        Some(BrowseKind::Playlist(name)) => name.clone(),
+        Some(BrowseKind::Library) => "媒体库".to_owned(),
+        Some(BrowseKind::Search) => "Search".to_owned(),
+        Some(BrowseKind::Queue) => "队列".to_owned(),
+        Some(BrowseKind::Settings) => "设置".to_owned(),
+        None => "List".to_owned(),
+    }
+}
+
+fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display: SearchDisplay) {
+    let bg = app.palette.bg.unwrap_or(Color::Reset);
+    match display {
+        SearchDisplay::Empty { query } => {
+            let width = 38.min(area.width);
+            let height = 3.min(area.height);
+            let box_area = Rect {
+                x: area.x + area.width.saturating_sub(width) / 2,
+                y: area.y + area.height.saturating_sub(height) / 2,
+                width,
+                height,
+            };
+            let block = TuiBlock::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.palette.line))
+                .title(" Key Words ")
+                .style(Style::default().bg(bg));
+            let inner = block.inner(box_area);
+            frame.render_widget(block, box_area);
+            frame.render_widget(
+                Paragraph::new(query).style(Style::default().fg(app.palette.fg).bg(bg)),
+                inner,
+            );
+        }
+        SearchDisplay::Searching => {
+            let frames = ["◰", "◳", "◲", "◱"];
+            let frame_index = (crate::app::now_millis() / 120 % 4) as usize;
+            let text = format!("{} searching...", frames[frame_index]);
+            let y = area.y + area.height / 2;
+            frame.render_widget(
+                Paragraph::new(text)
+                    .alignment(ratatui::layout::Alignment::Center)
+                    .style(Style::default().fg(app.palette.muted).bg(bg)),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
+        SearchDisplay::NoResults => {
+            let y = area.y + area.height / 2;
+            frame.render_widget(
+                Paragraph::new("✘ no results")
+                    .alignment(ratatui::layout::Alignment::Center)
+                    .style(Style::default().fg(app.palette.muted).bg(bg)),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
+    }
 }
 
 fn draw_list_scrollbar(frame: &mut ratatui::Frame, area: Rect, app: &App) {

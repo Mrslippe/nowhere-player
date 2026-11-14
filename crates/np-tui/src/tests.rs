@@ -574,9 +574,7 @@ fn player_content_is_sixty_eight_columns_on_72x24() {
         .count();
     assert!(gaps >= 20);
     let top = (0..24)
-        .find(|y| {
-            (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
-        })
+        .find(|y| buffer[(2, *y)].symbol() == "┏" && buffer[(4, *y)].symbol() == "P")
         .expect("player title");
     assert_eq!(buffer[(2, top)].symbol(), "┏");
     assert_eq!(buffer[(3, top)].symbol(), " ");
@@ -789,9 +787,7 @@ fn player_volume_bar_has_twenty_cells() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let row = (0..24)
-        .find(|y| {
-            (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
-        })
+        .find(|y| buffer[(2, *y)].symbol() == "┏" && buffer[(4, *y)].symbol() == "P")
         .expect("player row");
     let count = (0..72)
         .filter(|x| buffer[(*x, row)].symbol() == glyphs::PROGRESS_DONE)
@@ -844,9 +840,7 @@ fn volume_bar_is_contiguous_and_has_one_corner_gap() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let row = (0..24)
-        .find(|y| {
-            (0..72).any(|x| buffer[(x, *y)].symbol() == "P" && buffer[(x + 1, *y)].symbol() == "l")
-        })
+        .find(|y| buffer[(2, *y)].symbol() == "┏" && buffer[(4, *y)].symbol() == "P")
         .expect("player row");
     let positions: Vec<u16> = (0..72)
         .filter(|x| buffer[(*x, row)].symbol() == glyphs::PROGRESS_DONE)
@@ -879,4 +873,95 @@ fn baseline_72x24_horizontal_coordinates() {
     assert_eq!(buffer[(69, 11)].symbol(), " ");
     assert_eq!(buffer[(2, 20)].symbol(), "┏");
     assert_eq!(buffer[(69, 20)].symbol(), "┓");
+}
+
+#[test]
+fn playlist_root_uses_list_title_and_four_columns() {
+    let mut app = browse_app();
+    app.views[0].columns = vec![
+        "序号".to_owned(),
+        "名称".to_owned(),
+        "创建时间".to_owned(),
+        "数量".to_owned(),
+    ];
+    app.views[0].rows = vec![vec![
+        "1".to_owned(),
+        "Like".to_owned(),
+        "2026.11.15".to_owned(),
+        "25".to_owned(),
+    ]];
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("PlayList"));
+    assert!(text.contains("创 建 时 间"));
+    assert!(text.contains("Like"));
+}
+
+#[test]
+fn search_renders_empty_searching_failed_and_result_states() {
+    let mut app = browse_app();
+    app.view_index = 3;
+    app.focus = Focus::List;
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    assert!(draw_text(&mut app, &mut terminal, &audio).contains("Key Words"));
+    app.search_pending = true;
+    assert!(draw_text(&mut app, &mut terminal, &audio).contains("searching..."));
+    app.search_pending = false;
+    app.search_attempted = true;
+    app.views[3].rows.clear();
+    assert!(draw_text(&mut app, &mut terminal, &audio).contains("no results"));
+    app.views[3].columns = vec![
+        "序号".to_owned(),
+        "标题".to_owned(),
+        "艺人".to_owned(),
+        "平台".to_owned(),
+    ];
+    app.views[3].rows = vec![vec![
+        "1".to_owned(),
+        "Luv".to_owned(),
+        "Nujabes".to_owned(),
+        "bilibili".to_owned(),
+    ]];
+    let shown = draw_text(&mut app, &mut terminal, &audio);
+    assert!(shown.contains("平 台"));
+    assert!(shown.contains("bilibili"));
+}
+
+#[test]
+fn playlist_root_uses_four_column_width_preset() {
+    let columns = vec![
+        "序号".to_owned(),
+        "名称".to_owned(),
+        "创建时间".to_owned(),
+        "数量".to_owned(),
+    ];
+    let rows = vec![vec![
+        "1".to_owned(),
+        "Like".to_owned(),
+        "2026.11.15".to_owned(),
+        "25".to_owned(),
+    ]];
+    assert_eq!(list_widths(&columns, &rows, 48), vec![4, 24, 12, 5]);
+}
+
+fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAudio) -> String {
+    terminal.draw(|frame| draw(frame, app, audio)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
 }

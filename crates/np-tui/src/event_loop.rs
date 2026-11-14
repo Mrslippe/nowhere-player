@@ -95,6 +95,7 @@ where
                 }
                 app.status = "搜索完成".to_owned();
                 app.search_pending = false;
+                app.search_attempted = true;
                 draw_needed = true;
             }
         }
@@ -122,6 +123,9 @@ where
             return Ok(());
         }
         if app.refresh_completion(player) {
+            draw_needed = true;
+        }
+        if app.search_pending {
             draw_needed = true;
         }
         if draw_needed {
@@ -211,7 +215,7 @@ where
                                             let name = app
                                                 .filtered_rows()
                                                 .get(app.row_index)
-                                                .and_then(|row| row.first())
+                                                .and_then(|row| row.get(1))
                                                 .cloned();
                                             if let Some(name) = name {
                                                 if !app.playlist_expanded {

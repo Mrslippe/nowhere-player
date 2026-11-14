@@ -33,6 +33,8 @@ pub(crate) struct App {
     pub(crate) visual_mode: VisualMode,
     pub(crate) search_id: u64,
     pub(crate) search_pending: bool,
+    pub(crate) search_query: String,
+    pub(crate) search_attempted: bool,
     pub(crate) no_color_ignored: bool,
     #[cfg(windows)]
     pub(crate) tray_rx: Option<std::sync::mpsc::Receiver<tray::TrayAction>>,
@@ -72,6 +74,8 @@ impl App {
             visual_mode: VisualMode::Spectrum,
             search_id: 0,
             search_pending: false,
+            search_query: String::new(),
+            search_attempted: false,
             no_color_ignored: false,
             #[cfg(windows)]
             tray_rx: None,
@@ -224,7 +228,7 @@ impl App {
         library: &dyn LibraryApi,
         settings: &SettingsHandle,
     ) {
-        let playlist_root = capture_table(player, library, "playlist list", "歌单");
+        let playlist_root = playlist_root_view(library);
         let library_view = capture_table(player, library, "library list --limit=200", "媒体库");
         let queue = capture_table(player, library, "queue list", "队列");
         let search = ViewData {
@@ -371,6 +375,25 @@ impl App {
         self.filtered_rows().len()
     }
 
+    pub(crate) fn search_display(&self) -> Option<SearchDisplay> {
+        let current = self.view_kind.get(self.view_index)?;
+        if *current != BrowseKind::Search {
+            return None;
+        }
+        if self.search_pending {
+            return Some(SearchDisplay::Searching);
+        }
+        if !self.search_attempted {
+            return Some(SearchDisplay::Empty {
+                query: self.search_query.clone(),
+            });
+        }
+        if self.filtered_row_count() == 0 {
+            return Some(SearchDisplay::NoResults);
+        }
+        None
+    }
+
     pub(crate) fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
         let hits = library.search_hits();
         let refs = hits
@@ -387,22 +410,19 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, hit)| {
-                let (title, artist, duration) = match hit {
+                let (title, artist, platform) = match hit {
                     SearchHit::Local(track) => (
                         track.title.clone(),
                         track.artist.clone(),
-                        u64::try_from(track.duration_ms).unwrap_or(0),
+                        "local".to_owned(),
                     ),
-                    SearchHit::Online(track) => {
-                        (track.title.clone(), track.artist.clone(), track.duration_ms)
-                    }
+                    SearchHit::Online(track) => (
+                        track.title.clone(),
+                        track.artist.clone(),
+                        track.source.as_str().to_owned(),
+                    ),
                 };
-                vec![
-                    (index + 1).to_string(),
-                    title,
-                    artist,
-                    crate::player_bar::format_time(duration),
-                ]
+                vec![(index + 1).to_string(), title, artist, platform]
             })
             .collect();
         if let Some(index) = self
@@ -415,7 +435,7 @@ impl App {
                 "序号".to_owned(),
                 "标题".to_owned(),
                 "艺人".to_owned(),
-                "时长".to_owned(),
+                "平台".to_owned(),
             ];
             view.rows = rows;
             view.refs = refs;
@@ -560,6 +580,13 @@ impl App {
         self.history_cursor = None;
         self.status = format!("执行：{input}");
         let block_id = format!("tui-{}", now_millis());
+        if let Ok(Some(parsed)) = np_core::command::parse(&input)
+            && parsed.spec.name == "search"
+            && let Ok(options) = np_app::SearchOptions::parse(&parsed)
+        {
+            self.search_query = options.keyword.clone();
+            self.search_attempted = true;
+        }
 
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "search"
@@ -667,6 +694,13 @@ impl App {
                 self.upsert_block(*running);
             }
         }
+        if let Ok(Some(parsed)) = np_core::command::parse(&input)
+            && parsed.spec.name == "search"
+        {
+            self.search_pending = false;
+            self.search_attempted = true;
+            self.refresh_search_refs(&**library);
+        }
         if let Ok(Some(parsed)) = np_core::command::parse(&input) {
             if parsed.spec.name == "queue"
                 && let Some(index) = self
@@ -681,7 +715,7 @@ impl App {
                     .iter()
                     .position(|kind| *kind == BrowseKind::PlaylistRoot)
             {
-                self.views[index] = capture_table(player, &**library, "playlist list", "歌单");
+                self.views[index] = playlist_root_view(&**library);
             }
             self.refresh_queue_view(player, &**library);
         }
@@ -717,6 +751,49 @@ impl BlockStatusExt for Block {
 trait BlockStatusExt {
     fn status_label(&self) -> &'static str;
 }
+fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {
+    let rows = library
+        .playlist_list()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(index, playlist)| {
+            vec![
+                (index + 1).to_string(),
+                playlist.name,
+                format_date(playlist.created_at),
+                playlist.item_count.to_string(),
+            ]
+        })
+        .collect();
+    ViewData {
+        title: "歌单".to_owned(),
+        columns: vec![
+            "序号".to_owned(),
+            "名称".to_owned(),
+            "创建时间".to_owned(),
+            "数量".to_owned(),
+        ],
+        rows,
+        refs: Vec::new(),
+    }
+}
+
+fn format_date(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!("{year:04}.{month:02}.{day:02}")
+}
+
 pub(crate) fn capture_table(
     player: &dyn PlayerApi,
     library: &dyn LibraryApi,
