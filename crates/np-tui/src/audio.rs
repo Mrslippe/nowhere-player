@@ -8,6 +8,9 @@ use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
 use np_core::{PlaybackMode, PlaybackState, PlaybackStatus, QueueView};
 
+use crate::model::TrackRef;
+use crate::playback::{PlaybackQueue, QueueItem, TrackKey};
+
 pub struct TuiAudio {
     player: RefCell<Option<Player>>,
     tap: RefCell<Option<SampleTapHandle>>,
@@ -17,8 +20,7 @@ pub struct TuiAudio {
     duration_ms: Cell<Option<u64>>,
     source_path: RefCell<Option<PathBuf>>,
     volume: Cell<f32>,
-    mode: Cell<PlaybackMode>,
-    queue: Mutex<QueueView>,
+    queue: Mutex<PlaybackQueue>,
 }
 
 impl TuiAudio {
@@ -48,11 +50,7 @@ impl TuiAudio {
             duration_ms: Cell::new(None),
             source_path: RefCell::new(None),
             volume: Cell::new(1.0),
-            mode: Cell::new(PlaybackMode::default()),
-            queue: Mutex::new(QueueView {
-                tracks: Vec::new(),
-                index: None,
-            }),
+            queue: Mutex::new(PlaybackQueue::new()),
         }
     }
 
@@ -123,7 +121,70 @@ impl TuiAudio {
     }
 
     pub fn mode(&self) -> PlaybackMode {
-        self.mode.get()
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .mode()
+            .to_playback_mode()
+    }
+
+    fn lock_queue(&self) -> std::sync::MutexGuard<'_, PlaybackQueue> {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn queue_item(path: &str, _origin: &str) -> QueueItem {
+        let path_buf = PathBuf::from(path);
+        let title = path_buf
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "未命名".to_owned());
+        QueueItem::new(TrackRef::Local(path_buf), title, "Nowhere Player", 0)
+    }
+
+    fn open_queue_item(&self, index: usize) -> Result<(), CmdError> {
+        let item = self
+            .lock_queue()
+            .item_at(index)
+            .cloned()
+            .ok_or_else(|| CmdError::new("E_CMD_ARG", "队列序号越界"))?;
+        match item.track {
+            TrackRef::Local(path) => {
+                self.open_path(&path)?;
+                if !item.title.is_empty() {
+                    *self.title.borrow_mut() = item.title;
+                }
+                if !item.artist.is_empty() {
+                    *self.artist.borrow_mut() = item.artist;
+                }
+                if item.duration_ms > 0 {
+                    self.duration_ms.set(Some(item.duration_ms));
+                }
+                Ok(())
+            }
+            TrackRef::Remote { .. } => {
+                Err(CmdError::new("E_SRC_UNAVAILABLE", "远程队列项需要在线解析"))
+            }
+        }
+    }
+
+    pub fn play_or_prepend(&self, item: QueueItem) -> Result<PlaybackState, CmdError> {
+        let index = self.lock_queue().play_or_prepend(item);
+        self.open_queue_item(index)?;
+        Ok(self.state())
+    }
+
+    pub fn replace_playlist(
+        &self,
+        items: Vec<QueueItem>,
+        selected: Option<&TrackKey>,
+    ) -> Result<PlaybackState, CmdError> {
+        let index = self.lock_queue().replace_playlist(items, selected);
+        if let Some(index) = index {
+            self.open_queue_item(index)?;
+        }
+        Ok(self.state())
     }
 
     pub fn toggle(&mut self) {
@@ -141,13 +202,29 @@ impl TuiAudio {
     }
 
     fn queue_view(&self) -> QueueView {
-        self.queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        let queue = self.lock_queue();
+        QueueView {
+            tracks: queue
+                .items()
+                .iter()
+                .filter_map(|item| match &item.track {
+                    TrackRef::Local(path) => Some(path.to_string_lossy().into_owned()),
+                    TrackRef::Remote { .. } => None,
+                })
+                .collect(),
+            index: queue.current_index(),
+        }
     }
 
     fn state(&self) -> PlaybackState {
+        let (mode, queue_length, queue_index) = {
+            let queue = self.lock_queue();
+            (
+                queue.mode().to_playback_mode(),
+                queue.len(),
+                queue.current_index(),
+            )
+        };
         PlaybackState {
             status: if self.playing.get() {
                 PlaybackStatus::Playing
@@ -160,33 +237,30 @@ impl TuiAudio {
             position_ms: self.position_ms(),
             duration_ms: self.duration_ms(),
             volume: self.volume.get(),
-            mode: self.mode.get(),
+            mode,
             error: None,
-            queue_length: Some(self.queue_view().tracks.len()),
-            queue_index: self.queue_view().index,
+            queue_length: Some(queue_length),
+            queue_index,
         }
     }
 
-    fn step(&self, direction: i64) -> Result<PlaybackState, CmdError> {
-        let (path, index) = {
-            let mut queue = self
-                .queue
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if queue.tracks.is_empty() {
+    fn step(&self, forward: bool) -> Result<PlaybackState, CmdError> {
+        let (index, same) = {
+            let mut queue = self.lock_queue();
+            if queue.is_empty() {
                 return Err(CmdError::new("E_CMD_ARG", "队列为空"));
             }
-            let current = queue.index.unwrap_or(0) as i64;
-            let next = (current + direction).clamp(0, queue.tracks.len().saturating_sub(1) as i64)
-                as usize;
-            queue.index = Some(next);
-            (queue.tracks[next].clone(), next)
+            let before = queue.current_index();
+            let index = if forward { queue.next() } else { queue.prev() };
+            (index, index == before)
         };
-        self.open_path(Path::new(&path))?;
-        Ok(PlaybackState {
-            queue_index: Some(index),
-            ..self.state()
-        })
+        let Some(index) = index else {
+            return Ok(self.state());
+        };
+        if !same {
+            self.open_queue_item(index)?;
+        }
+        Ok(self.state())
     }
 }
 
@@ -197,7 +271,9 @@ impl PlayerApi for TuiAudio {
 
     fn play(&self, path: Option<String>) -> Result<PlaybackState, CmdError> {
         if let Some(path) = path {
-            self.open_path(Path::new(&path))?;
+            let item = Self::queue_item(&path, "play");
+            let index = self.lock_queue().play_or_prepend(item);
+            self.open_queue_item(index)?;
         } else if let Some(player) = self.player.borrow().as_ref() {
             player
                 .play()
@@ -225,11 +301,11 @@ impl PlayerApi for TuiAudio {
     }
 
     fn next(&self) -> Result<PlaybackState, CmdError> {
-        self.step(1)
+        self.step(true)
     }
 
     fn prev(&self) -> Result<PlaybackState, CmdError> {
-        self.step(-1)
+        self.step(false)
     }
 
     fn seek(&self, position_ms: u64) -> Result<PlaybackState, CmdError> {
@@ -251,7 +327,8 @@ impl PlayerApi for TuiAudio {
     }
 
     fn mode(&self, mode: PlaybackMode) -> Result<PlaybackState, CmdError> {
-        self.mode.set(mode);
+        self.lock_queue()
+            .set_mode(crate::playback::QueueMode::from_playback_mode(mode));
         Ok(self.state())
     }
 
@@ -260,56 +337,30 @@ impl PlayerApi for TuiAudio {
     }
 
     fn queue_add(&self, paths: Vec<String>) -> Result<QueueView, CmdError> {
-        let mut queue = self
-            .queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.tracks.extend(paths);
-        if queue.index.is_none() && !queue.tracks.is_empty() {
-            queue.index = Some(0);
+        {
+            let mut queue = self.lock_queue();
+            for path in paths {
+                queue.push_back(Self::queue_item(&path, "queue add"));
+            }
         }
-        Ok(queue.clone())
+        Ok(self.queue_view())
     }
 
     fn queue_remove(&self, index: usize) -> Result<QueueView, CmdError> {
-        let mut queue = self
-            .queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if index < queue.tracks.len() {
-            queue.tracks.remove(index);
-        }
-        queue.index = if queue.tracks.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
-        Ok(queue.clone())
+        self.lock_queue().remove(index);
+        Ok(self.queue_view())
     }
 
     fn queue_clear(&self) -> Result<QueueView, CmdError> {
-        let mut queue = self
-            .queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.tracks.clear();
-        queue.index = None;
-        Ok(queue.clone())
+        self.lock_queue().clear();
+        Ok(self.queue_view())
     }
 
     fn queue_jump(&self, index: usize) -> Result<QueueView, CmdError> {
-        let path = {
-            let mut queue = self
-                .queue
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if index >= queue.tracks.len() {
-                return Err(CmdError::new("E_CMD_ARG", "队列序号越界"));
-            }
-            queue.index = Some(index);
-            queue.tracks[index].clone()
-        };
-        self.open_path(Path::new(&path))?;
+        if self.lock_queue().jump(index).is_none() {
+            return Err(CmdError::new("E_CMD_ARG", "队列序号越界"));
+        }
+        self.open_queue_item(index)?;
         Ok(self.queue_view())
     }
 }
@@ -365,10 +416,11 @@ mod tests {
         audio
             .queue_add(vec![path.to_string_lossy().into_owned()])
             .unwrap();
+        audio.queue_jump(0).unwrap();
         PlayerApi::volume(&audio, 0.5).unwrap();
         assert!((audio.snapshot().unwrap().volume - 0.5).abs() < 0.001);
         let mode = PlaybackMode {
-            repeat: np_core::RepeatMode::All,
+            repeat: np_core::RepeatMode::Off,
             shuffle: true,
         };
         PlayerApi::mode(&audio, mode).unwrap();

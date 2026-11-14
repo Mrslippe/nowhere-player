@@ -18,6 +18,7 @@ mod layout;
 mod logo;
 mod model;
 mod osc;
+mod playback;
 mod player_bar;
 mod render;
 mod selftest;

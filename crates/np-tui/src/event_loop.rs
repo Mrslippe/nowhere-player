@@ -10,6 +10,7 @@ use ratatui::backend::Backend;
 use crate::app::App;
 use crate::audio::TuiAudio;
 use crate::model::*;
+use crate::playback::{QueueItem, TrackKey};
 use crate::player_bar::update_spectrum;
 use crate::render::*;
 use np_app::LibraryHandle;
@@ -25,6 +26,30 @@ pub(crate) struct SearchContext<'a> {
     pub(crate) tx: &'a std::sync::mpsc::Sender<(u64, Block)>,
     pub(crate) rx: &'a std::sync::mpsc::Receiver<(u64, Block)>,
     pub(crate) play_rx: &'a std::sync::mpsc::Receiver<String>,
+}
+
+fn parse_duration(text: &str) -> u64 {
+    let mut parts = text.split(':');
+    let minutes = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let seconds = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    (minutes * 60 + seconds) * 1000
+}
+
+fn queue_item_for(view: &ViewData, index: usize, _origin: &str) -> Option<QueueItem> {
+    let track = view.refs.get(index)?.clone();
+    let row = view.rows.get(index)?;
+    Some(QueueItem::new(
+        track,
+        row.get(1).cloned().unwrap_or_default(),
+        row.get(2).cloned().unwrap_or_default(),
+        row.get(3).map_or(0, |value| parse_duration(value)),
+    ))
 }
 
 pub(crate) fn draw_synced<B: Backend>(
@@ -196,10 +221,53 @@ where
                                                 .and_then(|view| view.refs.get(app.row_index))
                                                 .cloned();
                                             match selected_ref {
-                                                Some(TrackRef::Local(path)) => {
-                                                    match player.play(Some(
-                                                        path.to_string_lossy().into_owned(),
-                                                    )) {
+                                                Some(TrackRef::Local(_)) => {
+                                                    let result =
+                                                        if let Some(BrowseKind::Playlist(name)) =
+                                                            &kind
+                                                        {
+                                                            let Some(view) = app.selected_view()
+                                                            else {
+                                                                continue;
+                                                            };
+                                                            let items: Vec<QueueItem> =
+                                                                (0..view.refs.len())
+                                                                    .filter_map(|index| {
+                                                                        queue_item_for(
+                                                                            view, index, name,
+                                                                        )
+                                                                    })
+                                                                    .collect();
+                                                            let selected = app
+                                                                .selected_view()
+                                                                .and_then(|view| {
+                                                                    view.refs.get(app.row_index)
+                                                                })
+                                                                .map(TrackKey::from_track);
+                                                            player.replace_playlist(
+                                                                items,
+                                                                selected.as_ref(),
+                                                            )
+                                                        } else {
+                                                            let item = app
+                                                                .selected_view()
+                                                                .and_then(|view| {
+                                                                    queue_item_for(
+                                                                        view,
+                                                                        app.row_index,
+                                                                        "选择",
+                                                                    )
+                                                                });
+                                                            if let Some(item) = item {
+                                                                player.play_or_prepend(item)
+                                                            } else {
+                                                                Err(np_app::CmdError::new(
+                                                                    "E_CMD_ARG",
+                                                                    "没有可播放的曲目",
+                                                                ))
+                                                            }
+                                                        };
+                                                    match result {
                                                         Ok(_) => app.status = "播放中".to_owned(),
                                                         Err(error) => {
                                                             app.status = error.message.clone()
