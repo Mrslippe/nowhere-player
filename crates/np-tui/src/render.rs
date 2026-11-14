@@ -534,6 +534,11 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 Paragraph::new(Line::from(spans)).style(Style::default().fg(app.palette.fg).bg(bg)),
                 inner,
             );
+            if active {
+                let prefix: String = chars[start..cursor].iter().collect();
+                let cursor_x = inner.x.saturating_add(display_width(&prefix) as u16);
+                frame.set_cursor_position((cursor_x, inner.y));
+            }
         }
         SearchDisplay::Searching => {
             let frames = ["◰", "◳", "◲", "◱"];
