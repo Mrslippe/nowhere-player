@@ -346,18 +346,16 @@ where
                                                             name,
                                                         )) = &kind
                                                         {
-                                                            let command = format!(
-                                                                "playlist play \"{}\" {}",
-                                                                name.replace('"', "\\\""),
-                                                                app.row_index + 1
-                                                            );
-                                                            app.run(
-                                                                command,
-                                                                player,
-                                                                library,
-                                                                search.tx,
-                                                                theme_ctx.api,
-                                                                theme_ctx.settings,
+                                                            let index = app.row_index;
+                                                            if let Err(error) = app
+                                                                .play_playlist_item(
+                                                                    name, index, player, library,
+                                                                )
+                                                            {
+                                                                app.status = error;
+                                                            }
+                                                            app.refresh_queue_view(
+                                                                player, &**library,
                                                             );
                                                         } else {
                                                             app.status =

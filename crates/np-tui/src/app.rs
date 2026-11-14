@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::TuiAudio;
+use crate::playback::{QueueItem, TrackKey};
 use crate::theme::Palette;
 #[cfg(windows)]
 use crate::tray;
 use crate::{osc, startup};
 use np_app::{
     Execution, LibraryApi, LibraryHandle, NoopLibraryObserver, PlayerApi, SearchHit, Services,
-    SettingsHandle, ThemeApi, complete_for, execute_with_services, online_play_hit,
-    online_play_started_block, run_online_play,
+    SettingsHandle, SourceId, SourceTrack, ThemeApi, complete_for, execute_with_services,
+    online_play_hit, online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus};
 pub(crate) struct App {
@@ -471,6 +472,73 @@ impl App {
                 &np_app::now_millis,
             );
         });
+        Ok(())
+    }
+
+    pub(crate) fn play_playlist_item(
+        &mut self,
+        name: &str,
+        index: usize,
+        player: &TuiAudio,
+        library: &Arc<LibraryHandle>,
+    ) -> Result<(), String> {
+        let playlist = library
+            .playlist_by_name(name)
+            .map_err(|error| error.message.clone())?
+            .ok_or_else(|| format!("歌单不存在：{name}"))?;
+        let (_, items) = library
+            .playlist_get(playlist.id)
+            .map_err(|error| error.message.clone())?;
+        if items.is_empty() {
+            return Err(format!("歌单《{name}》为空"));
+        }
+        self.status = "准备中…".to_owned();
+        let online = library.online();
+        let mut queue_items = Vec::with_capacity(items.len());
+        let mut selected = None;
+        for (item_index, item) in items.iter().enumerate() {
+            let path = if item.kind == "local" {
+                let path = PathBuf::from(&item.path);
+                if !path.is_file() {
+                    return Err(format!("文件不存在：{}", item.path));
+                }
+                path
+            } else {
+                let source = match item.source.as_str() {
+                    "bilibili" => SourceId::Bilibili,
+                    "netease" => SourceId::Netease,
+                    "ytdlp" => SourceId::Ytdlp,
+                    other => return Err(format!("未知音源：{other}")),
+                };
+                let track = SourceTrack {
+                    source,
+                    source_id: item.source_id.clone(),
+                    title: item.title.clone(),
+                    artist: item.artist.clone(),
+                    duration_ms: u64::try_from(item.duration_ms).unwrap_or(0),
+                    album: (!item.album.is_empty()).then(|| item.album.clone()),
+                    cover_url: None,
+                };
+                online
+                    .prepare(&track, &mut |_| {})
+                    .map_err(|error| error.message.clone())?
+                    .path
+            };
+            let key = TrackKey::Local(path.clone());
+            if item_index == index {
+                selected = Some(key.clone());
+            }
+            queue_items.push(QueueItem::new(
+                TrackRef::Local(path),
+                item.title.clone(),
+                item.artist.clone(),
+                u64::try_from(item.duration_ms).unwrap_or(0),
+            ));
+        }
+        player
+            .replace_playlist(queue_items, selected.as_ref())
+            .map_err(|error| error.message.clone())?;
+        self.status = "播放中".to_owned();
         Ok(())
     }
 
