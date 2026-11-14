@@ -12,7 +12,8 @@
 - 方角粗边框、焦点 accent、计数 italic/faint、状态栏键名分色
 - 默认字体 Maple Mono NF CN；启动时兜底 72×24（WT 请求 77×26）
 - 播放管线：新增唯一 PlaybackQueue（去重/四模式/队首插入/歌单替换），本地 TuiAudio 已接入
-- 音量/模式跨曲目保持；远程歌单 Enter 走 playlist play
+- 音量/模式跨曲目保持；本地 `playlist play` 改为整体替换队列
+- 远程歌单 Enter 走 playlist play
 - 音量条 20 格（Vol 标签、连续亮暗块、右端留一格空白）、List 隐藏来源列/表格 48 列/内嵌滚动条、进度与歌曲信息分行
 - `scripts/install-nowhere-shortcut.ps1` 桌面快捷方式，直接 `wt --size 77,26` 启动（内容 72×24）
 

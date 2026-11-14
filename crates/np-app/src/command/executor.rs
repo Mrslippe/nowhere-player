@@ -1008,7 +1008,20 @@ impl Executor<'_> {
                 format!("歌单《{}》里只有 {} 首", playlist.name, items.len()),
             )
         })?;
-        let state = if item.kind == "local" {
+        let all_local = items.iter().all(|item| item.kind == "local");
+        let state = if all_local {
+            let mut paths = Vec::with_capacity(items.len());
+            for item in &items {
+                if !Path::new(&item.path).is_file() {
+                    return Err(CmdError::new("E_CMD_ARG", "文件不存在，可能已移动"));
+                }
+                paths.push(item.path.clone());
+            }
+            self.api.queue_clear()?;
+            self.api.queue_add(paths)?;
+            self.api.queue_jump(index)?;
+            self.api.snapshot()?
+        } else if item.kind == "local" {
             if !Path::new(&item.path).is_file() {
                 return Err(CmdError::new("E_CMD_ARG", "文件不存在，可能已移动"));
             }
