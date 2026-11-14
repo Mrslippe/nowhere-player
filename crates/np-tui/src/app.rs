@@ -13,7 +13,7 @@ use np_app::{
     SettingsHandle, ThemeApi, complete_for, execute_with_services, online_play_hit,
     online_play_started_block, run_online_play,
 };
-use np_core::{Block, BlockStatus, Output};
+use np_core::{Block, BlockStatus};
 pub(crate) struct App {
     pub(crate) input: Vec<char>,
     pub(crate) cursor: usize,
@@ -235,8 +235,8 @@ impl App {
         settings: &SettingsHandle,
     ) {
         let playlist_root = playlist_root_view(library);
-        let library_view = capture_table(player, library, "library list --limit=200", "媒体库");
-        let queue = capture_table(player, library, "queue list", "队列");
+        let library_view = library_view(library);
+        let queue = queue_view(player, library);
         let search = ViewData {
             title: "搜索".to_owned(),
             columns: Vec::new(),
@@ -256,28 +256,7 @@ impl App {
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
             .iter()
-            .map(|playlist| {
-                let command = format!("playlist show \"{}\"", playlist.name.replace('"', "\\\""));
-                let mut view = capture_table(player, library, &command, &playlist.name);
-                if let Ok(Some(playlist)) = library.playlist_by_name(&playlist.name)
-                    && let Ok((_, items)) = library.playlist_get(playlist.id)
-                {
-                    view.refs = items
-                        .into_iter()
-                        .map(|item| {
-                            if item.kind == "local" {
-                                TrackRef::Local(PathBuf::from(item.path))
-                            } else {
-                                TrackRef::Remote {
-                                    source: item.source,
-                                    id: item.source_id,
-                                }
-                            }
-                        })
-                        .collect();
-                }
-                view
-            })
+            .map(|playlist| playlist_child_view(library, &playlist.name))
             .collect();
         let playlist_expanded = playlist_children.len() <= 5;
 
@@ -357,18 +336,12 @@ impl App {
     }
 
     pub(crate) fn refresh_queue_view(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
-        // `queue list` 会改写 active listing；恢复调用前的列表上下文，
-        // 否则紧接着对搜索结果执行 `play N` 会解析到队列而不是 Search。
-        let previous_listing = library.active_listing();
         if let Some(index) = self
             .view_kind
             .iter()
             .position(|kind| *kind == BrowseKind::Queue)
         {
-            self.views[index] = capture_table(player, library, "queue list", "队列");
-        }
-        if let Some(listing) = previous_listing {
-            library.set_active_listing(listing);
+            self.views[index] = queue_view(player, library);
         }
     }
 
@@ -460,6 +433,45 @@ impl App {
         } else {
             self.search_cursor = self.search_cursor.saturating_sub(1);
         }
+    }
+
+    pub(crate) fn play_online_search_result(
+        &mut self,
+        index: usize,
+        library: &Arc<LibraryHandle>,
+        tx: &std::sync::mpsc::Sender<(u64, Block)>,
+    ) -> Result<(), String> {
+        let hits = library.search_hits();
+        let Some(SearchHit::Online(track)) = hits.get(index) else {
+            return Err("该搜索结果不是在线曲目".to_owned());
+        };
+        let remote_tx = self.remote_tx.clone().ok_or("远程播放通道未就绪")?;
+        self.search_id += 1;
+        let search_id = self.search_id;
+        let block_id = format!("tui-online-{}", now_millis());
+        let input = format!("play {}", index + 1);
+        let template = online_play_started_block(&block_id, &input, index, track);
+        self.upsert_block(template.clone());
+        self.status = "准备中…（下载后自动播放）".to_owned();
+        let online = library.online();
+        let tx = tx.clone();
+        let target = RemotePlayback { tx: remote_tx };
+        let track = track.clone();
+        std::thread::spawn(move || {
+            let emit = |block: &Block| {
+                let _ = tx.send((search_id, block.clone()));
+            };
+            run_online_play(
+                &track,
+                index,
+                &*online,
+                &target,
+                &emit,
+                &template,
+                &np_app::now_millis,
+            );
+        });
+        Ok(())
     }
 
     pub(crate) fn refresh_search_refs(&mut self, library: &dyn LibraryApi) {
@@ -776,7 +788,7 @@ impl App {
                     .iter()
                     .position(|kind| *kind == BrowseKind::Queue)
             {
-                self.views[index] = capture_table(player, &**library, "queue list", "队列");
+                self.views[index] = queue_view(player, &**library);
             } else if parsed.spec.name == "playlist"
                 && let Some(index) = self
                     .view_kind
@@ -819,6 +831,146 @@ impl BlockStatusExt for Block {
 trait BlockStatusExt {
     fn status_label(&self) -> &'static str;
 }
+fn library_view(library: &dyn LibraryApi) -> ViewData {
+    let tracks = library.list_recent(200).unwrap_or_default();
+    let refs = tracks
+        .iter()
+        .map(|track| {
+            if track.kind == "local" {
+                TrackRef::Local(PathBuf::from(&track.path))
+            } else {
+                TrackRef::Remote {
+                    source: track.source.clone(),
+                    id: track.source_id.clone(),
+                }
+            }
+        })
+        .collect();
+    let rows = tracks
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            vec![
+                (index + 1).to_string(),
+                track.title.clone(),
+                track.artist.clone(),
+                crate::player_bar::format_time(u64::try_from(track.duration_ms).unwrap_or(0)),
+            ]
+        })
+        .collect();
+    ViewData {
+        title: "媒体库".to_owned(),
+        columns: vec![
+            "序号".to_owned(),
+            "标题".to_owned(),
+            "艺人".to_owned(),
+            "时长".to_owned(),
+        ],
+        rows,
+        refs,
+    }
+}
+
+fn queue_view(player: &dyn PlayerApi, library: &dyn LibraryApi) -> ViewData {
+    let (tracks, current) = match player.queue_list() {
+        Ok(view) => (view.tracks, view.index),
+        Err(_) => (Vec::new(), None),
+    };
+    let metadata = library.tracks_by_paths(&tracks).unwrap_or_default();
+    let refs = tracks
+        .iter()
+        .map(|path| TrackRef::Local(PathBuf::from(path)))
+        .collect();
+    let rows = tracks
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let filename = std::path::Path::new(path)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let track = metadata.get(path);
+            let title = track
+                .map(|track| track.title.clone())
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or(filename);
+            let artist = track
+                .map(|track| track.artist.clone())
+                .filter(|artist| !artist.trim().is_empty())
+                .unwrap_or_else(|| "—".to_owned());
+            let duration = track
+                .filter(|track| track.duration_ms > 0)
+                .map(|track| {
+                    crate::player_bar::format_time(u64::try_from(track.duration_ms).unwrap_or(0))
+                })
+                .unwrap_or_else(|| "—".to_owned());
+            let sequence = if current == Some(index) {
+                format!("▶ {}", index + 1)
+            } else {
+                (index + 1).to_string()
+            };
+            vec![sequence, title, artist, duration]
+        })
+        .collect();
+    ViewData {
+        title: "队列".to_owned(),
+        columns: vec![
+            "序号".to_owned(),
+            "标题".to_owned(),
+            "艺人".to_owned(),
+            "时长".to_owned(),
+        ],
+        rows,
+        refs,
+    }
+}
+
+fn playlist_child_view(library: &dyn LibraryApi, name: &str) -> ViewData {
+    let items = library
+        .playlist_by_name(name)
+        .ok()
+        .flatten()
+        .and_then(|playlist| library.playlist_get(playlist.id).ok())
+        .map(|(_, items)| items)
+        .unwrap_or_default();
+    let refs = items
+        .iter()
+        .map(|item| {
+            if item.kind == "local" {
+                TrackRef::Local(PathBuf::from(&item.path))
+            } else {
+                TrackRef::Remote {
+                    source: item.source.clone(),
+                    id: item.source_id.clone(),
+                }
+            }
+        })
+        .collect();
+    let rows = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            vec![
+                (index + 1).to_string(),
+                item.title.clone(),
+                item.artist.clone(),
+                crate::player_bar::format_time(u64::try_from(item.duration_ms).unwrap_or(0)),
+            ]
+        })
+        .collect();
+    ViewData {
+        title: name.to_owned(),
+        columns: vec![
+            "序号".to_owned(),
+            "标题".to_owned(),
+            "艺人".to_owned(),
+            "时长".to_owned(),
+        ],
+        rows,
+        refs,
+    }
+}
+
 fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {
     let rows = library
         .playlist_list()
@@ -929,62 +1081,6 @@ fn format_date(ms: i64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { year + 1 } else { year };
     format!("{year:04}.{month:02}.{day:02}")
-}
-
-pub(crate) fn capture_table(
-    player: &dyn PlayerApi,
-    library: &dyn LibraryApi,
-    command: &str,
-    title: &str,
-) -> ViewData {
-    let execution = execute_with_services(
-        player,
-        library,
-        Services::default(),
-        &format!("view-{}", now_millis()),
-        command,
-        Arc::new(NoopLibraryObserver),
-    );
-    let mut view = ViewData {
-        title: title.to_owned(),
-        columns: Vec::new(),
-        rows: Vec::new(),
-        refs: Vec::new(),
-    };
-    if let Execution::Blocks { done, .. } = execution {
-        for output in done.outputs {
-            if let Output::Table { columns, rows, .. } = output {
-                view.columns = columns;
-                view.rows = rows;
-                break;
-            }
-        }
-    }
-    if command.starts_with("library") {
-        view.refs = library
-            .library_listing()
-            .into_iter()
-            .map(|track| {
-                if track.kind == "local" {
-                    TrackRef::Local(PathBuf::from(track.path))
-                } else {
-                    TrackRef::Remote {
-                        source: track.source,
-                        id: track.source_id,
-                    }
-                }
-            })
-            .collect();
-    } else if command.starts_with("queue")
-        && let Ok(queue) = player.queue_list()
-    {
-        view.refs = queue
-            .tracks
-            .into_iter()
-            .map(|path| TrackRef::Local(PathBuf::from(path)))
-            .collect();
-    }
-    view
 }
 
 pub(crate) fn now_millis() -> u64 {

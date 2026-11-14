@@ -331,39 +331,41 @@ where
                                                         app.refresh_queue_view(player, &**library);
                                                     }
                                                     Some(TrackRef::Remote { .. }) => {
-                                                        let command = match &kind {
-                                                            Some(BrowseKind::Playlist(name)) => {
-                                                                format!(
-                                                                    "playlist play \"{}\" {}",
-                                                                    name.replace('"', "\\\""),
-                                                                    app.row_index + 1
+                                                        if matches!(kind, Some(BrowseKind::Search))
+                                                        {
+                                                            if let Err(error) = app
+                                                                .play_online_search_result(
+                                                                    app.row_index,
+                                                                    library,
+                                                                    search.tx,
                                                                 )
+                                                            {
+                                                                app.status = error;
                                                             }
-                                                            _ => {
-                                                                format!(
-                                                                    "play {}",
-                                                                    app.row_index + 1
-                                                                )
-                                                            }
-                                                        };
-                                                        app.run(
-                                                            command,
-                                                            player,
-                                                            library,
-                                                            search.tx,
-                                                            theme_ctx.api,
-                                                            theme_ctx.settings,
-                                                        );
+                                                        } else if let Some(BrowseKind::Playlist(
+                                                            name,
+                                                        )) = &kind
+                                                        {
+                                                            let command = format!(
+                                                                "playlist play \"{}\" {}",
+                                                                name.replace('"', "\\\""),
+                                                                app.row_index + 1
+                                                            );
+                                                            app.run(
+                                                                command,
+                                                                player,
+                                                                library,
+                                                                search.tx,
+                                                                theme_ctx.api,
+                                                                theme_ctx.settings,
+                                                            );
+                                                        } else {
+                                                            app.status =
+                                                                "远程条目缺少播放上下文".to_owned();
+                                                        }
                                                     }
                                                     None => {
-                                                        app.run(
-                                                            format!("play {}", app.row_index + 1),
-                                                            player,
-                                                            library,
-                                                            search.tx,
-                                                            theme_ctx.api,
-                                                            theme_ctx.settings,
-                                                        );
+                                                        app.status = "没有可播放的曲目".to_owned();
                                                     }
                                                 }
                                             }
