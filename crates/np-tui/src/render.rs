@@ -228,7 +228,12 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         })
         .add_modifier(Modifier::BOLD);
     border_text(frame, area, area.y, " Browse ", false, browse_title_style);
-    let list_title = format!(" {} ", list_title(app));
+    let title_width = usize::from(
+        area.right()
+            .saturating_sub(1)
+            .saturating_sub(split.saturating_add(1)),
+    );
+    let list_title = truncate_width(&format!(" {} ", list_title(app)), title_width);
     frame.buffer_mut().set_string(
         split.saturating_add(1),
         area.y,
