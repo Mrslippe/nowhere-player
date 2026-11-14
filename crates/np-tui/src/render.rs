@@ -483,9 +483,19 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 width,
                 height,
             };
+            let active = app.search_editing_input();
             let block = TuiBlock::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.palette.line))
+                .border_style(Style::default().fg(if active {
+                    app.palette.accent
+                } else {
+                    app.palette.line
+                }))
+                .title_style(Style::default().fg(if active {
+                    app.palette.accent
+                } else {
+                    app.palette.muted
+                }))
                 .title(" Key Words ")
                 .style(Style::default().bg(bg));
             let inner = block.inner(box_area);
@@ -501,7 +511,7 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             let end = (start + width).min(chars.len());
             let mut spans = Vec::new();
             for (index, character) in chars.iter().enumerate().take(end).skip(start) {
-                if index == cursor && app.focus == Focus::List {
+                if index == cursor && active {
                     spans.push(TuiSpan::styled(
                         character.to_string(),
                         Style::default()
@@ -512,7 +522,7 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                     spans.push(TuiSpan::raw(character.to_string()));
                 }
             }
-            if cursor == chars.len() && cursor - start < width && app.focus == Focus::List {
+            if cursor == chars.len() && cursor - start < width && active {
                 spans.push(TuiSpan::styled(
                     " ",
                     Style::default()

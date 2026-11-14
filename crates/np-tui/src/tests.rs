@@ -996,3 +996,23 @@ fn search_input_handles_cjk_without_byte_boundary_panic() {
     app.backspace_search_char();
     assert_eq!(app.search_input, "骨朵");
 }
+
+#[test]
+fn search_input_requires_enter_and_esc_releases_editing() {
+    let mut app = browse_app();
+    app.view_index = 3;
+    app.focus = Focus::List;
+    assert!(!app.search_editing_input());
+    app.begin_search_edit();
+    assert!(app.search_editing_input());
+    app.insert_search_char('花');
+    assert_eq!(app.search_input, "花");
+    app.end_search_edit();
+    assert!(!app.search_editing_input());
+    app.search_attempted = true;
+    app.views[3].rows = vec![vec!["1".to_owned()]];
+    app.reset_search_to_empty();
+    assert!(!app.search_attempted);
+    assert!(app.views[3].rows.is_empty());
+    assert!(!app.search_editing_input());
+}

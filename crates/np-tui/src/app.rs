@@ -36,6 +36,7 @@ pub(crate) struct App {
     pub(crate) search_query: String,
     pub(crate) search_input: String,
     pub(crate) search_cursor: usize,
+    pub(crate) search_input_active: bool,
     pub(crate) search_attempted: bool,
     pub(crate) no_color_ignored: bool,
     #[cfg(windows)]
@@ -79,6 +80,7 @@ impl App {
             search_query: String::new(),
             search_input: String::new(),
             search_cursor: 0,
+            search_input_active: false,
             search_attempted: false,
             no_color_ignored: false,
             #[cfg(windows)]
@@ -400,7 +402,34 @@ impl App {
 
     pub(crate) fn search_editing_input(&self) -> bool {
         self.focus == Focus::List
+            && self.search_input_active
             && matches!(self.search_display(), Some(SearchDisplay::Empty { .. }))
+    }
+
+    pub(crate) fn begin_search_edit(&mut self) {
+        self.search_input_active = true;
+        self.search_cursor = self.search_input.chars().count();
+    }
+
+    pub(crate) fn end_search_edit(&mut self) {
+        self.search_input_active = false;
+    }
+
+    pub(crate) fn reset_search_to_empty(&mut self) {
+        self.search_id += 1;
+        self.search_pending = false;
+        self.search_attempted = false;
+        self.search_input_active = false;
+        if let Some(index) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::Search)
+            && let Some(view) = self.views.get_mut(index)
+        {
+            view.rows.clear();
+            view.columns.clear();
+            view.refs.clear();
+        }
     }
 
     pub(crate) fn insert_search_char(&mut self, character: char) {

@@ -151,17 +151,20 @@ where
                             KeyCode::Left => app.move_search_cursor(false),
                             KeyCode::Right => app.move_search_cursor(true),
                             KeyCode::Enter => match search_command_from_input(&app.search_input) {
-                                Ok(command) => app.run(
-                                    command,
-                                    player,
-                                    library,
-                                    search.tx,
-                                    theme_ctx.api,
-                                    theme_ctx.settings,
-                                ),
+                                Ok(command) => {
+                                    app.end_search_edit();
+                                    app.run(
+                                        command,
+                                        player,
+                                        library,
+                                        search.tx,
+                                        theme_ctx.api,
+                                        theme_ctx.settings,
+                                    );
+                                }
                                 Err(error) => app.status = error,
                             },
-                            KeyCode::Esc => app.focus = Focus::Browse,
+                            KeyCode::Esc => app.end_search_edit(),
                             _ => {}
                         }
                         draw_needed = true;
@@ -202,6 +205,7 @@ where
                     } else {
                         match key.code {
                             KeyCode::Left | KeyCode::Right => {
+                                app.search_input_active = false;
                                 app.focus = match app.focus {
                                     Focus::Browse => Focus::List,
                                     Focus::List => Focus::Browse,
@@ -233,37 +237,47 @@ where
                                     app.focus = Focus::List;
                                 } else {
                                     let kind = app.view_kind.get(app.view_index).cloned();
-                                    match kind {
-                                        Some(BrowseKind::PlaylistRoot) => {
-                                            let name = app
-                                                .filtered_rows()
-                                                .get(app.row_index)
-                                                .and_then(|row| row.get(1))
-                                                .cloned();
-                                            if let Some(name) = name {
-                                                if !app.playlist_expanded {
-                                                    app.toggle_playlist();
-                                                }
-                                                if let Some(index) = app.view_kind.iter().position(
+                                    if matches!(kind, Some(BrowseKind::Search))
+                                        && matches!(
+                                            app.search_display(),
+                                            Some(crate::model::SearchDisplay::Empty { .. })
+                                        )
+                                    {
+                                        app.begin_search_edit();
+                                    } else {
+                                        match kind {
+                                            Some(BrowseKind::PlaylistRoot) => {
+                                                let name = app
+                                                    .filtered_rows()
+                                                    .get(app.row_index)
+                                                    .and_then(|row| row.get(1))
+                                                    .cloned();
+                                                if let Some(name) = name {
+                                                    if !app.playlist_expanded {
+                                                        app.toggle_playlist();
+                                                    }
+                                                    if let Some(index) = app.view_kind.iter().position(
                                                     |kind| matches!(kind, BrowseKind::Playlist(title) if title == &name),
                                                 ) {
                                                     app.view_index = index;
                                                     app.row_index = 0;
                                                     app.focus = Focus::List;
                                                 }
+                                                }
                                             }
-                                        }
-                                        Some(BrowseKind::Settings) => {}
-                                        _ => {
-                                            let selected_ref = app
-                                                .selected_view()
-                                                .and_then(|view| view.refs.get(app.row_index))
-                                                .cloned();
-                                            match selected_ref {
-                                                Some(TrackRef::Local(_)) => {
-                                                    let result =
-                                                        if let Some(BrowseKind::Playlist(name)) =
-                                                            &kind
+                                            Some(BrowseKind::Search)
+                                                if app.filtered_rows().is_empty() => {}
+                                            Some(BrowseKind::Settings) => {}
+                                            _ => {
+                                                let selected_ref = app
+                                                    .selected_view()
+                                                    .and_then(|view| view.refs.get(app.row_index))
+                                                    .cloned();
+                                                match selected_ref {
+                                                    Some(TrackRef::Local(_)) => {
+                                                        let result = if let Some(
+                                                            BrowseKind::Playlist(name),
+                                                        ) = &kind
                                                         {
                                                             let Some(view) = app.selected_view()
                                                             else {
@@ -306,45 +320,51 @@ where
                                                                 ))
                                                             }
                                                         };
-                                                    match result {
-                                                        Ok(_) => app.status = "播放中".to_owned(),
-                                                        Err(error) => {
-                                                            app.status = error.message.clone()
+                                                        match result {
+                                                            Ok(_) => {
+                                                                app.status = "播放中".to_owned()
+                                                            }
+                                                            Err(error) => {
+                                                                app.status = error.message.clone()
+                                                            }
                                                         }
+                                                        app.refresh_queue_view(player, &**library);
                                                     }
-                                                    app.refresh_queue_view(player, &**library);
-                                                }
-                                                Some(TrackRef::Remote { .. }) => {
-                                                    let command = match &kind {
-                                                        Some(BrowseKind::Playlist(name)) => {
-                                                            format!(
-                                                                "playlist play \"{}\" {}",
-                                                                name.replace('"', "\\\""),
-                                                                app.row_index + 1
-                                                            )
-                                                        }
-                                                        _ => {
-                                                            format!("play {}", app.row_index + 1)
-                                                        }
-                                                    };
-                                                    app.run(
-                                                        command,
-                                                        player,
-                                                        library,
-                                                        search.tx,
-                                                        theme_ctx.api,
-                                                        theme_ctx.settings,
-                                                    );
-                                                }
-                                                None => {
-                                                    app.run(
-                                                        format!("play {}", app.row_index + 1),
-                                                        player,
-                                                        library,
-                                                        search.tx,
-                                                        theme_ctx.api,
-                                                        theme_ctx.settings,
-                                                    );
+                                                    Some(TrackRef::Remote { .. }) => {
+                                                        let command = match &kind {
+                                                            Some(BrowseKind::Playlist(name)) => {
+                                                                format!(
+                                                                    "playlist play \"{}\" {}",
+                                                                    name.replace('"', "\\\""),
+                                                                    app.row_index + 1
+                                                                )
+                                                            }
+                                                            _ => {
+                                                                format!(
+                                                                    "play {}",
+                                                                    app.row_index + 1
+                                                                )
+                                                            }
+                                                        };
+                                                        app.run(
+                                                            command,
+                                                            player,
+                                                            library,
+                                                            search.tx,
+                                                            theme_ctx.api,
+                                                            theme_ctx.settings,
+                                                        );
+                                                    }
+                                                    None => {
+                                                        app.run(
+                                                            format!("play {}", app.row_index + 1),
+                                                            player,
+                                                            library,
+                                                            search.tx,
+                                                            theme_ctx.api,
+                                                            theme_ctx.settings,
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
@@ -355,6 +375,20 @@ where
                                 if app.focus == Focus::List {
                                     app.focus = Focus::Browse;
                                 }
+                            }
+                            KeyCode::Char('c')
+                                if app.focus == Focus::List
+                                    && matches!(
+                                        app.view_kind.get(app.view_index),
+                                        Some(BrowseKind::Search)
+                                    )
+                                    && (matches!(
+                                        app.search_display(),
+                                        Some(crate::model::SearchDisplay::Searching)
+                                            | Some(crate::model::SearchDisplay::NoResults)
+                                    ) || !app.filtered_rows().is_empty()) =>
+                            {
+                                app.reset_search_to_empty();
                             }
                             KeyCode::Char('/') => app.enter_command(),
                             KeyCode::Char(' ') => {
