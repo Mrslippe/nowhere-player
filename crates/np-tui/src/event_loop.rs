@@ -503,8 +503,12 @@ where
                                         app.status = error;
                                     }
                                 } else {
-                                    let _ = player.next();
-                                    app.status = "下一首".to_owned();
+                                    if let Err(error) = player.next() {
+                                        app.status = error.message;
+                                    } else {
+                                        app.status = "下一首".to_owned();
+                                    }
+                                    app.refresh_queue_view(player, &**library);
                                 }
                             }
                             KeyCode::Char('d')
@@ -525,8 +529,12 @@ where
                                 }
                             }
                             KeyCode::Char('p') => {
-                                let _ = player.prev();
-                                app.status = "上一首".to_owned();
+                                if let Err(error) = player.prev() {
+                                    app.status = error.message;
+                                } else {
+                                    app.status = "上一首".to_owned();
+                                }
+                                app.refresh_queue_view(player, &**library);
                             }
                             KeyCode::Char('+') | KeyCode::Char('=') => {
                                 let step = (player.volume() * 20.0).round() as i32;
