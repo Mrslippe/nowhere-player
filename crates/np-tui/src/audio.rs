@@ -20,7 +20,7 @@ pub struct TuiAudio {
     duration_ms: Cell<Option<u64>>,
     source_path: RefCell<Option<PathBuf>>,
     volume: Cell<f32>,
-    pending_metadata: RefCell<Option<(String, String)>>,
+    pending_metadata: RefCell<Option<(String, String, u64)>>,
     queue: Mutex<PlaybackQueue>,
 }
 
@@ -122,8 +122,12 @@ impl TuiAudio {
         self.volume.get()
     }
 
-    pub fn set_pending_metadata(&self, title: String, artist: String) {
-        *self.pending_metadata.borrow_mut() = Some((title, artist));
+    pub fn set_pending_metadata(&self, title: String, artist: String, duration_ms: u64) {
+        *self.pending_metadata.borrow_mut() = Some((title, artist, duration_ms));
+    }
+
+    pub fn queue_items_snapshot(&self) -> Vec<QueueItem> {
+        self.lock_queue().items().to_vec()
     }
 
     pub fn mode(&self) -> PlaybackMode {
@@ -302,9 +306,10 @@ impl PlayerApi for TuiAudio {
         if let Some(path) = path {
             let pending = self.pending_metadata.borrow_mut().take();
             let mut item = Self::queue_item(&path, "play");
-            if let Some((title, artist)) = pending {
+            if let Some((title, artist, duration_ms)) = pending {
                 item.title = title;
                 item.artist = artist;
+                item.duration_ms = duration_ms;
             }
             let index = self.lock_queue().play_or_prepend(item);
             self.open_queue_item(index)?;

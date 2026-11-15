@@ -475,7 +475,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 fn list_title(app: &App) -> String {
     match app.view_kind.get(app.view_index) {
         Some(BrowseKind::PlaylistRoot) => "PlayList".to_owned(),
-        Some(BrowseKind::Playlist(_)) => "Playlist".to_owned(),
+        Some(BrowseKind::Playlist(name)) => name.clone(),
         Some(BrowseKind::Library) => "Library".to_owned(),
         Some(BrowseKind::Search) => "Search".to_owned(),
         Some(BrowseKind::Queue) => "Queue".to_owned(),

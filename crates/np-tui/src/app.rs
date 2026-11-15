@@ -15,6 +15,13 @@ use np_app::{
     execute_with_services, online_play_hit, online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus};
+pub(crate) struct PendingAdd {
+    item: QueueItem,
+    origin_view: usize,
+    origin_row: usize,
+    origin_focus: Focus,
+}
+
 pub(crate) struct PlaylistReady {
     generation: u64,
     result: Result<(Vec<QueueItem>, Option<TrackKey>), String>,
@@ -64,7 +71,7 @@ pub(crate) struct App {
     pub(crate) view_index: usize,
     pub(crate) row_index: usize,
     pub(crate) queue_marker: Option<usize>,
-    pub(crate) pending_add: Option<QueueItem>,
+    pub(crate) pending_add: Option<PendingAdd>,
 }
 
 impl App {
@@ -247,7 +254,7 @@ impl App {
 
     pub(crate) fn load_views(
         &mut self,
-        player: &dyn PlayerApi,
+        player: &TuiAudio,
         library: &dyn LibraryApi,
         settings: &SettingsHandle,
     ) {
@@ -260,6 +267,7 @@ impl App {
             columns: Vec::new(),
             rows: Vec::new(),
             refs: Vec::new(),
+            durations: Vec::new(),
         };
         let settings_view = ViewData {
             title: "设置".to_owned(),
@@ -270,6 +278,7 @@ impl App {
                 .map(|(key, value)| vec![key, value.display()])
                 .collect(),
             refs: Vec::new(),
+            durations: Vec::new(),
         };
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
@@ -353,7 +362,7 @@ impl App {
         self.view_index = self.view_index.min(self.views.len().saturating_sub(1));
     }
 
-    pub(crate) fn refresh_queue_view(&mut self, player: &dyn PlayerApi, library: &dyn LibraryApi) {
+    pub(crate) fn refresh_queue_view(&mut self, player: &TuiAudio, library: &dyn LibraryApi) {
         self.queue_marker = player.queue_list().ok().and_then(|view| view.index);
         if let Some(index) = self
             .view_kind
@@ -432,7 +441,12 @@ impl App {
         else {
             return Err("没有 Playlist 页面".to_owned());
         };
-        self.pending_add = Some(item);
+        self.pending_add = Some(PendingAdd {
+            item,
+            origin_view: self.view_index,
+            origin_row: self.row_index,
+            origin_focus: self.focus,
+        });
         self.view_index = root;
         self.row_index = 0;
         self.focus = Focus::List;
@@ -440,18 +454,28 @@ impl App {
         Ok(())
     }
 
+    pub(crate) fn cancel_pending_add(&mut self) {
+        if let Some(pending) = self.pending_add.take() {
+            self.view_index = pending.origin_view.min(self.views.len().saturating_sub(1));
+            self.row_index = pending.origin_row;
+            self.focus = pending.origin_focus;
+            self.status = "已取消添加".to_owned();
+        }
+    }
+
     pub(crate) fn confirm_add_to_playlist(
         &mut self,
         library: &dyn LibraryApi,
     ) -> Result<(), String> {
-        let Some(item) = self.pending_add.take() else {
+        let Some(pending) = self.pending_add.take() else {
             return Err("没有待添加歌曲".to_owned());
         };
+        let item = pending.item.clone();
         if !matches!(
             self.view_kind.get(self.view_index),
             Some(BrowseKind::PlaylistRoot)
         ) {
-            self.pending_add = Some(item);
+            self.pending_add = Some(pending);
             return Err("请选择 Playlist 页中的歌单".to_owned());
         }
         let Some(name) = self
@@ -459,17 +483,17 @@ impl App {
             .get(self.row_index)
             .and_then(|row| row.get(1).cloned())
         else {
-            self.pending_add = Some(item);
+            self.pending_add = Some(pending);
             return Err("没有选中歌单".to_owned());
         };
         let playlist = match library.playlist_by_name(&name) {
             Ok(Some(playlist)) => playlist,
             Ok(None) => {
-                self.pending_add = Some(item);
+                self.pending_add = Some(pending);
                 return Err(format!("歌单不存在：{name}"));
             }
             Err(error) => {
-                self.pending_add = Some(item);
+                self.pending_add = Some(pending);
                 return Err(error.message);
             }
         };
@@ -484,6 +508,25 @@ impl App {
                 ("remote", String::new(), source.clone(), id.clone())
             }
         };
+        let existing = library
+            .playlist_get(playlist.id)
+            .map(|(_, items)| items)
+            .unwrap_or_default();
+        let duplicate = existing.iter().any(|existing| {
+            if existing.kind == "local" {
+                matches!(&item.track, TrackRef::Local(path) if existing.path == path.to_string_lossy())
+            } else {
+                matches!(
+                    &item.track,
+                    TrackRef::Remote { source, id }
+                        if existing.source == *source && existing.source_id == *id
+                )
+            }
+        });
+        if duplicate {
+            self.pending_add = Some(pending);
+            return Err("歌曲已在歌单中".to_owned());
+        }
         let draft = NewPlaylistItem {
             kind: kind.to_owned(),
             path,
@@ -495,7 +538,7 @@ impl App {
             duration_ms: i64::try_from(item.duration_ms).unwrap_or(i64::MAX),
         };
         if let Err(error) = library.playlist_add(playlist.id, &draft) {
-            self.pending_add = Some(item);
+            self.pending_add = Some(pending);
             return Err(error.message);
         }
         if let Some(index) = self
@@ -504,6 +547,19 @@ impl App {
             .position(|kind| *kind == BrowseKind::PlaylistRoot)
         {
             self.views[index] = playlist_root_view(library);
+        }
+        if !self.playlist_expanded {
+            self.toggle_playlist();
+        }
+        if let Some(index) = self
+            .view_kind
+            .iter()
+            .position(|kind| matches!(kind, BrowseKind::Playlist(title) if title == &name))
+        {
+            self.views[index] = playlist_child_view(library, &name);
+            self.view_index = index;
+            self.row_index = 0;
+            self.focus = Focus::List;
         }
         self.status = format!("已添加到歌单：{name}");
         Ok(())
@@ -576,7 +632,7 @@ impl App {
         let Some(SearchHit::Online(track)) = hits.get(index) else {
             return Err("该搜索结果不是在线曲目".to_owned());
         };
-        player.set_pending_metadata(track.title.clone(), track.artist.clone());
+        player.set_pending_metadata(track.title.clone(), track.artist.clone(), track.duration_ms);
         let remote_tx = self.remote_tx.clone().ok_or("远程播放通道未就绪")?;
         self.search_id += 1;
         let search_id = self.search_id;
@@ -733,6 +789,13 @@ impl App {
                 },
             })
             .collect();
+        let durations: Vec<u64> = hits
+            .iter()
+            .map(|hit| match hit {
+                SearchHit::Local(track) => u64::try_from(track.duration_ms).unwrap_or(0),
+                SearchHit::Online(track) => track.duration_ms,
+            })
+            .collect();
         let rows = hits
             .iter()
             .enumerate()
@@ -766,6 +829,7 @@ impl App {
             ];
             view.rows = rows;
             view.refs = refs;
+            view.durations = durations;
         }
     }
 
@@ -892,7 +956,7 @@ impl App {
     pub(crate) fn run(
         &mut self,
         input: String,
-        player: &dyn PlayerApi,
+        player: &TuiAudio,
         library: &Arc<LibraryHandle>,
         tx: &std::sync::mpsc::Sender<(u64, Block)>,
         theme: &dyn ThemeApi,
@@ -1093,6 +1157,10 @@ fn library_view(library: &dyn LibraryApi) -> ViewData {
             }
         })
         .collect();
+    let durations: Vec<u64> = tracks
+        .iter()
+        .map(|track| u64::try_from(track.duration_ms).unwrap_or(0))
+        .collect();
     let rows = tracks
         .iter()
         .enumerate()
@@ -1115,45 +1183,26 @@ fn library_view(library: &dyn LibraryApi) -> ViewData {
         ],
         rows,
         refs,
+        durations,
     }
 }
 
-fn queue_view(player: &dyn PlayerApi, library: &dyn LibraryApi) -> ViewData {
-    let tracks = match player.queue_list() {
-        Ok(view) => view.tracks,
-        Err(_) => Vec::new(),
-    };
-    let metadata = library.tracks_by_paths(&tracks).unwrap_or_default();
-    let refs = tracks
-        .iter()
-        .map(|path| TrackRef::Local(PathBuf::from(path)))
-        .collect();
-    let rows = tracks
+fn queue_view(player: &TuiAudio, _library: &dyn LibraryApi) -> ViewData {
+    let items = player.queue_items_snapshot();
+    let refs = items.iter().map(|item| item.track.clone()).collect();
+    let rows = items
         .iter()
         .enumerate()
-        .map(|(index, path)| {
-            let filename = std::path::Path::new(path)
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone());
-            let track = metadata.get(path);
-            let title = track
-                .map(|track| track.title.clone())
-                .filter(|title| !title.trim().is_empty())
-                .unwrap_or(filename);
-            let artist = track
-                .map(|track| track.artist.clone())
-                .filter(|artist| !artist.trim().is_empty())
-                .unwrap_or_else(|| "—".to_owned());
-            let duration = track
-                .filter(|track| track.duration_ms > 0)
-                .map(|track| {
-                    crate::player_bar::format_time(u64::try_from(track.duration_ms).unwrap_or(0))
-                })
-                .unwrap_or_else(|| "—".to_owned());
-            vec![(index + 1).to_string(), title, artist, duration]
+        .map(|(index, item)| {
+            vec![
+                (index + 1).to_string(),
+                item.title.clone(),
+                item.artist.clone(),
+                crate::player_bar::format_time(item.duration_ms),
+            ]
         })
         .collect();
+    let durations = items.iter().map(|item| item.duration_ms).collect();
     ViewData {
         title: "队列".to_owned(),
         columns: vec![
@@ -1164,6 +1213,7 @@ fn queue_view(player: &dyn PlayerApi, library: &dyn LibraryApi) -> ViewData {
         ],
         rows,
         refs,
+        durations,
     }
 }
 
@@ -1188,6 +1238,10 @@ fn playlist_child_view(library: &dyn LibraryApi, name: &str) -> ViewData {
             }
         })
         .collect();
+    let durations: Vec<u64> = items
+        .iter()
+        .map(|item| u64::try_from(item.duration_ms).unwrap_or(0))
+        .collect();
     let rows = items
         .iter()
         .enumerate()
@@ -1210,6 +1264,7 @@ fn playlist_child_view(library: &dyn LibraryApi, name: &str) -> ViewData {
         ],
         rows,
         refs,
+        durations,
     }
 }
 
@@ -1305,6 +1360,7 @@ fn playlist_root_view(library: &dyn LibraryApi) -> ViewData {
         ],
         rows,
         refs: Vec::new(),
+        durations: Vec::new(),
     }
 }
 

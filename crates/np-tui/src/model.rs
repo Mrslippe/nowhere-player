@@ -45,6 +45,7 @@ pub(crate) struct ViewData {
     pub(crate) columns: Vec<String>,
     pub(crate) rows: Vec<Vec<String>>,
     pub(crate) refs: Vec<TrackRef>,
+    pub(crate) durations: Vec<u64>,
 }
 
 pub(crate) struct RemotePlayback {

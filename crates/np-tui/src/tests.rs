@@ -286,12 +286,14 @@ fn left_view_selection_changes_middle_source() {
             columns: vec!["A".to_owned()],
             rows: vec![vec!["lib".to_owned()]],
             refs: Vec::new(),
+            durations: Vec::new(),
         },
         ViewData {
             title: "队列".to_owned(),
             columns: vec!["A".to_owned()],
             rows: vec![vec!["queue".to_owned()]],
             refs: Vec::new(),
+            durations: Vec::new(),
         },
     ];
     assert_eq!(app.selected_view().unwrap().rows[0][0], "lib");
@@ -397,6 +399,7 @@ fn browse_list_counters_use_data() {
                 .map(|row| vec![row.to_string(), "晴天".to_owned()])
                 .collect(),
             refs: Vec::new(),
+            durations: Vec::new(),
         })
         .collect();
     let audio = TuiAudio::empty();
@@ -485,36 +488,42 @@ fn browse_app() -> App {
             columns: vec!["歌单".to_owned(), "条目".to_owned()],
             rows: Vec::new(),
             refs: Vec::new(),
+            durations: Vec::new(),
         },
         ViewData {
             title: "Like".to_owned(),
             columns: vec!["序号".to_owned(), "标题".to_owned()],
             rows: Vec::new(),
             refs: Vec::new(),
+            durations: Vec::new(),
         },
         ViewData {
             title: "媒体库".to_owned(),
             columns: vec!["序号".to_owned(), "标题".to_owned()],
             rows: vec![vec!["1".to_owned(), "晴天".to_owned()]],
             refs: Vec::new(),
+            durations: Vec::new(),
         },
         ViewData {
             title: "搜索".to_owned(),
             columns: Vec::new(),
             rows: Vec::new(),
             refs: Vec::new(),
+            durations: Vec::new(),
         },
         ViewData {
             title: "队列".to_owned(),
             columns: vec!["序号".to_owned(), "标题".to_owned()],
             rows: Vec::new(),
             refs: Vec::new(),
+            durations: Vec::new(),
         },
         ViewData {
             title: "设置".to_owned(),
             columns: vec!["设置项".to_owned(), "值".to_owned()],
             rows: Vec::new(),
             refs: Vec::new(),
+            durations: Vec::new(),
         },
     ];
     app.view_depth = vec![0, 1, 0, 0, 0, 0];
@@ -1031,5 +1040,25 @@ fn add_hotkey_starts_pending_track_and_jumps_to_playlist_root() {
     app.begin_add_to_playlist().unwrap();
     assert!(app.pending_add.is_some());
     assert_eq!(app.view_index, 0);
+    assert_eq!(app.focus, Focus::List);
+}
+
+#[test]
+fn add_hotkey_cancel_restores_origin_page() {
+    let mut app = browse_app();
+    app.view_index = 2;
+    app.row_index = 0;
+    app.focus = Focus::List;
+    app.views[2].refs = vec![TrackRef::Local(PathBuf::from("/tmp/song.flac"))];
+    app.views[2].rows = vec![vec![
+        "1".to_owned(),
+        "Song".to_owned(),
+        "Artist".to_owned(),
+        "03:00".to_owned(),
+    ]];
+    app.begin_add_to_playlist().unwrap();
+    app.cancel_pending_add();
+    assert!(app.pending_add.is_none());
+    assert_eq!(app.view_index, 2);
     assert_eq!(app.focus, Focus::List);
 }

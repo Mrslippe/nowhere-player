@@ -80,6 +80,7 @@ fn library_app() -> App {
             })
             .collect(),
         refs: Vec::new(),
+        durations: Vec::new(),
     }];
     app.focus = Focus::List;
     app.row_index = 1;

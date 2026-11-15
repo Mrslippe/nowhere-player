@@ -48,7 +48,10 @@ fn queue_item_for(view: &ViewData, index: usize, _origin: &str) -> Option<QueueI
         track,
         row.get(1).cloned().unwrap_or_default(),
         row.get(2).cloned().unwrap_or_default(),
-        row.get(3).map_or(0, |value| parse_duration(value)),
+        view.durations
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| row.get(3).map_or(0, |value| parse_duration(value))),
     ))
 }
 
@@ -367,10 +370,8 @@ where
                             }
                             KeyCode::Esc => {
                                 if app.pending_add.is_some() {
-                                    app.pending_add = None;
-                                    app.status = "已取消添加".to_owned();
-                                }
-                                if app.focus == Focus::List {
+                                    app.cancel_pending_add();
+                                } else if app.focus == Focus::List {
                                     app.focus = Focus::Browse;
                                 }
                             }

@@ -232,7 +232,7 @@ pub(crate) fn draw_spectrum(
     background: Color,
 ) {
     let canvas = Canvas::default()
-        .x_bounds([0.0, 16.0])
+        .x_bounds([0.0, 15.0])
         .y_bounds([0.0, 1.0])
         .background_color(background)
         .marker(Marker::Braille)
@@ -388,4 +388,17 @@ pub(crate) fn update_spectrum(app: &mut App, player: &TuiAudio) {
     app.stereo_left = left;
     app.stereo_right = right;
     app.spectrum_generation = tap.generation();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_info_title;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn info_title_folds_title_but_keeps_artist() {
+        let text = format_info_title(&"Luv(Sic)-1".repeat(8), "Nujabes", 30);
+        assert!(text.contains("Nujabes"));
+        assert!(UnicodeWidthStr::width(text.as_str()) <= 30);
+    }
 }
