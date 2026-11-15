@@ -1076,3 +1076,34 @@ fn remove_hotkey_arms_and_cancels_without_touching_library() {
     assert!(app.pending_remove.is_none());
     assert_eq!(app.view_index, 2);
 }
+
+#[test]
+fn add_from_search_uses_duration_metadata_not_platform_column() {
+    let mut app = browse_app();
+    app.view_index = 3;
+    app.focus = Focus::List;
+    app.views[3].columns = vec![
+        "序号".to_owned(),
+        "标题".to_owned(),
+        "艺人".to_owned(),
+        "平台".to_owned(),
+    ];
+    app.views[3].rows = vec![vec![
+        "1".to_owned(),
+        "Song".to_owned(),
+        "Artist".to_owned(),
+        "bilibili".to_owned(),
+    ]];
+    app.views[3].refs = vec![TrackRef::Remote {
+        source: "bilibili".to_owned(),
+        id: "BV1".to_owned(),
+    }];
+    app.views[3].durations = vec![171_000];
+    app.begin_add_to_playlist().unwrap();
+    assert_eq!(
+        app.pending_add
+            .as_ref()
+            .map(|pending| pending.item.duration_ms),
+        Some(171_000)
+    );
+}

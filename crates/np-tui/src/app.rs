@@ -16,7 +16,7 @@ use np_app::{
 };
 use np_core::{Block, BlockStatus};
 pub(crate) struct PendingAdd {
-    item: QueueItem,
+    pub(crate) item: QueueItem,
     origin_view: usize,
     origin_row: usize,
     origin_focus: Focus,
@@ -530,13 +530,18 @@ impl App {
         let Some(row) = view.rows.get(self.row_index) else {
             return Err("当前行不是歌曲".to_owned());
         };
+        let duration_ms = view
+            .durations
+            .get(self.row_index)
+            .copied()
+            .filter(|duration| *duration > 0)
+            .or_else(|| row.get(3).and_then(|value| parse_duration(value)))
+            .unwrap_or(0);
         let item = QueueItem::new(
             track,
             row.get(1).cloned().unwrap_or_default(),
             row.get(2).cloned().unwrap_or_default(),
-            row.get(3)
-                .and_then(|value| parse_duration(value))
-                .unwrap_or(0),
+            duration_ms,
         );
         let Some(root) = self
             .view_kind
