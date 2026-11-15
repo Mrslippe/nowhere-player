@@ -163,6 +163,12 @@ impl PlaybackQueue {
         self.items.get(index)
     }
 
+    pub(crate) fn set_duration(&mut self, index: usize, duration_ms: u64) {
+        if let Some(item) = self.items.get_mut(index) {
+            item.duration_ms = duration_ms;
+        }
+    }
+
     pub(crate) fn mode(&self) -> QueueMode {
         self.mode
     }

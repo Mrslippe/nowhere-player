@@ -448,6 +448,12 @@ impl Executor<'_> {
         };
         let clamped = level.clamp(0, 100);
         self.api.volume(clamped as f32 / 100.0)?;
+        if let Some(settings) = self.services.settings {
+            settings.set_and_save(
+                "playback.volume",
+                np_core::SettingValue::Num(clamped as f64 / 100.0),
+            )?;
+        }
 
         Ok(Outcome {
             outputs: vec![text_of(vec![bold("音量"), plain(format!(" · {clamped}%"))])],

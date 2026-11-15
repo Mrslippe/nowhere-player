@@ -513,9 +513,15 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 .style(Style::default().bg(bg));
             let inner = block.inner(box_area);
             frame.render_widget(block, box_area);
+            let content = Rect {
+                x: inner.x.saturating_add(1),
+                y: inner.y,
+                width: inner.width.saturating_sub(2),
+                height: inner.height,
+            };
             let chars: Vec<char> = query.chars().collect();
             let cursor = app.search_cursor.min(chars.len());
-            let width = usize::from(inner.width);
+            let width = usize::from(content.width);
             let start = if cursor >= width {
                 cursor + 1 - width
             } else {
@@ -545,12 +551,12 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             }
             frame.render_widget(
                 Paragraph::new(Line::from(spans)).style(Style::default().fg(app.palette.fg).bg(bg)),
-                inner,
+                content,
             );
             if active {
                 let prefix: String = chars[start..cursor].iter().collect();
-                let cursor_x = inner.x.saturating_add(display_width(&prefix) as u16);
-                frame.set_cursor_position((cursor_x, inner.y));
+                let cursor_x = content.x.saturating_add(display_width(&prefix) as u16);
+                frame.set_cursor_position((cursor_x, content.y));
             }
         }
         SearchDisplay::Searching => {

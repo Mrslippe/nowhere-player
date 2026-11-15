@@ -122,6 +122,14 @@ impl TuiAudio {
         self.volume.get()
     }
 
+    pub fn set_volume(&self, volume: f32) {
+        let volume = volume.clamp(0.0, 1.0);
+        if let Some(player) = self.player.borrow().as_ref() {
+            player.set_volume(volume);
+        }
+        self.volume.set(volume);
+    }
+
     pub fn set_pending_metadata(&self, title: String, artist: String, duration_ms: u64) {
         *self.pending_metadata.borrow_mut() = Some((title, artist, duration_ms));
     }
@@ -170,6 +178,8 @@ impl TuiAudio {
                 }
                 if item.duration_ms > 0 {
                     self.duration_ms.set(Some(item.duration_ms));
+                } else if let Some(duration_ms) = self.duration_ms.get() {
+                    self.lock_queue().set_duration(index, duration_ms);
                 }
                 Ok(())
             }

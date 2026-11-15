@@ -107,6 +107,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         crossterm::style::Colored::set_ansi_color_disabled(false);
     }
     let mut player = TuiAudio::from_env();
+    if let Some(np_core::SettingValue::Num(volume)) = settings.get("playback.volume") {
+        player.set_volume(volume as f32);
+    }
     if let Some(script) = selftest {
         return run_selftest(&script, &player, &library, &settings, &theme_api);
     }

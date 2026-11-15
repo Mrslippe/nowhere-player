@@ -1062,3 +1062,17 @@ fn add_hotkey_cancel_restores_origin_page() {
     assert_eq!(app.view_index, 2);
     assert_eq!(app.focus, Focus::List);
 }
+
+#[test]
+fn remove_hotkey_arms_and_cancels_without_touching_library() {
+    let mut app = browse_app();
+    app.view_index = 2;
+    app.focus = Focus::List;
+    app.views[2].refs = vec![TrackRef::Local(PathBuf::from("/tmp/song.flac"))];
+    app.views[2].rows = vec![vec!["1".to_owned(), "Song".to_owned()]];
+    app.arm_remove().unwrap();
+    assert!(app.pending_remove.is_some());
+    app.cancel_pending_remove();
+    assert!(app.pending_remove.is_none());
+    assert_eq!(app.view_index, 2);
+}

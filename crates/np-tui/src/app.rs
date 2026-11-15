@@ -72,6 +72,7 @@ pub(crate) struct App {
     pub(crate) row_index: usize,
     pub(crate) queue_marker: Option<usize>,
     pub(crate) pending_add: Option<PendingAdd>,
+    pub(crate) pending_remove: Option<(usize, usize)>,
 }
 
 impl App {
@@ -122,6 +123,7 @@ impl App {
             row_index: 0,
             queue_marker: None,
             pending_add: None,
+            pending_remove: None,
         }
     }
 
@@ -405,6 +407,108 @@ impl App {
             return Some(SearchDisplay::NoResults);
         }
         None
+    }
+
+    pub(crate) fn arm_remove(&mut self) -> Result<(), String> {
+        let Some(kind) = self.view_kind.get(self.view_index) else {
+            return Err("当前没有列表".to_owned());
+        };
+        if matches!(kind, BrowseKind::PlaylistRoot | BrowseKind::Settings) {
+            return Err("当前列表不是歌曲列表".to_owned());
+        }
+        let Some(view) = self.selected_view() else {
+            return Err("当前没有列表".to_owned());
+        };
+        if view.refs.get(self.row_index).is_none() {
+            return Err("当前行不是歌曲".to_owned());
+        }
+        self.pending_remove = Some((self.view_index, self.row_index));
+        self.status = "再按 r 确认移除".to_owned();
+        Ok(())
+    }
+
+    pub(crate) fn cancel_pending_remove(&mut self) {
+        if self.pending_remove.take().is_some() {
+            self.status = "已取消移除".to_owned();
+        }
+    }
+
+    pub(crate) fn confirm_remove(
+        &mut self,
+        player: &TuiAudio,
+        library: &dyn LibraryApi,
+    ) -> Result<(), String> {
+        let Some((view_index, row_index)) = self.pending_remove.take() else {
+            return Err("没有待移除歌曲".to_owned());
+        };
+        let kind = self
+            .view_kind
+            .get(view_index)
+            .cloned()
+            .ok_or_else(|| "当前列表已不存在".to_owned())?;
+        let view = self
+            .views
+            .get(view_index)
+            .ok_or_else(|| "当前列表已不存在".to_owned())?;
+        let track = view
+            .refs
+            .get(row_index)
+            .cloned()
+            .ok_or_else(|| "当前行不是歌曲".to_owned())?;
+        match kind {
+            BrowseKind::Queue => {
+                player
+                    .queue_remove(row_index)
+                    .map_err(|error| error.message.clone())?;
+                self.refresh_queue_view(player, library);
+                self.status = "已从队列移除".to_owned();
+            }
+            BrowseKind::Playlist(name) => {
+                let playlist = library
+                    .playlist_by_name(&name)
+                    .map_err(|error| error.message.clone())?
+                    .ok_or_else(|| format!("歌单不存在：{name}"))?;
+                library
+                    .playlist_remove(playlist.id, i64::try_from(row_index).unwrap_or(i64::MAX))
+                    .map_err(|error| error.message.clone())?;
+                if let Some(index) = self
+                    .view_kind
+                    .iter()
+                    .position(|kind| matches!(kind, BrowseKind::Playlist(title) if title == &name))
+                {
+                    self.views[index] = playlist_child_view(library, &name);
+                }
+                self.status = format!("已从歌单移除：{name}");
+            }
+            BrowseKind::Library | BrowseKind::Search => {
+                let title = view
+                    .rows
+                    .get(row_index)
+                    .and_then(|row| row.get(1))
+                    .cloned()
+                    .unwrap_or_default();
+                let artist = view
+                    .rows
+                    .get(row_index)
+                    .and_then(|row| row.get(2))
+                    .cloned()
+                    .unwrap_or_default();
+                let position = player.queue_items_snapshot().iter().position(|item| {
+                    item.track == track
+                        || (!title.is_empty() && item.title == title && item.artist == artist)
+                });
+                let Some(position) = position else {
+                    return Err("该歌曲不在播放队列中".to_owned());
+                };
+                player
+                    .queue_remove(position)
+                    .map_err(|error| error.message.clone())?;
+                self.refresh_queue_view(player, library);
+                self.status = "已从播放队列移除".to_owned();
+            }
+            _ => return Err("当前列表不支持移除".to_owned()),
+        }
+        Ok(())
     }
 
     pub(crate) fn begin_add_to_playlist(&mut self) -> Result<(), String> {

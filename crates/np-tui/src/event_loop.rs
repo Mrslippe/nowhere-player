@@ -371,6 +371,8 @@ where
                             KeyCode::Esc => {
                                 if app.pending_add.is_some() {
                                     app.cancel_pending_add();
+                                } else if app.pending_remove.is_some() {
+                                    app.cancel_pending_remove();
                                 } else if app.focus == Focus::List {
                                     app.focus = Focus::Browse;
                                 }
@@ -388,6 +390,16 @@ where
                                     ) || !app.filtered_rows().is_empty()) =>
                             {
                                 app.reset_search_to_empty();
+                            }
+                            KeyCode::Char('r') if app.focus == Focus::List => {
+                                let result = if app.pending_remove.is_some() {
+                                    app.confirm_remove(player, &**library)
+                                } else {
+                                    app.arm_remove()
+                                };
+                                if let Err(error) = result {
+                                    app.status = error;
+                                }
                             }
                             KeyCode::Char('a') if app.focus == Focus::List => {
                                 let result = if app.pending_add.is_some() {
@@ -415,12 +427,20 @@ where
                                 let step = (player.volume() * 20.0).round() as i32;
                                 let volume = (step + 1).clamp(0, 20) as f32 / 20.0;
                                 let _ = PlayerApi::volume(player, volume);
+                                let _ = theme_ctx.settings.set_and_save(
+                                    "playback.volume",
+                                    np_core::SettingValue::Num(f64::from(volume)),
+                                );
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
                             }
                             KeyCode::Char('-') => {
                                 let step = (player.volume() * 20.0).round() as i32;
                                 let volume = (step - 1).clamp(0, 20) as f32 / 20.0;
                                 let _ = PlayerApi::volume(player, volume);
+                                let _ = theme_ctx.settings.set_and_save(
+                                    "playback.volume",
+                                    np_core::SettingValue::Num(f64::from(volume)),
+                                );
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
                             }
                             KeyCode::Char('q') => {
