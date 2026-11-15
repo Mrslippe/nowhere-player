@@ -251,7 +251,7 @@ fn try_wt(args: &[String]) -> bool {
 /// 本机实测需请求 77×26 才能得到 72×24 的终端网格。
 const DEFAULT_WINDOW_SIZE: [&str; 2] = ["--size", "77,26"];
 
-fn profile_args(focus: bool, size: bool) -> Vec<String> {
+fn profile_args(focus: bool, size: bool, exe: &str) -> Vec<String> {
     let mut args = Vec::new();
     if focus {
         args.push("--focus".to_owned());
@@ -264,6 +264,8 @@ fn profile_args(focus: bool, size: bool) -> Vec<String> {
         "new".to_owned(),
         "-p".to_owned(),
         "Nowhere Player".to_owned(),
+        "--".to_owned(),
+        exe.to_owned(),
     ]);
     args
 }
@@ -299,6 +301,9 @@ pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
         return false;
     }
     let _ = std::fs::write(&marker, std::process::id().to_string());
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
     let mut args = vec![
         "--size".to_owned(),
         "77,26".to_owned(),
@@ -306,6 +311,8 @@ pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
         "new".to_owned(),
         "-p".to_owned(),
         "Nowhere Player".to_owned(),
+        "--".to_owned(),
+        exe.to_string_lossy().into_owned(),
     ];
     if Command::new("wt.exe")
         .args(&args)
@@ -315,9 +322,6 @@ pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
     {
         return true;
     }
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
     args = vec![
         "--size".to_owned(),
         "77,26".to_owned(),
@@ -361,7 +365,7 @@ pub fn relaunch_from_explorer() -> bool {
         attempts.insert(1, (true, false));
     }
     for (focus, size) in attempts {
-        if try_wt(&profile_args(focus, size)) {
+        if try_wt(&profile_args(focus, size, &exe)) {
             return true;
         }
     }
@@ -396,10 +400,14 @@ mod tests {
 
     #[test]
     fn window_opens_at_designed_size() {
-        let args = profile_args(false, true);
+        let args = profile_args(false, true, "np-tui.exe");
         assert!(args.windows(2).any(|pair| pair == ["--size", "77,26"]));
         assert!(args.windows(2).any(|pair| pair == ["-w", "new"]));
-        assert!(!profile_args(false, false).iter().any(|arg| arg == "--size"));
+        assert!(
+            !profile_args(false, false, "np-tui.exe")
+                .iter()
+                .any(|arg| arg == "--size")
+        );
     }
 
     #[test]
