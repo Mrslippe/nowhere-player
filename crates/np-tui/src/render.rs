@@ -2,6 +2,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::{Block as TuiBlock, BorderType, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Focus};
 use crate::audio::TuiAudio;
@@ -179,7 +180,7 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 
     let kind = app.view_kind.get(app.view_index);
     let list = app.focus == Focus::List;
-    match kind {
+    let mut hints = match kind {
         Some(BrowseKind::PlaylistRoot) if list => vec![
             ("n", "新建"),
             ("d", "删除"),
@@ -236,7 +237,12 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Some(BrowseKind::Settings) => vec![("↑↓", "选择"), ("Esc", "返回")],
         None if list => vec![("↑↓", "选择"), ("Esc", "返回")],
         None => vec![("↑↓", "选择"), ("←→", "焦点"), ("/", "命令")],
+    };
+    if !matches!(kind, Some(BrowseKind::Settings)) {
+        hints.push(("[ ]", "±5s"));
+        hints.push(("m", "模式"));
     }
+    hints
 }
 
 fn border_text(
@@ -598,6 +604,40 @@ fn list_title(app: &App) -> String {
     }
 }
 
+pub(crate) fn input_window(chars: &[char], cursor: usize, width: usize) -> (usize, usize) {
+    if width == 0 {
+        return (cursor, cursor);
+    }
+    let char_width = |character: char| UnicodeWidthChar::width(character).unwrap_or(0);
+    let cursor_width = chars
+        .get(cursor)
+        .map(|character| char_width(*character))
+        .unwrap_or(1)
+        .max(1)
+        .min(width);
+    let mut start = cursor;
+    let mut used = 0;
+    while start > 0 {
+        let character_width = char_width(chars[start - 1]);
+        if used + character_width + cursor_width > width {
+            break;
+        }
+        used += character_width;
+        start -= 1;
+    }
+    let mut end = start;
+    let mut visible = 0;
+    while end < chars.len() {
+        let character_width = char_width(chars[end]);
+        if visible + character_width > width {
+            break;
+        }
+        visible += character_width;
+        end += 1;
+    }
+    (start, end)
+}
+
 fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let Some(input) = app.playlist_input.as_ref() else {
         return;
@@ -714,12 +754,7 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             let chars: Vec<char> = query.chars().collect();
             let cursor = app.search_cursor.min(chars.len());
             let width = usize::from(content.width);
-            let start = if cursor >= width {
-                cursor + 1 - width
-            } else {
-                0
-            };
-            let end = (start + width).min(chars.len());
+            let (start, end) = input_window(&chars, cursor, width);
             let mut spans = Vec::new();
             for (index, character) in chars.iter().enumerate().take(end).skip(start) {
                 if index == cursor && active {

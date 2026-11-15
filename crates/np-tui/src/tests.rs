@@ -1220,3 +1220,16 @@ fn pending_actions_wait_for_enter_not_same_key() {
     app.cancel_pending_remove();
     assert!(app.pending_remove.is_none());
 }
+
+#[test]
+fn input_window_scrolls_by_display_width_for_cjk() {
+    let chars = vec!['中', '中', '中'];
+    let (start, end) = input_window(&chars, 3, 4);
+    let prefix: String = chars.iter().take(3).skip(start).collect();
+    assert!(start > 0);
+    assert!(end <= chars.len());
+    assert!(display_width(&prefix) < 4);
+    let (start, end) = input_window(&chars, 2, 4);
+    assert!(start <= 2);
+    assert!(end >= 3);
+}

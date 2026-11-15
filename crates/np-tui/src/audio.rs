@@ -139,11 +139,19 @@ impl TuiAudio {
     }
 
     pub fn mode(&self) -> PlaybackMode {
-        self.queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .mode()
-            .to_playback_mode()
+        self.lock_queue().mode().to_playback_mode()
+    }
+
+    pub fn cycle_mode(&self) -> PlaybackMode {
+        let mut queue = self.lock_queue();
+        let next = match queue.mode() {
+            crate::playback::QueueMode::SingleLoop => crate::playback::QueueMode::Shuffle,
+            crate::playback::QueueMode::Shuffle => crate::playback::QueueMode::Sequential,
+            crate::playback::QueueMode::Sequential => crate::playback::QueueMode::ListLoop,
+            crate::playback::QueueMode::ListLoop => crate::playback::QueueMode::SingleLoop,
+        };
+        queue.set_mode(next);
+        next.to_playback_mode()
     }
 
     fn lock_queue(&self) -> std::sync::MutexGuard<'_, PlaybackQueue> {
@@ -513,5 +521,20 @@ mod tests {
         assert_eq!(audio.queue_list().unwrap().tracks.len(), 2);
         audio.next().unwrap();
         assert_eq!(audio.source_path().as_deref(), Some(first.as_path()));
+    }
+    #[test]
+    fn mode_cycles_through_four_playback_modes() {
+        let audio = TuiAudio::empty();
+        let list = audio.cycle_mode();
+        assert_eq!(list.repeat, np_core::RepeatMode::All);
+        assert!(!list.shuffle);
+        let one = audio.cycle_mode();
+        assert_eq!(one.repeat, np_core::RepeatMode::One);
+        assert!(!one.shuffle);
+        let shuffle = audio.cycle_mode();
+        assert!(shuffle.shuffle);
+        let sequential = audio.cycle_mode();
+        assert_eq!(sequential.repeat, np_core::RepeatMode::Off);
+        assert!(!sequential.shuffle);
     }
 }

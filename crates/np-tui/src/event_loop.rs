@@ -28,6 +28,15 @@ pub(crate) struct SearchContext<'a> {
     pub(crate) play_rx: &'a std::sync::mpsc::Receiver<String>,
 }
 
+fn playback_mode_label(mode: np_core::PlaybackMode) -> &'static str {
+    match (mode.repeat, mode.shuffle) {
+        (np_core::RepeatMode::One, false) => "单曲循环",
+        (np_core::RepeatMode::Off, true) => "随机播放",
+        (np_core::RepeatMode::All, false) => "列表循环",
+        _ => "顺序播放",
+    }
+}
+
 fn parse_duration(text: &str) -> u64 {
     let mut parts = text.split(':');
     let minutes = parts
@@ -450,6 +459,29 @@ where
                                     app.status = "请按 Enter 确认添加".to_owned();
                                 } else if let Err(error) = app.begin_add_to_playlist() {
                                     app.status = error;
+                                }
+                            }
+                            KeyCode::Char('m') => {
+                                let mode = player.cycle_mode();
+                                app.status = format!("模式：{}", playback_mode_label(mode));
+                            }
+                            KeyCode::Char('[') => {
+                                let target = player.position_ms().saturating_sub(5_000);
+                                if let Err(error) = PlayerApi::seek(player, target) {
+                                    app.status = error.message;
+                                } else {
+                                    app.status = "后退 5s".to_owned();
+                                }
+                            }
+                            KeyCode::Char(']') => {
+                                let position = player.position_ms().saturating_add(5_000);
+                                let target = player
+                                    .duration_ms()
+                                    .map_or(position, |duration| position.min(duration));
+                                if let Err(error) = PlayerApi::seek(player, target) {
+                                    app.status = error.message;
+                                } else {
+                                    app.status = "前进 5s".to_owned();
                                 }
                             }
                             KeyCode::Char('/') => app.enter_command(),
