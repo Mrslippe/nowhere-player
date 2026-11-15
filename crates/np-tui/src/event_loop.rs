@@ -201,7 +201,49 @@ where
                             KeyCode::Right => app.right(),
                             _ => {}
                         }
+                    } else if app.playlist_input_active() {
+                        match key.code {
+                            KeyCode::Char(character) => app.insert_playlist_char(character),
+                            KeyCode::Backspace => app.backspace_playlist_char(),
+                            KeyCode::Left => app.move_playlist_cursor(false),
+                            KeyCode::Right => app.move_playlist_cursor(true),
+                            KeyCode::Enter => {
+                                if let Err(error) = app.confirm_playlist_create(&**library) {
+                                    app.status = error;
+                                }
+                            }
+                            KeyCode::Esc => app.cancel_playlist_create(),
+                            _ => {}
+                        }
+                        draw_needed = true;
+                        continue;
                     } else {
+                        if key.code == KeyCode::Enter {
+                            if app.pending_add.is_some() {
+                                if let Err(error) = app.confirm_add_to_playlist(&**library) {
+                                    app.status = error;
+                                }
+                                draw_needed = true;
+                                continue;
+                            }
+                            if app.pending_remove.is_some() {
+                                if let Err(error) = app.confirm_remove(player, &**library) {
+                                    app.status = error;
+                                }
+                                draw_needed = true;
+                                continue;
+                            }
+                            if app.pending_playlist_delete.is_some() {
+                                if let Err(error) = app.confirm_playlist_delete(&**library) {
+                                    app.status = error;
+                                }
+                                draw_needed = true;
+                                continue;
+                            }
+                            if app.quit_armed {
+                                return Ok(());
+                            }
+                        }
                         match key.code {
                             KeyCode::Left | KeyCode::Right => {
                                 app.search_input_active = false;
@@ -373,6 +415,11 @@ where
                                     app.cancel_pending_add();
                                 } else if app.pending_remove.is_some() {
                                     app.cancel_pending_remove();
+                                } else if app.pending_playlist_delete.is_some() {
+                                    app.cancel_playlist_delete();
+                                } else if app.quit_armed {
+                                    app.quit_armed = false;
+                                    app.status = "已取消退出".to_owned();
                                 } else if app.focus == Focus::List {
                                     app.focus = Focus::Browse;
                                 }
@@ -392,22 +439,16 @@ where
                                 app.reset_search_to_empty();
                             }
                             KeyCode::Char('r') if app.focus == Focus::List => {
-                                let result = if app.pending_remove.is_some() {
-                                    app.confirm_remove(player, &**library)
-                                } else {
-                                    app.arm_remove()
-                                };
-                                if let Err(error) = result {
+                                if app.pending_remove.is_some() {
+                                    app.status = "请按 Enter 确认移除".to_owned();
+                                } else if let Err(error) = app.arm_remove() {
                                     app.status = error;
                                 }
                             }
                             KeyCode::Char('a') if app.focus == Focus::List => {
-                                let result = if app.pending_add.is_some() {
-                                    app.confirm_add_to_playlist(&**library)
-                                } else {
-                                    app.begin_add_to_playlist()
-                                };
-                                if let Err(error) = result {
+                                if app.pending_add.is_some() {
+                                    app.status = "请按 Enter 确认添加".to_owned();
+                                } else if let Err(error) = app.begin_add_to_playlist() {
                                     app.status = error;
                                 }
                             }
@@ -416,8 +457,40 @@ where
                                 player.toggle();
                             }
                             KeyCode::Char('n') => {
-                                let _ = player.next();
-                                app.status = "下一首".to_owned();
+                                if matches!(
+                                    app.view_kind.get(app.view_index),
+                                    Some(BrowseKind::PlaylistRoot)
+                                ) {
+                                    if app.pending_add.is_some()
+                                        || app.pending_remove.is_some()
+                                        || app.pending_playlist_delete.is_some()
+                                        || app.quit_armed
+                                    {
+                                        app.status = "请先完成或取消当前确认".to_owned();
+                                    } else if let Err(error) = app.begin_playlist_create() {
+                                        app.status = error;
+                                    }
+                                } else {
+                                    let _ = player.next();
+                                    app.status = "下一首".to_owned();
+                                }
+                            }
+                            KeyCode::Char('d')
+                                if matches!(
+                                    app.view_kind.get(app.view_index),
+                                    Some(BrowseKind::PlaylistRoot)
+                                ) =>
+                            {
+                                if app.pending_playlist_delete.is_some() {
+                                    app.status = "请按 Enter 确认删除".to_owned();
+                                } else if app.pending_add.is_some()
+                                    || app.pending_remove.is_some()
+                                    || app.quit_armed
+                                {
+                                    app.status = "请先完成或取消当前确认".to_owned();
+                                } else if let Err(error) = app.arm_playlist_delete() {
+                                    app.status = error;
+                                }
                             }
                             KeyCode::Char('p') => {
                                 let _ = player.prev();
@@ -444,11 +517,11 @@ where
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
                             }
                             KeyCode::Char('q') => {
-                                if player.is_playing() && !app.quit_armed {
+                                if !app.quit_armed {
                                     app.quit_armed = true;
-                                    app.status = "播放中，再按 q 确认退出".to_owned();
+                                    app.status = "Enter确认退出 · Esc取消".to_owned();
                                 } else {
-                                    return Ok(());
+                                    app.status = "请按 Enter 确认退出".to_owned();
                                 }
                             }
                             _ => {}

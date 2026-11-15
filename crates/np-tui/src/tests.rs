@@ -601,7 +601,7 @@ fn status_bar_is_embedded_in_bottom_border() {
     let text: String = (0..72).map(|x| buffer[(x, 23)].symbol()).collect();
     assert!(text.starts_with('┗'), "{text:?}");
     let compact = text.replace(' ', "");
-    assert!(compact.contains("退出"), "{text:?}");
+    assert!(compact.contains("新建"), "{text:?}");
     assert!(!text.contains("就绪"), "{text:?}");
 }
 
@@ -1106,4 +1106,117 @@ fn add_from_search_uses_duration_metadata_not_platform_column() {
             .map(|pending| pending.item.duration_ms),
         Some(171_000)
     );
+}
+
+#[test]
+fn playlist_create_and_delete_use_enter_confirmation_model() {
+    use np_app::LibraryApi;
+
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-playlist-crud-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    let cache = root.join("cache");
+    let data = root.join("data");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: cache,
+        data_dir: data,
+    });
+    let settings = np_app::SettingsHandle::load(config);
+    let audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &library, &settings);
+    app.focus = Focus::List;
+
+    app.begin_playlist_create().unwrap();
+    for character in "New".chars() {
+        app.insert_playlist_char(character);
+    }
+    app.confirm_playlist_create(&library).unwrap();
+    assert_eq!(
+        library
+            .playlist_list()
+            .unwrap()
+            .into_iter()
+            .map(|playlist| playlist.name)
+            .collect::<Vec<_>>(),
+        vec!["New".to_owned()]
+    );
+    assert!(
+        app.view_kind
+            .iter()
+            .any(|kind| matches!(kind, BrowseKind::Playlist(name) if name == "New"))
+    );
+
+    app.view_index = 0;
+    app.row_index = 0;
+    app.arm_playlist_delete().unwrap();
+    assert_eq!(app.pending_playlist_delete.as_deref(), Some("New"));
+    app.confirm_playlist_delete(&library).unwrap();
+    assert!(library.playlist_list().unwrap().is_empty());
+    assert!(
+        !app.view_kind
+            .iter()
+            .any(|kind| matches!(kind, BrowseKind::Playlist(name) if name == "New"))
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn status_bar_prioritizes_page_specific_actions() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+
+    app.view_index = 0;
+    app.focus = Focus::Browse;
+    let root = compact(&draw_text(&mut app, &mut terminal, &audio));
+    assert!(root.contains("新建"));
+    assert!(root.contains("删除"));
+
+    app.view_index = 1;
+    app.focus = Focus::List;
+    let detail = compact(&draw_text(&mut app, &mut terminal, &audio));
+    assert!(detail.contains("添加"));
+    assert!(detail.contains("移除"));
+
+    app.view_index = 4;
+    let queue = compact(&draw_text(&mut app, &mut terminal, &audio));
+    assert!(queue.contains("移除"));
+    assert!(queue.contains("切歌"));
+}
+
+#[test]
+fn playlist_create_prompt_draws_centered_input() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    app.view_index = 0;
+    app.begin_playlist_create().unwrap();
+    app.insert_playlist_char('花');
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    assert!(text.contains("New Playlist"), "{text}");
+    assert!(text.contains('花'), "{text}");
+}
+
+#[test]
+fn pending_actions_wait_for_enter_not_same_key() {
+    let mut app = browse_app();
+    app.view_index = 4;
+    app.focus = Focus::List;
+    app.views[4].refs = vec![TrackRef::Local(PathBuf::from("/tmp/song.flac"))];
+    app.views[4].rows = vec![vec!["1".to_owned(), "Song".to_owned()]];
+    app.arm_remove().unwrap();
+    assert!(app.pending_remove.is_some());
+    app.cancel_pending_remove();
+    assert!(app.pending_remove.is_none());
 }

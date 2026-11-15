@@ -82,6 +82,8 @@ fn library_app() -> App {
         refs: Vec::new(),
         durations: Vec::new(),
     }];
+    app.view_kind = vec![BrowseKind::Library];
+    app.view_depth = vec![0];
     app.focus = Focus::List;
     app.row_index = 1;
     app

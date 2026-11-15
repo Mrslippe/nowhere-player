@@ -70,33 +70,39 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     let y = area.bottom().saturating_sub(1);
     let max_x = area.right().saturating_sub(2);
-
-    let hints: &[(&str, &str)] = match app.focus {
-        Focus::Controller => &[
-            ("←→", "光标"),
-            ("Tab", "补全"),
-            ("Enter", "执行"),
-            ("Esc", "返回"),
-        ],
-        Focus::Browse => &[
-            ("↑↓", "选择"),
-            ("←→", "焦点"),
-            ("Enter", "进入"),
-            ("/", "命令"),
-            ("q", "退出"),
-        ],
-        Focus::List => &[
-            ("↑↓", "选择"),
-            ("←→", "焦点"),
-            ("Enter", "播放"),
-            ("Space", "暂停"),
-            ("n/p", "切歌"),
-            ("/", "命令"),
-            ("q", "退出"),
-        ],
-    };
     let mut x = area.x.saturating_add(2);
-    for (index, (key, description)) in hints.iter().enumerate() {
+
+    let status = app.status.trim();
+    if !status.is_empty() && status != "就绪" {
+        let status = truncate_width(status, 24);
+        let width = display_width(&status) as u16;
+        if x.saturating_add(width) <= max_x {
+            frame.buffer_mut().set_string(
+                x,
+                y,
+                &status,
+                Style::default().fg(if is_pending_status(app) {
+                    app.palette.accent
+                } else {
+                    app.palette.muted
+                }),
+            );
+            x = x.saturating_add(width);
+            let separator = " · ";
+            let sep_width = display_width(separator) as u16;
+            if x.saturating_add(sep_width) <= max_x {
+                frame.buffer_mut().set_string(
+                    x,
+                    y,
+                    separator,
+                    Style::default().fg(app.palette.faint),
+                );
+                x = x.saturating_add(sep_width);
+            }
+        }
+    }
+
+    for (index, (key, description)) in status_hints(app).iter().enumerate() {
         if index > 0 {
             let separator = " · ";
             let separator_width = display_width(separator) as u16;
@@ -126,6 +132,110 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             .buffer_mut()
             .set_string(x, y, description, Style::default().fg(app.palette.muted));
         x = x.saturating_add(description_width);
+    }
+}
+
+fn is_pending_status(app: &App) -> bool {
+    app.pending_add.is_some()
+        || app.pending_remove.is_some()
+        || app.pending_playlist_delete.is_some()
+        || app.quit_armed
+        || app.playlist_input.is_some()
+}
+
+fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.focus == Focus::Controller {
+        return vec![
+            ("←→", "光标"),
+            ("Tab", "补全"),
+            ("↑↓", "历史"),
+            ("Enter", "执行"),
+            ("Esc", "返回"),
+        ];
+    }
+    if app.playlist_input.is_some() {
+        return vec![("Enter", "创建"), ("Esc", "取消")];
+    }
+    if app.pending_add.is_some() {
+        return vec![("Enter", "确认添加"), ("↑↓", "选择歌单"), ("Esc", "取消")];
+    }
+    if app.pending_remove.is_some() {
+        return vec![("Enter", "确认移除"), ("Esc", "取消")];
+    }
+    if app.pending_playlist_delete.is_some() {
+        return vec![("Enter", "确认删除"), ("Esc", "取消")];
+    }
+    if app.quit_armed {
+        return vec![("Enter", "确认退出"), ("Esc", "取消")];
+    }
+    if app.search_editing_input() {
+        return vec![
+            ("←→", "光标"),
+            ("⌫", "删除"),
+            ("Enter", "搜索"),
+            ("Esc", "退出输入"),
+        ];
+    }
+
+    let kind = app.view_kind.get(app.view_index);
+    let list = app.focus == Focus::List;
+    match kind {
+        Some(BrowseKind::PlaylistRoot) if list => vec![
+            ("n", "新建"),
+            ("d", "删除"),
+            ("Enter", "打开"),
+            ("↑↓", "选择"),
+            ("Esc", "返回"),
+        ],
+        Some(BrowseKind::PlaylistRoot) => vec![
+            ("n", "新建"),
+            ("d", "删除"),
+            ("Enter", "进入"),
+            ("↑↓", "选择"),
+            ("Shift+Enter", "展开"),
+        ],
+        Some(BrowseKind::Playlist(_)) if list => vec![
+            ("a", "添加"),
+            ("r", "移除"),
+            ("Enter", "播放"),
+            ("↑↓", "选择"),
+            ("Esc", "返回"),
+        ],
+        Some(BrowseKind::Playlist(_)) => vec![("Enter", "进入"), ("↑↓", "选择"), ("←→", "焦点")],
+        Some(BrowseKind::Queue) if list => vec![
+            ("r", "移除"),
+            ("Space", "暂停"),
+            ("Enter", "播放"),
+            ("n/p", "切歌"),
+            ("Esc", "返回"),
+        ],
+        Some(BrowseKind::Queue) => vec![("Enter", "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Library) if list => vec![
+            ("a", "添加"),
+            ("r", "移除"),
+            ("Enter", "播放"),
+            ("↑↓", "选择"),
+            ("Esc", "返回"),
+        ],
+        Some(BrowseKind::Library) => vec![("Enter", "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Search) if list => match app.search_display() {
+            Some(SearchDisplay::Empty { .. }) => {
+                vec![("Enter", "输入"), ("Esc", "返回"), ("/", "命令")]
+            }
+            Some(SearchDisplay::Searching) => vec![("Esc", "停止")],
+            Some(SearchDisplay::NoResults) => vec![("c", "清空"), ("Esc", "返回")],
+            None => vec![
+                ("a", "添加"),
+                ("r", "移除"),
+                ("c", "清空"),
+                ("Enter", "播放"),
+                ("↑↓", "选择"),
+            ],
+        },
+        Some(BrowseKind::Search) => vec![("Enter", "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Settings) => vec![("↑↓", "选择"), ("Esc", "返回")],
+        None if list => vec![("↑↓", "选择"), ("Esc", "返回")],
+        None => vec![("↑↓", "选择"), ("←→", "焦点"), ("/", "命令")],
     }
 }
 
@@ -390,6 +500,10 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         width: area.width.saturating_sub(2),
         height: area.height,
     };
+    if app.playlist_input.is_some() {
+        draw_playlist_input(frame, inner, app);
+        return;
+    }
     if let Some(display) = app.search_display() {
         draw_search_state(frame, inner, app, display);
         return;
@@ -482,6 +596,84 @@ fn list_title(app: &App) -> String {
         Some(BrowseKind::Settings) => "Settings".to_owned(),
         None => "List".to_owned(),
     }
+}
+
+fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let Some(input) = app.playlist_input.as_ref() else {
+        return;
+    };
+    let width = 38.min(area.width);
+    let height = 3.min(area.height);
+    let box_area = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = TuiBlock::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.palette.accent))
+        .title_style(Style::default().fg(app.palette.accent))
+        .title(" New Playlist ")
+        .style(Style::default().bg(app.palette.bg.unwrap_or(Color::Reset)));
+    let inner = block.inner(box_area);
+    frame.render_widget(block, box_area);
+    let content = Rect {
+        x: inner.x.saturating_add(1),
+        y: inner.y,
+        width: inner.width.saturating_sub(2),
+        height: inner.height,
+    };
+    let chars: Vec<char> = input.value.chars().collect();
+    let cursor = input.cursor.min(chars.len());
+    let width = usize::from(content.width);
+    let start = if cursor >= width {
+        cursor + 1 - width
+    } else {
+        0
+    };
+    let end = (start + width).min(chars.len());
+    let mut spans = Vec::new();
+    if chars.is_empty() {
+        spans.push(TuiSpan::styled(
+            "输入歌单名",
+            Style::default().fg(app.palette.muted),
+        ));
+    } else {
+        for (index, character) in chars.iter().enumerate().take(end).skip(start) {
+            if index == cursor {
+                spans.push(TuiSpan::styled(
+                    character.to_string(),
+                    Style::default()
+                        .bg(app.palette.fg)
+                        .fg(app.palette.bg.unwrap_or(Color::Reset)),
+                ));
+            } else {
+                spans.push(TuiSpan::raw(character.to_string()));
+            }
+        }
+    }
+    if cursor == chars.len() {
+        spans.push(TuiSpan::styled(
+            " ",
+            Style::default()
+                .bg(app.palette.fg)
+                .fg(app.palette.bg.unwrap_or(Color::Reset)),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(
+            Style::default()
+                .fg(app.palette.fg)
+                .bg(app.palette.bg.unwrap_or(Color::Reset)),
+        ),
+        content,
+    );
+    let prefix: String = chars.iter().take(cursor).skip(start).collect();
+    frame.set_cursor_position((
+        content.x.saturating_add(display_width(&prefix) as u16),
+        content.y,
+    ));
 }
 
 fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display: SearchDisplay) {

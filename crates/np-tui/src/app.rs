@@ -15,6 +15,11 @@ use np_app::{
     execute_with_services, online_play_hit, online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus};
+pub(crate) struct PlaylistInput {
+    pub(crate) value: String,
+    pub(crate) cursor: usize,
+}
+
 pub(crate) struct PendingAdd {
     pub(crate) item: QueueItem,
     origin_view: usize,
@@ -73,6 +78,8 @@ pub(crate) struct App {
     pub(crate) queue_marker: Option<usize>,
     pub(crate) pending_add: Option<PendingAdd>,
     pub(crate) pending_remove: Option<(usize, usize)>,
+    pub(crate) pending_playlist_delete: Option<String>,
+    pub(crate) playlist_input: Option<PlaylistInput>,
 }
 
 impl App {
@@ -124,6 +131,8 @@ impl App {
             queue_marker: None,
             pending_add: None,
             pending_remove: None,
+            pending_playlist_delete: None,
+            playlist_input: None,
         }
     }
 
@@ -409,6 +418,184 @@ impl App {
         None
     }
 
+    pub(crate) fn playlist_input_active(&self) -> bool {
+        self.playlist_input.is_some()
+    }
+
+    pub(crate) fn begin_playlist_create(&mut self) -> Result<(), String> {
+        if !matches!(
+            self.view_kind.get(self.view_index),
+            Some(BrowseKind::PlaylistRoot)
+        ) {
+            return Err("只能在 PlayList 页创建歌单".to_owned());
+        }
+        self.playlist_input = Some(PlaylistInput {
+            value: String::new(),
+            cursor: 0,
+        });
+        self.focus = Focus::List;
+        self.status = "输入歌单名 · Enter创建 · Esc取消".to_owned();
+        Ok(())
+    }
+
+    pub(crate) fn cancel_playlist_create(&mut self) {
+        if self.playlist_input.take().is_some() {
+            self.status = "已取消创建".to_owned();
+        }
+    }
+
+    pub(crate) fn insert_playlist_char(&mut self, character: char) {
+        let Some(input) = self.playlist_input.as_mut() else {
+            return;
+        };
+        let byte = char_to_byte_index(&input.value, input.cursor);
+        input.value.insert(byte, character);
+        input.cursor += 1;
+    }
+
+    pub(crate) fn backspace_playlist_char(&mut self) {
+        let Some(input) = self.playlist_input.as_mut() else {
+            return;
+        };
+        if input.cursor > 0 {
+            input.cursor -= 1;
+            let byte = char_to_byte_index(&input.value, input.cursor);
+            input.value.remove(byte);
+        }
+    }
+
+    pub(crate) fn move_playlist_cursor(&mut self, right: bool) {
+        let Some(input) = self.playlist_input.as_mut() else {
+            return;
+        };
+        if right {
+            if input.cursor < input.value.chars().count() {
+                input.cursor += 1;
+            }
+        } else {
+            input.cursor = input.cursor.saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn confirm_playlist_create(
+        &mut self,
+        library: &dyn LibraryApi,
+    ) -> Result<(), String> {
+        let Some(input) = self.playlist_input.take() else {
+            return Err("没有创建中的歌单".to_owned());
+        };
+        let name = input.value.trim().to_owned();
+        if name.is_empty() {
+            self.playlist_input = Some(input);
+            return Err("歌单名不能为空".to_owned());
+        }
+        if let Err(error) = library.playlist_create(&name) {
+            self.playlist_input = Some(input);
+            return Err(error.message);
+        }
+        self.playlist_expanded = true;
+        self.rebuild_playlist_views(library, Some(&name));
+        self.status = format!("已创建歌单：{name}");
+        Ok(())
+    }
+
+    pub(crate) fn arm_playlist_delete(&mut self) -> Result<(), String> {
+        if !matches!(
+            self.view_kind.get(self.view_index),
+            Some(BrowseKind::PlaylistRoot)
+        ) {
+            return Err("只能在 PlayList 页删除歌单".to_owned());
+        }
+        let Some(name) = self
+            .filtered_rows()
+            .get(self.row_index)
+            .and_then(|row| row.get(1).cloned())
+        else {
+            return Err("没有选中歌单".to_owned());
+        };
+        self.pending_playlist_delete = Some(name.clone());
+        self.status = format!("Enter确认删除歌单：{name} · Esc取消");
+        Ok(())
+    }
+
+    pub(crate) fn cancel_playlist_delete(&mut self) {
+        if self.pending_playlist_delete.take().is_some() {
+            self.status = "已取消删除歌单".to_owned();
+        }
+    }
+
+    pub(crate) fn confirm_playlist_delete(
+        &mut self,
+        library: &dyn LibraryApi,
+    ) -> Result<(), String> {
+        let Some(name) = self.pending_playlist_delete.take() else {
+            return Err("没有待删除歌单".to_owned());
+        };
+        let playlist = library
+            .playlist_by_name(&name)
+            .map_err(|error| error.message.clone())?
+            .ok_or_else(|| format!("歌单不存在：{name}"))?;
+        library
+            .playlist_delete(playlist.id)
+            .map_err(|error| error.message.clone())?;
+        self.rebuild_playlist_views(library, None);
+        self.status = format!("已删除歌单：{name}");
+        Ok(())
+    }
+
+    fn rebuild_playlist_views(&mut self, library: &dyn LibraryApi, selected: Option<&str>) {
+        let playlists = library.playlist_list().unwrap_or_default();
+        let children: Vec<ViewData> = playlists
+            .iter()
+            .map(|playlist| playlist_child_view(library, &playlist.name))
+            .collect();
+        let old_views = self.views.clone();
+        let old_kinds = self.view_kind.clone();
+        let mut views = vec![playlist_root_view(library)];
+        let mut depths = vec![0];
+        let mut kinds = vec![BrowseKind::PlaylistRoot];
+        if self.playlist_expanded {
+            for (index, child) in children.iter().enumerate() {
+                views.push(child.clone());
+                depths.push(1);
+                kinds.push(BrowseKind::Playlist(
+                    playlists
+                        .get(index)
+                        .map(|playlist| playlist.name.clone())
+                        .unwrap_or_default(),
+                ));
+            }
+        }
+        for (index, view) in old_views.into_iter().enumerate() {
+            let Some(kind) = old_kinds.get(index).cloned() else {
+                continue;
+            };
+            if matches!(kind, BrowseKind::PlaylistRoot | BrowseKind::Playlist(_)) {
+                continue;
+            }
+            views.push(view);
+            depths.push(0);
+            kinds.push(kind);
+        }
+        self.playlist_children = children;
+        self.views = views;
+        self.view_depth = depths;
+        self.view_kind = kinds;
+        self.view_index = selected
+            .and_then(|name| {
+                self.view_kind
+                    .iter()
+                    .position(|kind| matches!(kind, BrowseKind::Playlist(title) if title == name))
+            })
+            .unwrap_or_else(|| {
+                self.view_kind
+                    .iter()
+                    .position(|kind| *kind == BrowseKind::PlaylistRoot)
+                    .unwrap_or(0)
+            });
+        self.row_index = 0;
+    }
+
     pub(crate) fn arm_remove(&mut self) -> Result<(), String> {
         let Some(kind) = self.view_kind.get(self.view_index) else {
             return Err("当前没有列表".to_owned());
@@ -423,7 +610,7 @@ impl App {
             return Err("当前行不是歌曲".to_owned());
         }
         self.pending_remove = Some((self.view_index, self.row_index));
-        self.status = "再按 r 确认移除".to_owned();
+        self.status = "Enter确认移除 · Esc取消".to_owned();
         Ok(())
     }
 
@@ -559,7 +746,7 @@ impl App {
         self.view_index = root;
         self.row_index = 0;
         self.focus = Focus::List;
-        self.status = "选择歌单后按 a 添加".to_owned();
+        self.status = "选择歌单后按 Enter 添加 · Esc取消".to_owned();
         Ok(())
     }
 
