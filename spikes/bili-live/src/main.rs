@@ -9,6 +9,7 @@
 
 mod aac;
 mod api;
+mod direct;
 mod flv;
 
 use std::process::ExitCode;
@@ -44,6 +45,7 @@ fn main() -> ExitCode {
     let code = match args.first().map(String::as_str) {
         None | Some("--probe") => run_probe(&args),
         Some("--stream") => run_stream(&args),
+        Some("--direct") => run_direct(&args),
         Some("--dry-run-send") => {
             if args.len() < 3 {
                 usage()
@@ -621,6 +623,286 @@ fn stream_stats(stats: &std::sync::Arc<std::sync::Mutex<flv::StreamStats>>) -> f
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
+}
+
+fn run_direct(args: &[String]) -> u8 {
+    let mut explicit_room: Option<u64> = None;
+    let mut seconds: u64 = 10;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--room" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--room requires a value");
+                    return 2;
+                }
+                match parse_room(&args[i]) {
+                    Some(r) => explicit_room = Some(r),
+                    None => {
+                        eprintln!("invalid room id: {}", args[i]);
+                        return 2;
+                    }
+                }
+            }
+            "--seconds" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--seconds requires a value");
+                    return 2;
+                }
+                match args[i].parse::<u64>() {
+                    Ok(v) if (1..=120).contains(&v) => seconds = v,
+                    _ => {
+                        eprintln!("--seconds must be 1..=120");
+                        return 2;
+                    }
+                }
+            }
+            other => {
+                eprintln!("unknown direct argument: {other}");
+                return 2;
+            }
+        }
+        i += 1;
+    }
+
+    let started = Instant::now();
+    let client = match api::http_client(60) {
+        Ok(c) => c,
+        Err(e) => {
+            println!(
+                "{}",
+                json!({"status": "FAILED", "mode": "direct", "only_audio": true, "stage": e.stage, "error": e.message})
+            );
+            return 1;
+        }
+    };
+
+    let rooms: Vec<u64> = match explicit_room {
+        Some(r) => vec![r],
+        None => vec![21622811, 23197314],
+    };
+    let mut tried: Vec<Value> = Vec::new();
+    let mut chosen: Option<api::PlayInfo> = None;
+
+    for &room in &rooms {
+        match api::fetch_play_info(&client, room) {
+            Ok(info) => {
+                let has_flv = info.flv_url.is_some();
+                tried.push(json!({
+                    "requested_room": room,
+                    "room_id": info.room_id,
+                    "live_status": info.live_status,
+                    "flv": has_flv,
+                    "api_ms": info.api_ms
+                }));
+                if info.live_status == 1 && has_flv {
+                    chosen = Some(info);
+                    break;
+                }
+            }
+            Err(e) => tried.push(json!({
+                "requested_room": room,
+                "error": e.message,
+                "stage": e.stage
+            })),
+        }
+    }
+
+    let Some(info) = chosen else {
+        println!(
+            "{}",
+            json!({
+                "status": "BLOCKED",
+                "mode": "direct",
+                "only_audio": true,
+                "reason": "no room in target list reported live_status=1 with an FLV stream",
+                "rooms": rooms,
+                "rooms_tried": tried
+            })
+        );
+        return 2;
+    };
+
+    let room_info = api::fetch_room_info(&client, info.room_id).ok();
+    let title = room_info.as_ref().and_then(|r| r.title.clone());
+    let uid = room_info.as_ref().and_then(|r| r.uid);
+    let room_api_ms = room_info.as_ref().map(|r| r.api_ms).unwrap_or(0);
+
+    let url = info
+        .flv_url
+        .as_ref()
+        .expect("chosen play info always has a URL");
+    let request_started = Instant::now();
+    let source = match flv::RawFrameSource::open(&client, url, Duration::from_secs(seconds + 5)) {
+        Ok(s) => s,
+        Err(e) => {
+            println!(
+                "{}",
+                json!({
+                    "status": "FAILED",
+                    "mode": "direct",
+                    "only_audio": true,
+                    "stage": e.stage,
+                    "error": e.message,
+                    "room": {
+                        "requested_room": info.requested_room,
+                        "room_id": info.room_id,
+                        "title": title,
+                        "live_status": info.live_status
+                    }
+                })
+            );
+            return 1;
+        }
+    };
+    let opened_at = source.opened_at;
+    let connect_ms = opened_at.duration_since(request_started).as_millis();
+
+    let result = match direct::run(source, seconds) {
+        Ok(r) => r,
+        Err(e) => {
+            println!(
+                "{}",
+                json!({
+                    "status": "FAILED",
+                    "mode": "direct",
+                    "only_audio": true,
+                    "stage": "DECODE",
+                    "error": e,
+                    "room": {
+                        "requested_room": info.requested_room,
+                        "room_id": info.room_id,
+                        "title": title,
+                        "live_status": info.live_status
+                    },
+                    "timing": {"api_ms": info.api_ms, "total_ms": started.elapsed().as_millis()}
+                })
+            );
+            return 1;
+        }
+    };
+
+    let st = &result.net;
+    let first_pcm_ms = result
+        .first_pcm_at
+        .map(|t| t.saturating_duration_since(opened_at).as_millis());
+    let first_pcm_us = result
+        .first_pcm_at
+        .map(|t| t.saturating_duration_since(opened_at).as_micros());
+    let first_pcm_req_ms = result
+        .first_pcm_at
+        .map(|t| t.saturating_duration_since(request_started).as_millis());
+    let first_frame_ms = st
+        .first_frame_at
+        .map(|t| t.saturating_duration_since(opened_at).as_millis());
+
+    let output = json!({
+        "status": "OK",
+        "mode": "direct",
+        "only_audio": true,
+        "room": {
+            "requested_room": info.requested_room,
+            "room_id": info.room_id,
+            "title": title,
+            "uid": uid,
+            "live_status": info.live_status
+        },
+        "parameters": {
+            "target_ms": direct::TARGET_MS,
+            "max_ms": direct::MAX_MS,
+            "min_ms": direct::MIN_MS,
+            "control_ms": direct::CONTROL_MS,
+            "cooldown_ms": direct::COOLDOWN_MS,
+            "prebuffer_ms": direct::PREBUFFER_MS,
+            "queue_cap_frames": direct::QUEUE_CAP_FRAMES,
+            "no_drop": result.no_drop
+        },
+        "audio": {
+            "codec": "aac-lc",
+            "aot": 2,
+            "sample_rate": 48000,
+            "channels": 2,
+            "path": "AacDecoder raw AAC + ASC extra_data"
+        },
+        "latency": {
+            "connect_ms": connect_ms,
+            "first_frame_ms_from_connect": first_frame_ms,
+            "first_pcm_ms_from_connect": first_pcm_ms,
+            "first_pcm_us_from_connect": first_pcm_us,
+            "first_pcm_ms_from_request": first_pcm_req_ms,
+            "decoder_init_ms": result.decoder_init_ms
+        },
+        "decode_cpu_us": result.decode_cpu_us,
+        "pcm": {
+            "frames": result.pcm.frames,
+            "seconds": round(result.pcm.seconds, 3),
+            "sample_rate": 48000,
+            "channels": 2,
+            "packets_decoded": result.pcm.packets,
+            "decode_errors": result.pcm.decode_errors,
+            "rms": round(result.pcm.rms, 5),
+            "peak": round(result.pcm.peak, 4),
+            "non_silent": result.pcm.rms > 1e-4
+        },
+        "control": {
+            "control_ticks": result.control_ticks,
+            "avg_buffer_ms": round(result.avg_buffer_ms, 1),
+            "max_buffer_ms": result.max_buffer_ms,
+            "min_buffer_ms": result.min_buffer_ms,
+            "drop_events": result.drop_events,
+            "dropped_frames": result.dropped_frames,
+            "dropped_bytes": result.dropped_bytes,
+            "dropped_media_ms": result.dropped_media_ms,
+            "startup_trim_frames": result.startup_trim_frames,
+            "startup_trim_ms": result.startup_trim_ms,
+            "underrun_events": result.underrun_events,
+            "underrun_ms": result.underrun_ms,
+            "stale_frames": result.stale_frames
+        },
+        "queue": {
+            "peak_frames": result.queue_peak_frames,
+            "peak_bytes": result.queue_peak_bytes,
+            "peak_span_ms": result.queue_peak_span_ms,
+            "final_frames": result.queue_final_frames,
+            "max_queue_wait_ms": result.max_queue_wait_ms,
+            "producer_overflow_waits": result.producer_overflow_waits
+        },
+        "flv": {
+            "bytes_total": st.bytes_total,
+            "audio_tag_bytes": st.audio_payload_bytes,
+            "video_tag_bytes": st.video_payload_bytes,
+            "video_bytes_discarded": st.video_payload_bytes,
+            "tags_total": st.tags_total,
+            "audio_tags": st.audio_tags,
+            "video_tags": st.video_tags,
+            "script_tags": st.script_tags,
+            "raw_audio_frames": st.raw_frames,
+            "sequence_headers": st.sequence_headers,
+            "frames_before_asc": st.frames_before_asc,
+            "malformed_audio_tags": st.malformed_audio_tags,
+            "flv_flags": st.flv_flags,
+            "eof": st.eof,
+            "error": st.error
+        },
+        "timing": {
+            "playback_ms": result.playback_ms,
+            "wall_ms": result.wall_ms,
+            "api_ms": info.api_ms,
+            "room_api_ms": room_api_ms,
+            "total_ms": started.elapsed().as_millis()
+        },
+        "producer_error": result.producer_error,
+        "last_error": result.last_error,
+        "config": {
+            "target_rooms": rooms,
+            "rooms_tried": tried
+        }
+    });
+
+    println!("{}", serde_json::to_string(&output).unwrap());
+    0
 }
 
 fn dry_run_send(room: u64, text: &str) -> u8 {

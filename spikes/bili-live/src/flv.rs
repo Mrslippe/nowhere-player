@@ -707,3 +707,356 @@ impl Seek for FlvAdtsSource {
         ))
     }
 }
+
+/// 直解模式的一帧原始 AAC（不含 ADTS 头）。
+#[derive(Debug, Clone)]
+pub struct RawAacFrame {
+    pub pts_ms: u64,
+    pub raw: Vec<u8>,
+    pub arrival: Instant,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct RawNetStats {
+    pub bytes_total: u64,
+    pub flv_flags: u8,
+    pub tags_total: u64,
+    pub audio_tags: u64,
+    pub video_tags: u64,
+    pub script_tags: u64,
+    pub audio_payload_bytes: u64,
+    pub video_payload_bytes: u64,
+    pub sequence_headers: u64,
+    pub raw_frames: u64,
+    pub frames_before_asc: u64,
+    pub non_aac_audio_tags: u64,
+    pub malformed_audio_tags: u64,
+    pub tag_reads: u64,
+    pub total_tag_read_ms: u128,
+    pub max_tag_read_ms: u128,
+    pub slow_tag_reads_gt_100ms: u64,
+    pub max_tag_gap_ms: u128,
+    pub first_frame_at: Option<Instant>,
+    pub last_frame_at: Option<Instant>,
+    pub first_ts_ms: Option<u32>,
+    pub last_ts_ms: Option<u32>,
+    pub eof: bool,
+    pub error: Option<String>,
+}
+
+fn read_tag_raw(
+    reader: &mut reqwest::blocking::Response,
+    tag_buf: &mut Vec<u8>,
+) -> std::io::Result<Option<(u8, u32, usize)>> {
+    let mut th = [0u8; 11];
+    let n = read_upto(reader, &mut th)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if n != 11 {
+        return Err(io_invalid(format!(
+            "truncated FLV tag header: {n}/11 bytes"
+        )));
+    }
+    let tag_type = th[0];
+    let data_size = u24(&th[1..4]);
+    let ts = (u24(&th[4..7]) as u32) | ((th[7] as u32) << 24);
+    if data_size > 2 * 1024 * 1024 {
+        return Err(io_invalid(format!("implausible FLV tag size {data_size}")));
+    }
+    tag_buf.resize(data_size, 0);
+    let n = read_upto(reader, tag_buf)?;
+    if n != data_size {
+        return Err(io_invalid(format!(
+            "truncated FLV tag payload: {n}/{data_size} bytes (type {tag_type})"
+        )));
+    }
+    let mut prev = [0u8; 4];
+    let n = read_upto(reader, &mut prev)?;
+    if n != 4 {
+        return Err(io_invalid("truncated PreviousTagSize"));
+    }
+    Ok(Some((tag_type, ts, data_size)))
+}
+
+/// 直解模式的 FLV 源：只产出 raw AAC 帧，不补 ADTS，不经过 MediaSourceStream。
+pub struct RawFrameSource {
+    reader: reqwest::blocking::Response,
+    config: Option<AacConfig>,
+    deadline: Instant,
+    stats: Arc<Mutex<RawNetStats>>,
+    tag_buf: Vec<u8>,
+    eof: bool,
+    last_tag_done: Option<Instant>,
+    pub opened_at: Instant,
+}
+
+impl RawFrameSource {
+    pub fn open(client: &Client, url: &str, duration: Duration) -> Result<Self, StageError> {
+        let request_started = Instant::now();
+        let resp = client
+            .get(url)
+            .header("Referer", REFERER)
+            .header("Origin", ORIGIN)
+            .header("Accept", "*/*")
+            .send()
+            .map_err(|e| flv_err(format!("open stream: {}", e.without_url())))?;
+        let opened_at = Instant::now();
+        let connect_ms = opened_at.duration_since(request_started).as_millis();
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(flv_err(format!(
+                "flv http status {status} (connect {connect_ms}ms)"
+            )));
+        }
+
+        let mut reader = resp;
+        let mut header = [0u8; 9];
+        let n = read_upto(&mut reader, &mut header)
+            .map_err(|e| flv_err(format!("read header: {e}")))?;
+        if n != 9 {
+            return Err(flv_err(format!("short FLV header: {n} bytes")));
+        }
+        if &header[0..3] != b"FLV" {
+            return Err(flv_err(format!(
+                "not an FLV stream (magic {:02x?})",
+                &header[0..3]
+            )));
+        }
+        let data_offset = u32::from_be_bytes([header[5], header[6], header[7], header[8]]) as usize;
+        if !(9..=4096).contains(&data_offset) {
+            return Err(flv_err(format!("bad FLV data offset {data_offset}")));
+        }
+        if data_offset > 9 {
+            let mut skip = vec![0u8; data_offset - 9];
+            let n = read_upto(&mut reader, &mut skip)
+                .map_err(|e| flv_err(format!("read extended header: {e}")))?;
+            if n != skip.len() {
+                return Err(flv_err("short extended FLV header"));
+            }
+        }
+        let mut prev = [0u8; 4];
+        let n = read_upto(&mut reader, &mut prev)
+            .map_err(|e| flv_err(format!("read PreviousTagSize0: {e}")))?;
+        if n != 4 {
+            return Err(flv_err("short PreviousTagSize0"));
+        }
+
+        let stats = Arc::new(Mutex::new(RawNetStats {
+            flv_flags: header[4],
+            bytes_total: (data_offset + 4) as u64,
+            ..Default::default()
+        }));
+        let mut source = Self {
+            reader,
+            config: None,
+            deadline: opened_at + duration,
+            stats,
+            tag_buf: Vec::new(),
+            eof: false,
+            last_tag_done: None,
+            opened_at,
+        };
+        source.find_config()?;
+        Ok(source)
+    }
+
+    pub fn config(&self) -> &AacConfig {
+        self.config
+            .as_ref()
+            .expect("RawFrameSource::open ensures config")
+    }
+
+    pub fn stats_handle(&self) -> Arc<Mutex<RawNetStats>> {
+        self.stats.clone()
+    }
+
+    fn find_config(&mut self) -> Result<(), StageError> {
+        loop {
+            let Some((tag_type, _ts, _size)) = self.pull_tag()? else {
+                let msg = "stream ended/deadline before AAC sequence header".to_string();
+                self.fail_stats(&msg);
+                return Err(StageError::new("ADTS", msg));
+            };
+            if tag_type != 8 {
+                continue;
+            }
+            let data = self.tag_buf.clone();
+            if data.len() < 2 || (data[0] >> 4) != 10 {
+                continue;
+            }
+            match data[1] {
+                0 => {
+                    let cfg = AacConfig::parse(&data[2..]).map_err(|e| {
+                        let msg = format!("invalid AAC AudioSpecificConfig: {e}");
+                        self.fail_stats(&msg);
+                        StageError::new("ADTS", msg)
+                    })?;
+                    {
+                        let stats = self.stats.clone();
+                        let mut st = stats
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        st.sequence_headers += 1;
+                    }
+                    self.config = Some(cfg);
+                    return Ok(());
+                }
+                1 => {
+                    let stats = self.stats.clone();
+                    let mut st = stats
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    st.frames_before_asc += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn fail_stats(&self, msg: &str) {
+        let stats = self.stats.clone();
+        let mut st = stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        st.error = Some(msg.to_string());
+    }
+
+    fn pull_tag(&mut self) -> Result<Option<(u8, u32, usize)>, StageError> {
+        if Instant::now() >= self.deadline {
+            self.eof = true;
+            let stats = self.stats.clone();
+            let mut st = stats
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            st.eof = true;
+            return Ok(None);
+        }
+
+        let wait_start = Instant::now();
+        let result = read_tag_raw(&mut self.reader, &mut self.tag_buf);
+        let wait_ms = wait_start.elapsed().as_millis();
+        let stats = self.stats.clone();
+        let mut st = stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        st.tag_reads += 1;
+        st.total_tag_read_ms += wait_ms;
+        st.max_tag_read_ms = st.max_tag_read_ms.max(wait_ms);
+        if wait_ms > 100 {
+            st.slow_tag_reads_gt_100ms += 1;
+        }
+        if let Some(prev) = self.last_tag_done {
+            st.max_tag_gap_ms = st.max_tag_gap_ms.max(prev.elapsed().as_millis());
+        }
+        self.last_tag_done = Some(Instant::now());
+
+        let (tag_type, ts, data_size) = match result {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                self.eof = true;
+                st.eof = true;
+                return Ok(None);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                st.error = Some(msg.clone());
+                st.eof = true;
+                self.eof = true;
+                return Err(StageError::new("FLV", msg));
+            }
+        };
+
+        st.bytes_total += (11 + data_size + 4) as u64;
+        st.tags_total += 1;
+        match tag_type {
+            8 => {
+                st.audio_tags += 1;
+                st.audio_payload_bytes += data_size as u64;
+            }
+            9 => {
+                st.video_tags += 1;
+                st.video_payload_bytes += data_size as u64;
+            }
+            18 => st.script_tags += 1,
+            _ => {}
+        }
+        Ok(Some((tag_type, ts, data_size)))
+    }
+
+    /// 返回下一帧 raw AAC；None = deadline/EOF。
+    pub fn next_frame(&mut self) -> Result<Option<RawAacFrame>, StageError> {
+        loop {
+            let Some((tag_type, ts, _size)) = self.pull_tag()? else {
+                return Ok(None);
+            };
+            if tag_type != 8 {
+                continue;
+            }
+            let data = self.tag_buf.clone();
+            if data.len() < 2 {
+                let stats = self.stats.clone();
+                let mut st = stats
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                st.malformed_audio_tags += 1;
+                continue;
+            }
+            if (data[0] >> 4) != 10 {
+                let stats = self.stats.clone();
+                let mut st = stats
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                st.non_aac_audio_tags += 1;
+                continue;
+            }
+            match data[1] {
+                0 => {
+                    // 重复的 ASC：保持原 config；若变化则更新。
+                    let stats = self.stats.clone();
+                    {
+                        let mut st = stats
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        st.sequence_headers += 1;
+                    }
+                    match AacConfig::parse(&data[2..]) {
+                        Ok(cfg) => self.config = Some(cfg),
+                        Err(e) => {
+                            let msg = format!("invalid AAC AudioSpecificConfig: {e}");
+                            self.fail_stats(&msg);
+                            return Err(StageError::new("ADTS", msg));
+                        }
+                    }
+                }
+                1 => {
+                    if self.config.is_none() {
+                        let stats = self.stats.clone();
+                        let mut st = stats
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        st.frames_before_asc += 1;
+                        continue;
+                    }
+                    let raw = data[2..].to_vec();
+                    let now = Instant::now();
+                    let stats = self.stats.clone();
+                    let mut st = stats
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    st.raw_frames += 1;
+                    st.first_frame_at.get_or_insert(now);
+                    st.last_frame_at = Some(now);
+                    st.first_ts_ms.get_or_insert(ts);
+                    st.last_ts_ms = Some(ts);
+                    return Ok(Some(RawAacFrame {
+                        pts_ms: u64::from(ts),
+                        raw,
+                        arrival: now,
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+}

@@ -1,4 +1,4 @@
-# B 站直播音频 spike（B0/B0.1/B1a）
+# B 站直播音频 spike（B0/B0.1/B1a/B1.2a）
 
 用 Rust 验证：B 站普通直播 HTTP-FLV → 抽 type=8 音频 tag → AAC AudioSpecificConfig 补 ADTS → symphonia 0.6.1 解码 PCM。**不属于产品 workspace，不引用产品代码。**
 
@@ -9,9 +9,11 @@
 - `src/api.rs`：getRoomPlayInfo / room get_info / msg send。
 - `src/flv.rs`：最小 FLV demux；`--stream` 自定义非 seekable `MediaSource`，按需拉 tag。
 - `src/aac.rs`：ASC 解析、ADTS 头、symphonia AdtsReader + AAC 解码、流式解码入口。
+- `src/direct.rs`：B1.2a direct AacDecoder + 有界 `AacFrame` 队列 + 300ms 控制器。
 - `fixtures/`：脱敏 API 夹具，说明见 `fixtures/README.md`。
 - `measurements.jsonl`：旧 3 次未加 `only_audio` + 新 2 次 `only_audio=1` 的原始 JSON 输出（带 UTC 时间）。
 - `stream_measurements.jsonl`：B1a `--stream` 10 秒运行的原始 JSON 输出。
+- `b12a_measurements.jsonl`：B1.2a direct/300ms、direct/no-drop 诊断、AdtsReader 基线三组原始 JSON。
 
 `target/` 由根 `.gitignore` 覆盖。
 
@@ -21,6 +23,7 @@
 cargo run --release -- --probe
 cargo run --release -- --probe --room 21622811
 cargo run --release -- --stream --seconds 10 --room 21622811
+cargo run --release -- --direct --seconds 10 --room 21622811
 cargo run --release -- --dry-run-send 21622811 "B0 spike dry run"
 ```
 
@@ -77,6 +80,27 @@ cargo run --release -- --stream --seconds 10 --room 21622811
 
 `underruns` 是代理指标：首帧 PCM 之后，单次 FLV tag read 阻塞 >100ms 计 1 次；它不等于播放器级欠载，因为 `MediaSourceStream` 的 64KB ring 可能已预读。
 
+## B1.2a direct AAC + 300ms 队列（2026-11-17，房间 21622811）
+
+```bash
+cargo run --release -- --direct --seconds 10 --room 21622811
+```
+
+- 路径：`RawFrameSource`（HTTP FLV → `AacFrame { pts_ms, raw, arrival }`）→ 有界 `VecDeque`（cap 512）→ `AacDecoder` 直接吃 raw AAC + ASC extra_data；不经过 `AdtsReader`/`MediaSourceStream`。
+- 直解 API 可用：默认运行 `decode_errors=0`、PCM 非静音；数百帧级队列解码正常。
+- 控制器：250ms 周期、500ms cooldown；运行期仅 `buffer > 800ms` 丢最旧帧到 300ms；启动另做一次 300ms 裁剪（本次 1 帧/20ms，单独计数）。
+
+| path | PCM s | decode err | RMS | peak | first PCM | avg / max / min buffer | drop events | dropped | underrun |
+|---|---|---|---|---|---|---|---|---|---|
+| direct 300ms | 4.032 | 0 | 0.00426 | 0.0619 | 1ms | 357.2 / 1580 / 1 ms | 10 | 353 帧 / 7533ms | 10 次 / 5917ms |
+| direct no-drop 诊断 | 10.005 | 0 | 0.01844 | 0.2233 | 1ms | 883.9 / 1388 / 300 ms | 0 | 0 | 0 |
+| AdtsReader 基线 | 10.688 | 0 | 0.04372 | 0.4298 | 0.874ms | 64KB ring（不可见） | 0 | — | 慢读 11 次（代理） |
+
+- **300ms target 没有被压住**：平均 buffer 357ms，但 min 1ms；10 次 drop 丢掉 7.5s，10 次 underrun 共 5.9s，实际只输出 4.0s PCM。原因是 CDN 以约 1s 的块突发/停顿（B1a 中 max tag read 同为 ~1.0–1.2s），300ms 队列在块间空隙必然耗尽。
+- **direct 解码本身没问题**：`NP_DIRECT_NO_DROP=1` 诊断（仅用于区分路径，不是默认策略）在同一 10s 窗口输出 10.005s PCM、0 errors、0 underrun，buffer 平均 884ms；说明失败点是 300ms 队列/网络突发，不是 AacDecoder。
+- **AdtsReader 基线**用 64KB MediaSourceStream ring 吸收了同样的 CDN 停顿，所以 PCM 连续，但这正是 B1.2 要移除的隐藏缓冲。
+- 结论：当前 CDN 突发下 300ms target 不可连续维持。B1.2b 不应按 300ms 直接开工；至少需要 ~1s 级 jitter buffer、读侧主动 prefetch 或改变传输，并重新评估延迟目标。`b12a_measurements.jsonl` 保存了三组原始 JSON。
+
 ## 弹幕发送
 
 - `--send-danmaku <room> <text>`：仅从 `NP_BILI_SESSDATA` / `NP_BILI_JCT` 读凭据；缺失时打印 `SKIP: credentials unset` 并退出 0，不联网。
@@ -92,10 +116,14 @@ cargo run --release -- --stream --seconds 10 --room 21622811
 - `--stream` 的 `FlvAdtsSource` 是非 seekable、单线程按需拉取；只支持顺序读取，不能 seek/算总时长。
 - `--stream` 的单次 HTTP `read` 阻塞无法被 deadline 立即打断；本次最大单次 tag read 1162ms，取消仍在 869ms 内完成，但 CDN 更长停顿时退出可能超过 1s。
 - 64KB `MediaSourceStream` ring 会预读，PCM 秒数可能大于 wall 秒数；`underruns` 只是“慢 tag read”代理，不是真实播放欠载。
+- B1.2a 实测：300ms 目标在当前 CDN 突发下不可连续维持（PCM 4.0s/10s，underrun 5.9s，drop 7.5s）；no-drop 诊断需要约 884ms 平均 buffer 才连续。
+- 300ms 是控制 tick 间的目标，不是硬上限；本次观测 max buffer 1580ms，因为 250ms 控制周期内 producer 可突发。
+- direct 路径在 drop 时前跳 playhead，可能产生可闻断点/click；本 spike 无真实播放设备，未验证听感。
+- `NP_DIRECT_NO_DROP=1` 只是诊断开关，默认关闭；不能作为产品策略。
 - 只覆盖 `http_stream/flv` + legacy FLV tag；HLS、enhanced-FLV、多段 FLV 未覆盖。
 - AAC 只支持 AOT 1–4（AAC-LC/Main 等）且写 7 字节无 CRC ADTS；HE-AAC（AOT 5/29）会明确失败。
 - FLV tag 上限 2MB；`--probe` 另有总读取 32MB、14s 窗口，`--stream` 由 `--seconds` 截止。
 - 未处理时间戳回绕/断流重连；`reqwest` 总 timeout 60s，不适合长播。
-- 未测 live edge 延迟与抖动缓冲；B1a 只验证“边收边解出 PCM”，不是实时播放路径。
-- B0 缓存 400 帧后解码；**B1a 已用 `--stream` 验证边收边解**；实时播放/阻塞 MediaSource 的播放器路径仍需 B1 后续验证。
+- 未测 live edge 延迟与抖动缓冲；B1a 只验证“边收边解出 PCM”，B1.2a 无真实播放设备。
+- B0 缓存 400 帧后解码；**B1a 已用 `--stream` 验证边收边解**；**B1.2a 已验证 direct AAC 解码，但 300ms 队列策略失败**；实时播放/阻塞 MediaSource 的播放器路径仍需 B1 后续验证。
 - B0.1 本轮未执行 `--send-danmaku`；上面的真实发送记录来自 B0 阶段，仍可能受风控/额外 cookie 要求影响。
