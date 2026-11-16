@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use symphonia::core::io::MediaSource;
 
@@ -173,6 +174,11 @@ pub(crate) struct FlvAdtsSource {
     eof: bool,
     tag_buf: Vec<u8>,
     stats: LiveStreamStats,
+    first_audio_at: Option<Instant>,
+    first_audio_ts: Option<u32>,
+    last_audio_ts: Option<u32>,
+    /// 初始突发期间只保留最新 AAC 帧，避免把 CDN 的 GOP/预缓冲全播一遍。
+    keep_latest: bool,
 }
 
 impl FlvAdtsSource {
@@ -185,10 +191,19 @@ impl FlvAdtsSource {
             eof: false,
             tag_buf: Vec::new(),
             stats: LiveStreamStats::default(),
+            first_audio_at: None,
+            first_audio_ts: None,
+            last_audio_ts: None,
+            keep_latest: false,
         }
     }
 
     /// 读到首个 AAC 配置和首批 ADTS 字节。在网络线程里调用，主线程只拿成品。
+    ///
+    /// 连接建立时 B 站 CDN 常会先吐一段 GOP/预缓冲（实测 2.5s wall 收到约
+    /// 3.8s 音频）。如果直接播放，会把这段缓冲全部播完，稳定延迟约 1–2s。
+    /// 先探 300ms：媒体时间明显跑在墙钟前面时，丢弃旧帧，最多再读 2s，
+    /// 只保留最新一帧，让播放从接近 live edge 的位置开始。
     pub(crate) fn prime(&mut self) -> Result<AacConfig, LiveError> {
         let mut consumed = 0;
         while (self.config.is_none() || self.pending.is_empty()) && consumed < MAX_PRIME_TAGS {
@@ -203,6 +218,39 @@ impl FlvAdtsSource {
                 "直播流里没有 AAC AudioSpecificConfig".to_owned(),
             ));
         };
+        if self.pending.is_empty() {
+            return Err(LiveError::BadStream("直播流在首个 AAC 帧前结束".to_owned()));
+        }
+
+        let Some(first_at) = self.first_audio_at else {
+            return Ok(config);
+        };
+        let probe_deadline = first_at + Duration::from_millis(300);
+        while Instant::now() < probe_deadline && !self.eof {
+            if !self.pull_tag()? {
+                self.eof = true;
+                break;
+            }
+        }
+        let wall_ms = first_at.elapsed().as_millis() as u32;
+        let media_ms = self
+            .last_audio_ts
+            .zip(self.first_audio_ts)
+            .map(|(last, first)| last.saturating_sub(first))
+            .unwrap_or(0);
+        if media_ms > wall_ms.saturating_add(100) {
+            // 初始突发：丢掉探针读到的旧帧，只保留后续最新帧。
+            self.pending.clear();
+            self.keep_latest = true;
+            let drain_deadline = first_at + Duration::from_millis(2000);
+            while Instant::now() < drain_deadline && !self.eof {
+                if !self.pull_tag()? {
+                    self.eof = true;
+                    break;
+                }
+            }
+            self.keep_latest = false;
+        }
         if self.pending.is_empty() {
             return Err(LiveError::BadStream("直播流在首个 AAC 帧前结束".to_owned()));
         }
@@ -236,6 +284,7 @@ impl FlvAdtsSource {
 
         let tag_type = tag_header[0];
         let data_size = u24(&tag_header[1..4]);
+        let ts = (u24(&tag_header[4..7]) as u32) | ((tag_header[7] as u32) << 24);
         if data_size > MAX_TAG_BYTES {
             return Err(LiveError::BadStream(format!(
                 "FLV tag 过大：{data_size} 字节"
@@ -269,7 +318,7 @@ impl FlvAdtsSource {
             8 => {
                 self.stats.audio_tags += 1;
                 self.stats.audio_payload_bytes += data_size as u64;
-                self.push_audio(data_size)?;
+                self.push_audio(data_size, ts)?;
             }
             9 => {
                 // only_audio=1 被忽略时仍可能来视频：只计数，绝不进解码链路。
@@ -332,7 +381,7 @@ impl FlvAdtsSource {
         Ok(())
     }
 
-    fn push_audio(&mut self, data_size: usize) -> Result<(), LiveError> {
+    fn push_audio(&mut self, data_size: usize, ts: u32) -> Result<(), LiveError> {
         if data_size < 2 {
             return Err(LiveError::BadStream("音频 tag 过短".to_owned()));
         }
@@ -357,8 +406,14 @@ impl FlvAdtsSource {
                 };
                 let payload = &data[2..];
                 let header = config.adts_header(payload.len())?;
+                if self.keep_latest {
+                    self.pending.clear();
+                }
                 self.pending.extend(header);
                 self.pending.extend(payload.iter().copied());
+                self.first_audio_at.get_or_insert_with(Instant::now);
+                self.first_audio_ts.get_or_insert(ts);
+                self.last_audio_ts = Some(ts);
                 self.stats.raw_audio_frames += 1;
                 self.stats.adts_bytes += (header.len() + payload.len()) as u64;
             }
@@ -437,17 +492,17 @@ mod tests {
 
     const ASC_48K_STEREO: [u8; 4] = [0xAF, 0x00, 0x11, 0x90];
 
-    fn tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
+    fn tag_at(tag_type: u8, payload: &[u8], ts: u32) -> Vec<u8> {
         let size = payload.len();
         let mut bytes = vec![
             tag_type,
             (size >> 16) as u8,
             (size >> 8) as u8,
             size as u8,
-            0,
-            0,
-            0,
-            0,
+            (ts >> 16) as u8,
+            (ts >> 8) as u8,
+            ts as u8,
+            (ts >> 24) as u8,
             0,
             0,
             0,
@@ -455,6 +510,10 @@ mod tests {
         bytes.extend_from_slice(payload);
         bytes.extend_from_slice(&(size as u32 + 11).to_be_bytes());
         bytes
+    }
+
+    fn tag(tag_type: u8, payload: &[u8]) -> Vec<u8> {
+        tag_at(tag_type, payload, 0)
     }
 
     fn flv(flags: u8, tags: &[Vec<u8>]) -> Vec<u8> {
@@ -511,6 +570,22 @@ mod tests {
 
         assert_eq!(source.read(&mut out).unwrap(), 0);
         assert!(source.eof);
+    }
+
+    #[test]
+    fn keep_latest_discards_previous_frames() {
+        let mut source = source(synthetic_stream());
+        source.config = Some(AacConfig::parse(&ASC_48K_STEREO[2..]).unwrap());
+        source.keep_latest = true;
+        source.tag_buf = vec![0xAF, 0x01, 7];
+        source.push_audio(3, 100).unwrap();
+        source.tag_buf = vec![0xAF, 0x01, 9];
+        source.push_audio(3, 200).unwrap();
+
+        assert_eq!(source.pending.len(), 8, "only the last ADTS frame survives");
+        assert_eq!(*source.pending.back().unwrap(), 9);
+        assert_eq!(source.first_audio_ts, Some(100));
+        assert_eq!(source.last_audio_ts, Some(200));
     }
 
     #[test]
