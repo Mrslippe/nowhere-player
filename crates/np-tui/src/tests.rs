@@ -1073,6 +1073,13 @@ fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
         .collect()
 }
 
+fn row_containing(terminal: &Terminal<TestBackend>, needle: &str) -> u16 {
+    let area = terminal.backend().buffer().area;
+    (area.y..area.y + area.height)
+        .find(|y| row_text(terminal, *y).contains(needle))
+        .unwrap_or_else(|| panic!("row containing {needle:?} not found"))
+}
+
 #[test]
 fn add_hotkey_starts_pending_track_and_jumps_to_playlist_root() {
     let mut app = browse_app();
@@ -1255,6 +1262,56 @@ fn playlist_create_prompt_draws_centered_input() {
     let text = draw_text(&mut app, &mut terminal, &audio);
     assert!(text.contains("New Playlist"), "{text}");
     assert!(text.contains('花'), "{text}");
+}
+
+#[test]
+fn playlist_create_empty_input_has_no_placeholder_under_cursor() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    app.view_index = 0;
+    app.begin_playlist_create().unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let _ = draw_text(&mut app, &mut terminal, &audio);
+
+    let title_y = row_containing(&terminal, "New Playlist");
+    let input_y = title_y + 1;
+    let row = row_text(&terminal, input_y);
+    assert!(!row.contains("输入歌单名"), "{row}");
+
+    let cursor = terminal.backend().cursor_position();
+    assert_eq!(cursor.y, input_y);
+    let cell = row.chars().nth(cursor.x as usize).unwrap_or(' ');
+    assert_eq!(
+        cell, ' ',
+        "cursor sits on {cell:?} at x={}: {row}",
+        cursor.x
+    );
+}
+
+#[test]
+fn playlist_create_cjk_cursor_scrolls_inside_input() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    app.view_index = 0;
+    app.begin_playlist_create().unwrap();
+    for _ in 0..20 {
+        app.insert_playlist_char('歌');
+    }
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let _ = draw_text(&mut app, &mut terminal, &audio);
+
+    let title_y = row_containing(&terminal, "New Playlist");
+    let input_y = title_y + 1;
+    let row = row_text(&terminal, input_y);
+    let box_left = row
+        .chars()
+        .position(|character| character == '│')
+        .expect("input box border");
+    let cursor = terminal.backend().cursor_position();
+    assert_eq!(cursor.y, input_y);
+    assert_eq!(cursor.x, box_left as u16 + 34, "{row}");
+    assert!(cursor.x < box_left as u16 + 38, "{row}");
+    assert!(row.contains('歌'), "{row}");
 }
 
 #[test]

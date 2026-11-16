@@ -667,33 +667,21 @@ fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let chars: Vec<char> = input.value.chars().collect();
     let cursor = input.cursor.min(chars.len());
     let width = usize::from(content.width);
-    let start = if cursor >= width {
-        cursor + 1 - width
-    } else {
-        0
-    };
-    let end = (start + width).min(chars.len());
+    let (start, end) = input_window(&chars, cursor, width);
     let mut spans = Vec::new();
-    if chars.is_empty() {
-        spans.push(TuiSpan::styled(
-            "输入歌单名",
-            Style::default().fg(app.palette.muted),
-        ));
-    } else {
-        for (index, character) in chars.iter().enumerate().take(end).skip(start) {
-            if index == cursor {
-                spans.push(TuiSpan::styled(
-                    character.to_string(),
-                    Style::default()
-                        .bg(app.palette.fg)
-                        .fg(app.palette.bg.unwrap_or(Color::Reset)),
-                ));
-            } else {
-                spans.push(TuiSpan::raw(character.to_string()));
-            }
+    for (index, character) in chars.iter().enumerate().take(end).skip(start) {
+        if index == cursor {
+            spans.push(TuiSpan::styled(
+                character.to_string(),
+                Style::default()
+                    .bg(app.palette.fg)
+                    .fg(app.palette.bg.unwrap_or(Color::Reset)),
+            ));
+        } else {
+            spans.push(TuiSpan::raw(character.to_string()));
         }
     }
-    if cursor == chars.len() {
+    if cursor == chars.len() && cursor - start < width {
         spans.push(TuiSpan::styled(
             " ",
             Style::default()
