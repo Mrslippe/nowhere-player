@@ -93,7 +93,7 @@ impl Player {
         self.engine.seek(position_ms)
     }
 
-    /// 停止：淡出、清空缓冲并回到 0 位置（保持暂停）。
+    /// 停止：淡出并保持暂停；可 seek 的源回到 0 位置，直播只暂停。
     pub fn stop(&self) -> Result<(), AudioError> {
         self.engine.stop()
     }
