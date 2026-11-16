@@ -1,34 +1,29 @@
-//! 最小 HTTP-FLV → ADTS 适配。
+//! 最小 HTTP-FLV 解复用：只产出 raw AAC 帧。
 //!
-//! 只处理 legacy FLV tag：type=8 音频转 ADTS，type=9 视频只计数并丢弃，
-//! type=18 script 忽略。输出是顺序、不可 seek 的字节流，交给
-//! `symphonia` 的 `AdtsReader`。
+//! 只处理 legacy FLV tag：type=8 音频里取 AAC raw frame（**不含 ADTS 头**），
+//! type=9 视频只计数并丢弃，type=18 script 忽略。输出直接交给 `source` 里的
+//! `symphonia` `AacDecoder`，不再经过 `MediaSourceStream` / `AdtsReader`，所以
+//! 中间缓冲就是 `queue` 里的有界帧队列，大小可观测、可裁剪。
 
 use std::collections::VecDeque;
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
-use symphonia::core::io::MediaSource;
+use std::io::{self, ErrorKind, Read};
 
 use crate::error::LiveError;
+use crate::metrics::LiveMetrics;
 
-/// 单个 FLV tag 的合理上限（与 B0/B1a 一致）。
+/// 单个 FLV tag 的合理上限（与 B0/B1 一致）。
 const MAX_TAG_BYTES: usize = 2 * 1024 * 1024;
-/// `prime` 最多消费的 tag 数，避免异常流把准备线程卡住。
-const MAX_PRIME_TAGS: u32 = 64;
 
 const SAMPLE_RATES: [u32; 13] = [
     96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
 ];
 
-/// FLV 里 AAC 的 AudioSpecificConfig。
+/// FLV 里 AAC 的 AudioSpecificConfig；直接作为解码器 `extra_data`。
 #[derive(Debug, Clone)]
 pub(crate) struct AacConfig {
-    aot: u8,
-    sf_index: u8,
     sample_rate: u32,
     channel_config: u8,
+    asc: Vec<u8>,
 }
 
 impl AacConfig {
@@ -47,7 +42,7 @@ impl AacConfig {
         };
         if aot == 5 || aot == 29 {
             return Err(LiveError::UnsupportedAudio(format!(
-                "AOT {aot}（HE-AAC/SBR）无法用 ADTS 表达"
+                "AOT {aot}（HE-AAC/SBR）暂不支持"
             )));
         }
         if !(1..=4).contains(&aot) {
@@ -60,14 +55,18 @@ impl AacConfig {
             .read(4)
             .ok_or_else(|| LiveError::UnsupportedAudio("ASC 缺少采样率索引".to_owned()))?
             as u8;
-        if sf_index == 15 {
-            return Err(LiveError::UnsupportedAudio(
-                "ASC 显式采样率无法用 ADTS 表达".to_owned(),
-            ));
+        let sample_rate = if sf_index == 15 {
+            reader
+                .read(24)
+                .ok_or_else(|| LiveError::UnsupportedAudio("ASC 缺少显式采样率".to_owned()))?
+        } else {
+            *SAMPLE_RATES
+                .get(usize::from(sf_index))
+                .ok_or_else(|| LiveError::UnsupportedAudio(format!("非法采样率索引 {sf_index}")))?
+        };
+        if sample_rate == 0 {
+            return Err(LiveError::UnsupportedAudio("采样率为 0".to_owned()));
         }
-        let sample_rate = *SAMPLE_RATES
-            .get(sf_index as usize)
-            .ok_or_else(|| LiveError::UnsupportedAudio(format!("非法采样率索引 {sf_index}")))?;
 
         let channel_config = reader.read(4).ok_or_else(|| {
             LiveError::UnsupportedAudio("ASC 缺少 channelConfiguration".to_owned())
@@ -84,10 +83,9 @@ impl AacConfig {
         }
 
         Ok(Self {
-            aot: aot as u8,
-            sf_index,
             sample_rate,
             channel_config,
+            asc: asc.to_vec(),
         })
     }
 
@@ -96,7 +94,7 @@ impl AacConfig {
         self.sample_rate
     }
 
-    /// 解码后的声道数；ADTS 的 channelConfiguration 7 表示 7.1（8 声道）。
+    /// 解码后的声道数；channelConfiguration 7 表示 7.1（8 声道）。
     pub(crate) fn channels(&self) -> u16 {
         match self.channel_config {
             7 => 8,
@@ -104,26 +102,9 @@ impl AacConfig {
         }
     }
 
-    /// 7 字节无 CRC 的 ADTS header。
-    fn adts_header(&self, payload_len: usize) -> Result<[u8; 7], LiveError> {
-        let frame_len = payload_len + 7;
-        if frame_len > 0x1FFF {
-            return Err(LiveError::BadStream(format!(
-                "AAC 帧过大，无法写入 ADTS：{frame_len} 字节"
-            )));
-        }
-        let profile = self.aot - 1;
-        let channel = self.channel_config;
-        let frame_len = frame_len as u32;
-        let mut header = [0u8; 7];
-        header[0] = 0xFF;
-        header[1] = 0xF1; // MPEG-4, layer 0, no CRC
-        header[2] = (profile << 6) | ((self.sf_index & 0x0F) << 2) | ((channel >> 2) & 0x01);
-        header[3] = ((channel & 0x03) << 6) | ((frame_len >> 11) as u8 & 0x03);
-        header[4] = ((frame_len >> 3) & 0xFF) as u8;
-        header[5] = (((frame_len & 0x07) << 5) as u8) | 0x1F;
-        header[6] = 0xFC;
-        Ok(header)
+    /// 交给 `AacDecoder` 的 `extra_data`。
+    pub(crate) fn asc(&self) -> &[u8] {
+        &self.asc
     }
 }
 
@@ -145,121 +126,68 @@ impl BitReader<'_> {
     }
 }
 
-/// 直播流的轻量诊断计数。
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct LiveStreamStats {
-    pub(crate) flv_flags: u8,
-    pub(crate) tags_total: u64,
-    pub(crate) audio_tags: u64,
-    pub(crate) video_tags: u64,
-    pub(crate) script_tags: u64,
-    pub(crate) other_tags: u64,
-    pub(crate) audio_payload_bytes: u64,
-    pub(crate) video_payload_bytes: u64,
-    pub(crate) sequence_headers: u64,
-    pub(crate) raw_audio_frames: u64,
-    pub(crate) frames_before_asc: u64,
-    pub(crate) adts_bytes: u64,
+/// 一帧原始 AAC（无 ADTS 头），`pts_ms` 来自 FLV tag 时间戳。
+#[derive(Debug, Clone)]
+pub(crate) struct AacFrame {
+    pub(crate) pts_ms: u64,
+    pub(crate) raw: Vec<u8>,
 }
 
-/// 从 HTTP 长连接按需拉 FLV tag，产出 ADTS 字节流。
+/// 从 HTTP 长连接按需拉 FLV tag，产出 raw AAC 帧。
 ///
-/// `MediaSource` 要求 `Send + Sync`，所以底层 reader 放在 `Mutex` 里；
-/// 实际只有解码线程顺序读取，不构成竞争。
-pub(crate) struct FlvAdtsSource {
-    reader: Mutex<Box<dyn Read + Send>>,
-    pending: VecDeque<u8>,
+/// 只被网络线程独占使用，所以不需要 `Mutex` / `MediaSource` 包装。
+pub(crate) struct FlvFrameSource {
+    reader: Box<dyn Read + Send>,
     config: Option<AacConfig>,
     header_done: bool,
     eof: bool,
     tag_buf: Vec<u8>,
-    stats: LiveStreamStats,
-    first_audio_at: Option<Instant>,
-    first_audio_ts: Option<u32>,
-    last_audio_ts: Option<u32>,
-    /// 初始突发期间只保留最新 AAC 帧，避免把 CDN 的 GOP/预缓冲全播一遍。
-    keep_latest: bool,
+    pending: VecDeque<AacFrame>,
+    metrics: LiveMetrics,
 }
 
-impl FlvAdtsSource {
-    pub(crate) fn new(reader: Box<dyn Read + Send>) -> Self {
+impl FlvFrameSource {
+    pub(crate) fn new(reader: Box<dyn Read + Send>, metrics: LiveMetrics) -> Self {
         Self {
-            reader: Mutex::new(reader),
-            pending: VecDeque::new(),
+            reader,
             config: None,
             header_done: false,
             eof: false,
             tag_buf: Vec::new(),
-            stats: LiveStreamStats::default(),
-            first_audio_at: None,
-            first_audio_ts: None,
-            last_audio_ts: None,
-            keep_latest: false,
+            pending: VecDeque::new(),
+            metrics,
         }
     }
 
-    /// 读到首个 AAC 配置和首批 ADTS 字节。在网络线程里调用，主线程只拿成品。
+    /// 读 FLV 头并扫描到 AAC `AudioSpecificConfig`。
     ///
-    /// 连接建立时 B 站 CDN 常会先吐一段 GOP/预缓冲（实测 2.5s wall 收到约
-    /// 3.8s 音频）。如果直接播放，会把这段缓冲全部播完，稳定延迟约 1–2s。
-    /// 先探 300ms：媒体时间明显跑在墙钟前面时，丢弃旧帧，最多再读 2s，
-    /// 只保留最新一帧，让播放从接近 live edge 的位置开始。
-    pub(crate) fn prime(&mut self) -> Result<AacConfig, LiveError> {
-        let mut consumed = 0;
-        while (self.config.is_none() || self.pending.is_empty()) && consumed < MAX_PRIME_TAGS {
-            if self.eof || !self.pull_tag()? {
-                self.eof = true;
-                break;
+    /// 可能阻塞在网络读取上，只允许在准备线程调用。
+    pub(crate) fn open(
+        reader: Box<dyn Read + Send>,
+        metrics: LiveMetrics,
+    ) -> Result<(Self, AacConfig), LiveError> {
+        let mut source = Self::new(reader, metrics);
+        while source.config.is_none() && !source.eof {
+            if !source.pull_tag()? {
+                source.eof = true;
             }
-            consumed += 1;
         }
-        let Some(config) = self.config.clone() else {
-            return Err(LiveError::UnsupportedAudio(
+        match source.config.clone() {
+            Some(config) => Ok((source, config)),
+            None => Err(LiveError::UnsupportedAudio(
                 "直播流里没有 AAC AudioSpecificConfig".to_owned(),
-            ));
-        };
-        if self.pending.is_empty() {
-            return Err(LiveError::BadStream("直播流在首个 AAC 帧前结束".to_owned()));
+            )),
         }
+    }
 
-        let Some(first_at) = self.first_audio_at else {
-            return Ok(config);
-        };
-        let probe_deadline = first_at + Duration::from_millis(300);
-        while Instant::now() < probe_deadline && !self.eof {
+    /// 返回下一帧 raw AAC；`None` 表示干净 EOF。
+    pub(crate) fn next_frame(&mut self) -> Result<Option<AacFrame>, LiveError> {
+        while self.pending.is_empty() && !self.eof {
             if !self.pull_tag()? {
                 self.eof = true;
-                break;
             }
         }
-        let wall_ms = first_at.elapsed().as_millis() as u32;
-        let media_ms = self
-            .last_audio_ts
-            .zip(self.first_audio_ts)
-            .map(|(last, first)| last.saturating_sub(first))
-            .unwrap_or(0);
-        if media_ms > wall_ms.saturating_add(100) {
-            // 初始突发：丢掉探针读到的旧帧，只保留后续最新帧。
-            self.pending.clear();
-            self.keep_latest = true;
-            let drain_deadline = first_at + Duration::from_millis(2000);
-            while Instant::now() < drain_deadline && !self.eof {
-                if !self.pull_tag()? {
-                    self.eof = true;
-                    break;
-                }
-            }
-            self.keep_latest = false;
-        }
-        if self.pending.is_empty() {
-            return Err(LiveError::BadStream("直播流在首个 AAC 帧前结束".to_owned()));
-        }
-        Ok(config)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn stats(&self) -> LiveStreamStats {
-        self.stats
+        Ok(self.pending.pop_front())
     }
 
     /// 读一个 FLV tag；`false` 表示干净 EOF。
@@ -269,10 +197,7 @@ impl FlvAdtsSource {
         }
 
         let mut tag_header = [0u8; 11];
-        let read = {
-            let mut reader = self.reader();
-            read_upto(&mut **reader, &mut tag_header)?
-        };
+        let read = read_upto(&mut *self.reader, &mut tag_header)?;
         if read == 0 {
             return Ok(false);
         }
@@ -284,7 +209,7 @@ impl FlvAdtsSource {
 
         let tag_type = tag_header[0];
         let data_size = u24(&tag_header[1..4]);
-        let ts = (u24(&tag_header[4..7]) as u32) | ((tag_header[7] as u32) << 24);
+        let timestamp = (u24(&tag_header[4..7]) as u32) | (u32::from(tag_header[7]) << 24);
         if data_size > MAX_TAG_BYTES {
             return Err(LiveError::BadStream(format!(
                 "FLV tag 过大：{data_size} 字节"
@@ -292,57 +217,33 @@ impl FlvAdtsSource {
         }
 
         self.tag_buf.resize(data_size, 0);
-        let read = {
-            let mut reader = self
-                .reader
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            read_upto(&mut **reader, &mut self.tag_buf)?
-        };
+        let read = read_upto(&mut *self.reader, &mut self.tag_buf)?;
         if read != data_size {
             return Err(LiveError::BadStream(format!(
                 "FLV tag 内容截断：{read}/{data_size} 字节"
             )));
         }
         let mut previous = [0u8; 4];
-        let read = {
-            let mut reader = self.reader();
-            read_upto(&mut **reader, &mut previous)?
-        };
+        let read = read_upto(&mut *self.reader, &mut previous)?;
         if read != previous.len() {
             return Err(LiveError::BadStream("FLV PreviousTagSize 截断".to_owned()));
         }
 
-        self.stats.tags_total += 1;
         match tag_type {
-            8 => {
-                self.stats.audio_tags += 1;
-                self.stats.audio_payload_bytes += data_size as u64;
-                self.push_audio(data_size, ts)?;
-            }
+            8 => self.push_audio(data_size, timestamp)?,
             9 => {
                 // only_audio=1 被忽略时仍可能来视频：只计数，绝不进解码链路。
-                self.stats.video_tags += 1;
-                self.stats.video_payload_bytes += data_size as u64;
+                self.metrics.note_video_tag();
             }
-            18 => self.stats.script_tags += 1,
-            _ => self.stats.other_tags += 1,
+            18 => {}
+            _ => {}
         }
         Ok(true)
     }
 
-    fn reader(&self) -> std::sync::MutexGuard<'_, Box<dyn Read + Send>> {
-        self.reader
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     fn read_header(&mut self) -> Result<(), LiveError> {
         let mut header = [0u8; 9];
-        let read = {
-            let mut reader = self.reader();
-            read_upto(&mut **reader, &mut header)?
-        };
+        let read = read_upto(&mut *self.reader, &mut header)?;
         if read != header.len() {
             return Err(LiveError::BadStream(format!("FLV 头截断：{read}/9 字节")));
         }
@@ -352,7 +253,6 @@ impl FlvAdtsSource {
                 &header[0..3]
             )));
         }
-        self.stats.flv_flags = header[4];
         let data_offset = u32::from_be_bytes([header[5], header[6], header[7], header[8]]) as usize;
         if !(9..=4096).contains(&data_offset) {
             return Err(LiveError::BadStream(format!(
@@ -361,19 +261,13 @@ impl FlvAdtsSource {
         }
         if data_offset > 9 {
             let mut extended = vec![0u8; data_offset - 9];
-            let read = {
-                let mut reader = self.reader();
-                read_upto(&mut **reader, &mut extended)?
-            };
+            let read = read_upto(&mut *self.reader, &mut extended)?;
             if read != extended.len() {
                 return Err(LiveError::BadStream("FLV 扩展头截断".to_owned()));
             }
         }
         let mut previous = [0u8; 4];
-        let read = {
-            let mut reader = self.reader();
-            read_upto(&mut **reader, &mut previous)?
-        };
+        let read = read_upto(&mut *self.reader, &mut previous)?;
         if read != previous.len() {
             return Err(LiveError::BadStream("FLV PreviousTagSize0 截断".to_owned()));
         }
@@ -381,7 +275,7 @@ impl FlvAdtsSource {
         Ok(())
     }
 
-    fn push_audio(&mut self, data_size: usize, ts: u32) -> Result<(), LiveError> {
+    fn push_audio(&mut self, data_size: usize, timestamp: u32) -> Result<(), LiveError> {
         if data_size < 2 {
             return Err(LiveError::BadStream("音频 tag 过短".to_owned()));
         }
@@ -394,77 +288,25 @@ impl FlvAdtsSource {
         }
         match data[1] {
             0 => {
-                self.stats.sequence_headers += 1;
+                // 重复的 ASC 只在首次解析；直播中改配置需要重建解码器，B1.2 不做。
                 if self.config.is_none() {
                     self.config = Some(AacConfig::parse(&data[2..])?);
                 }
             }
             1 => {
-                let Some(config) = &self.config else {
-                    self.stats.frames_before_asc += 1;
+                if self.config.is_none() {
                     return Ok(());
-                };
-                let payload = &data[2..];
-                let header = config.adts_header(payload.len())?;
-                if self.keep_latest {
-                    self.pending.clear();
                 }
-                self.pending.extend(header);
-                self.pending.extend(payload.iter().copied());
-                self.first_audio_at.get_or_insert_with(Instant::now);
-                self.first_audio_ts.get_or_insert(ts);
-                self.last_audio_ts = Some(ts);
-                self.stats.raw_audio_frames += 1;
-                self.stats.adts_bytes += (header.len() + payload.len()) as u64;
+                self.pending.push_back(AacFrame {
+                    pts_ms: u64::from(timestamp),
+                    raw: data[2..].to_vec(),
+                });
+                self.metrics.note_frame();
             }
-            _ => {
-                // 其他 AAC 包类型（如 end-of-sequence）与播放无关。
-            }
+            // 其他 AAC 包类型（如 end-of-sequence）与播放无关。
+            _ => {}
         }
         Ok(())
-    }
-}
-
-impl Read for FlvAdtsSource {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        while self.pending.is_empty() && !self.eof {
-            match self.pull_tag() {
-                Ok(true) => {}
-                Ok(false) => self.eof = true,
-                Err(error) => {
-                    self.eof = true;
-                    return Err(io::Error::new(ErrorKind::InvalidData, error.to_string()));
-                }
-            }
-        }
-        let mut written = 0;
-        while written < buf.len() {
-            let Some(byte) = self.pending.pop_front() else {
-                break;
-            };
-            buf[written] = byte;
-            written += 1;
-        }
-        Ok(written)
-    }
-}
-
-impl Seek for FlvAdtsSource {
-    fn seek(&mut self, _position: SeekFrom) -> io::Result<u64> {
-        Err(io::Error::new(ErrorKind::Unsupported, "直播流不可 seek"))
-    }
-}
-
-impl MediaSource for FlvAdtsSource {
-    fn is_seekable(&self) -> bool {
-        false
-    }
-
-    fn byte_len(&self) -> Option<u64> {
-        None
     }
 }
 
@@ -527,103 +369,115 @@ mod tests {
         bytes
     }
 
+    fn audio_frame(payload: &[u8]) -> Vec<u8> {
+        let mut tag_payload = vec![0xAF, 0x01];
+        tag_payload.extend_from_slice(payload);
+        tag_payload
+    }
+
     fn synthetic_stream() -> Vec<u8> {
-        let mut audio = vec![0xAF, 0x01];
-        audio.extend_from_slice(&[0x21, 0x10, 0x56, 0xE5, 0x00, 0x11]);
         flv(
             4,
             &[
                 tag(18, b"\x00\x00\x00\x00\x00"),
                 tag(8, &ASC_48K_STEREO),
                 tag(9, b"\x17\x00\x00\x00\x00\xAA"),
-                tag(8, &audio),
+                tag_at(8, &audio_frame(&[0x21, 0x10, 0x56, 0xE5, 0x00, 0x11]), 21),
             ],
         )
     }
 
-    fn source(bytes: Vec<u8>) -> FlvAdtsSource {
-        FlvAdtsSource::new(Box::new(Cursor::new(bytes)))
+    fn open(bytes: Vec<u8>) -> Result<(FlvFrameSource, AacConfig, LiveMetrics), LiveError> {
+        let metrics = LiveMetrics::default();
+        let (source, config) = FlvFrameSource::open(Box::new(Cursor::new(bytes)), metrics.clone())?;
+        Ok((source, config, metrics))
     }
 
     #[test]
-    fn prime_parses_asc_and_leaves_one_adts_frame() {
-        let mut source = source(synthetic_stream());
-        let config = source.prime().expect("AAC config");
-        assert_eq!(config.sample_rate, 48_000);
+    fn parses_asc_and_emits_raw_frames_without_adts_headers() {
+        let (mut source, config, metrics) = open(synthetic_stream()).expect("AAC config");
+        assert_eq!(config.sample_rate(), 48_000);
         assert_eq!(config.channels(), 2);
-        assert_eq!(config.aot, 2);
-        assert_eq!(source.stats().audio_tags, 2);
-        assert_eq!(source.stats().video_tags, 1);
-        assert_eq!(source.stats().video_payload_bytes, 6);
-        assert_eq!(source.stats().raw_audio_frames, 1);
 
-        let mut out = [0u8; 64];
-        let read = source.read(&mut out).unwrap();
-        assert_eq!(read, 7 + 6);
-        assert_eq!(&out[..2], &[0xFF, 0xF1]);
-        assert_eq!(out[2], 0x4C); // AAC-LC, 48 kHz, stereo
-        let frame_len = ((usize::from(out[3] & 0x03)) << 11)
-            | (usize::from(out[4]) << 3)
-            | (usize::from(out[5]) >> 5);
-        assert_eq!(frame_len, 7 + 6);
-        assert_eq!(&out[7..13], &[0x21, 0x10, 0x56, 0xE5, 0x00, 0x11]);
-
-        assert_eq!(source.read(&mut out).unwrap(), 0);
-        assert!(source.eof);
+        let frame = source.next_frame().unwrap().expect("one raw frame");
+        assert_eq!(frame.pts_ms, 21);
+        assert_eq!(frame.raw, [0x21, 0x10, 0x56, 0xE5, 0x00, 0x11]);
+        // 没有 7 字节 ADTS 头：raw 就是 tag 里 ASC 之后的内容。
+        assert_ne!(frame.raw[0], 0xFF);
+        assert!(source.next_frame().unwrap().is_none());
+        assert_eq!(metrics.frames_received(), 1);
+        assert_eq!(metrics.video_tags(), 1);
     }
 
     #[test]
-    fn keep_latest_discards_previous_frames() {
-        let mut source = source(synthetic_stream());
-        source.config = Some(AacConfig::parse(&ASC_48K_STEREO[2..]).unwrap());
-        source.keep_latest = true;
-        source.tag_buf = vec![0xAF, 0x01, 7];
-        source.push_audio(3, 100).unwrap();
-        source.tag_buf = vec![0xAF, 0x01, 9];
-        source.push_audio(3, 200).unwrap();
-
-        assert_eq!(source.pending.len(), 8, "only the last ADTS frame survives");
-        assert_eq!(*source.pending.back().unwrap(), 9);
-        assert_eq!(source.first_audio_ts, Some(100));
-        assert_eq!(source.last_audio_ts, Some(200));
+    fn video_tags_are_counted_but_never_emitted() {
+        let (mut source, _config, metrics) = open(synthetic_stream()).unwrap();
+        let mut frames = 0;
+        while source.next_frame().unwrap().is_some() {
+            frames += 1;
+        }
+        assert_eq!(frames, 1);
+        assert_eq!(metrics.video_tags(), 1);
     }
 
     #[test]
-    fn video_tags_are_counted_but_never_enter_the_adts_stream() {
-        let mut source = source(synthetic_stream());
-        source.prime().unwrap();
-        let mut adts = Vec::new();
-        source.read_to_end(&mut adts).unwrap();
-        assert_eq!(adts.len(), 13);
-        assert_eq!(source.stats().video_tags, 1);
-        assert_eq!(source.stats().script_tags, 1);
-        assert_eq!(source.stats().tags_total, 4);
+    fn repeats_of_the_sequence_header_do_not_duplicate_frames() {
+        let payload = audio_frame(&[0x21, 0x10]);
+        let bytes = flv(
+            4,
+            &[
+                tag(8, &ASC_48K_STEREO),
+                tag(8, &ASC_48K_STEREO),
+                tag_at(8, &payload, 10),
+                tag_at(8, &payload, 31),
+            ],
+        );
+        let (mut source, _config, metrics) = open(bytes).unwrap();
+        let first = source.next_frame().unwrap().unwrap();
+        let second = source.next_frame().unwrap().unwrap();
+        assert_eq!((first.pts_ms, second.pts_ms), (10, 31));
+        assert_eq!(metrics.frames_received(), 2);
     }
 
     #[test]
-    fn live_source_is_not_seekable() {
-        let source = source(synthetic_stream());
-        assert!(!source.is_seekable());
-        assert!(source.byte_len().is_none());
+    fn frames_before_the_sequence_header_are_skipped() {
+        let bytes = flv(
+            4,
+            &[
+                tag(8, &audio_frame(&[0x21])),
+                tag(8, &ASC_48K_STEREO),
+                tag(8, &audio_frame(&[0x22])),
+            ],
+        );
+        let (mut source, _config, metrics) = open(bytes).unwrap();
+        assert_eq!(source.next_frame().unwrap().unwrap().raw, [0x22]);
+        assert_eq!(metrics.frames_received(), 1);
     }
 
     #[test]
     fn he_aac_config_is_rejected_with_a_readable_error() {
         let bytes = flv(4, &[tag(8, &[0xAF, 0x00, 0x2B, 0x92, 0x08, 0x00])]);
-        let error = source(bytes).prime().unwrap_err();
+        let error = open(bytes).err().expect("expected an error");
+        assert!(matches!(error, LiveError::UnsupportedAudio(_)));
+    }
+
+    #[test]
+    fn non_aac_audio_is_rejected() {
+        let bytes = flv(4, &[tag(8, &[0x2F, 0x00, 0x00])]);
+        let error = open(bytes).err().expect("expected an error");
         assert!(matches!(error, LiveError::UnsupportedAudio(_)));
     }
 
     #[test]
     fn non_flv_stream_is_rejected() {
-        let error = source(vec![0u8; 9]).prime().unwrap_err();
+        let error = open(vec![0u8; 9]).err().expect("expected an error");
         assert!(matches!(error, LiveError::BadStream(_)));
     }
 
     #[test]
     fn video_only_stream_has_no_audio() {
         let bytes = flv(1, &[tag(9, b"\x17\x00\x00\x00\x00\xAA")]);
-        let error = source(bytes).prime().unwrap_err();
+        let error = open(bytes).err().expect("expected an error");
         assert!(matches!(error, LiveError::UnsupportedAudio(_)));
     }
 
@@ -631,7 +485,9 @@ mod tests {
     fn truncated_tag_payload_is_rejected() {
         let mut bytes = synthetic_stream();
         bytes.truncate(bytes.len() - 4);
-        let error = source(bytes).prime().unwrap_err();
-        assert!(matches!(error, LiveError::BadStream(_) | LiveError::Io(_)));
+        // 截断在最后一个 audio tag 上：open 已经拿到 ASC，读取帧时才撞上错误。
+        let (mut source, _config, _metrics) = open(bytes).expect("config still parses");
+        let error = source.next_frame().expect_err("expected an error");
+        assert!(matches!(error, LiveError::BadStream(_)));
     }
 }

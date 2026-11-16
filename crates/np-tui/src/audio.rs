@@ -41,6 +41,7 @@ pub struct TuiAudio {
     live_cancel: RefCell<Option<Arc<AtomicBool>>>,
     live_room: Cell<u64>,
     live_note: RefCell<Option<String>>,
+    live_metrics: RefCell<Option<np_live::LiveMetrics>>,
 }
 
 impl TuiAudio {
@@ -78,6 +79,7 @@ impl TuiAudio {
             live_cancel: RefCell::new(None),
             live_room: Cell::new(0),
             live_note: RefCell::new(None),
+            live_metrics: RefCell::new(None),
         }
     }
 
@@ -120,6 +122,19 @@ impl TuiAudio {
         self.live_room.get()
     }
 
+    /// 直播队列里还没播的音频长度（毫秒）；非直播或还没接上时 `None`。
+    ///
+    /// 目标 900ms、上限 1400ms、下限 500ms（T-0091 B1.2）。
+    pub(crate) fn live_buffer_ms(&self) -> Option<u64> {
+        if !self.is_live() {
+            return None;
+        }
+        self.live_metrics
+            .borrow()
+            .as_ref()
+            .map(np_live::LiveMetrics::buffer_ms)
+    }
+
     /// 取走一次性的直播状态文本（成功 / 失败 / 结束）。
     pub(crate) fn take_live_note(&self) -> Option<String> {
         self.live_note.borrow_mut().take()
@@ -139,6 +154,7 @@ impl TuiAudio {
         *self.artist.borrow_mut() = "B站直播".to_owned();
         self.duration_ms.set(None);
         self.live_note.borrow_mut().take();
+        *self.live_metrics.borrow_mut() = None;
 
         let cancel = Arc::new(AtomicBool::new(false));
         *self.live_cancel.borrow_mut() = Some(Arc::clone(&cancel));
@@ -191,6 +207,7 @@ impl TuiAudio {
 
         match result {
             Ok(prepared) => {
+                let metrics = prepared.metrics.clone();
                 let title = if prepared.title.trim().is_empty() {
                     format!("直播 {}", prepared.room_id)
                 } else {
@@ -212,6 +229,7 @@ impl TuiAudio {
                         self.playing.set(true);
                         self.duration_ms.set(None);
                         self.live_state.set(LiveState::Playing);
+                        *self.live_metrics.borrow_mut() = Some(metrics);
                         *self.title.borrow_mut() = title.clone();
                         *self.artist.borrow_mut() = "B站直播".to_owned();
                         *self.live_note.borrow_mut() = Some(format!("直播：{title}"));
@@ -260,6 +278,7 @@ impl TuiAudio {
             cancel.store(true, Ordering::Release);
         }
         *self.live_rx.borrow_mut() = None;
+        *self.live_metrics.borrow_mut() = None;
         self.live_state.set(LiveState::Idle);
     }
 
@@ -721,6 +740,7 @@ impl TuiAudio {
         self.duration_ms.set(None);
         *self.title.borrow_mut() = title.to_owned();
         *self.artist.borrow_mut() = "B站直播".to_owned();
+        *self.live_metrics.borrow_mut() = Some(np_live::LiveMetrics::default());
     }
 }
 

@@ -1753,6 +1753,22 @@ fn live_player_bar_shows_live_instead_of_zero_time() {
 }
 
 #[test]
+fn live_buffer_is_exposed_only_while_live() {
+    let audio = TuiAudio::empty();
+    assert_eq!(audio.live_buffer_ms(), None, "idle has no buffer");
+
+    audio.live_for_test(21622811, "BLAST");
+    assert_eq!(
+        audio.live_buffer_ms(),
+        Some(0),
+        "live exposes the queue buffer handle"
+    );
+
+    assert!(audio.stop_live());
+    assert_eq!(audio.live_buffer_ms(), None, "stopping clears the handle");
+}
+
+#[test]
 fn stopping_live_keeps_the_queue() {
     use np_app::PlayerApi;
 

@@ -78,7 +78,7 @@ pub(crate) fn draw_player_strip(
     };
     let overlay_y = content.bottom().saturating_sub(2);
     let time = if live {
-        "LIVE".to_owned()
+        live_time_label(player.live_buffer_ms())
     } else {
         format!("{} / {}", format_time(position), format_time(duration))
     };
@@ -158,6 +158,14 @@ pub(crate) fn draw_player_strip(
             height: 1,
         },
     );
+}
+
+/// 直播时间位：`LIVE`，缓冲可读时带上队列毫秒数（B1.2 的 900ms 目标）。
+fn live_time_label(buffer_ms: Option<u64>) -> String {
+    match buffer_ms {
+        Some(ms) if ms > 0 => format!("LIVE {ms}ms"),
+        _ => "LIVE".to_owned(),
+    }
 }
 
 fn format_info_title(title: &str, artist: &str, max_width: usize) -> String {
@@ -524,7 +532,7 @@ pub(crate) fn update_spectrum(app: &mut App, player: &TuiAudio) {
 
 #[cfg(test)]
 mod tests {
-    use super::format_info_title;
+    use super::{format_info_title, live_time_label};
     use unicode_width::UnicodeWidthStr;
 
     #[test]
@@ -532,5 +540,12 @@ mod tests {
         let text = format_info_title(&"Luv(Sic)-1".repeat(8), "Nujabes", 30);
         assert!(text.contains("Nujabes"));
         assert!(UnicodeWidthStr::width(text.as_str()) <= 30);
+    }
+
+    #[test]
+    fn live_label_shows_the_queue_buffer_when_known() {
+        assert_eq!(live_time_label(None), "LIVE");
+        assert_eq!(live_time_label(Some(0)), "LIVE");
+        assert_eq!(live_time_label(Some(900)), "LIVE 900ms");
     }
 }
