@@ -1,6 +1,9 @@
 //! FLV 里的 AAC：解析 AudioSpecificConfig、补 ADTS 头、交给 symphonia 解码。
 
 use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
@@ -245,6 +248,175 @@ pub fn decode(
         rms,
         peak,
         seconds,
+    })
+}
+
+/// 流式解码结果：PCM 在第一帧解出时立即产生，不聚合成完整媒体。
+#[derive(Debug, Clone)]
+pub struct StreamDecodeResult {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub frames: u64,
+    pub packets: u64,
+    pub decode_errors: u64,
+    pub rms: f64,
+    pub peak: f64,
+    pub seconds: f64,
+    pub first_pcm_at: Option<Instant>,
+    pub reader_init_ms: u128,
+    pub loop_ms: u128,
+    pub decode_cpu_us: u128,
+    pub max_packet_gap_ms: u128,
+    pub last_error: Option<String>,
+}
+
+/// 在自定义 MediaSource（FLV -> ADTS）上跑 AdtsReader，边读边解码。
+pub fn decode_adts_media(
+    mss: MediaSourceStream<'static>,
+    started: Arc<AtomicBool>,
+) -> Result<StreamDecodeResult, String> {
+    let loop_start = Instant::now();
+    let mut reader = AdtsReader::try_new(mss, FormatOptions::default())
+        .map_err(|e| format!("open ADTS over live stream: {e}"))?;
+    let reader_init_ms = loop_start.elapsed().as_millis();
+
+    let track = reader
+        .tracks()
+        .first()
+        .ok_or("ADTS reader returned no track")?;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .cloned()
+        .ok_or("ADTS track has no audio codec parameters")?;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default().gapless(false))
+        .map_err(|e| format!("create AAC decoder: {e}"))?;
+
+    let mut sample_rate = params.sample_rate.unwrap_or(0);
+    let mut channels = params
+        .channels
+        .as_ref()
+        .map(|c| c.count())
+        .filter(|c| *c > 0)
+        .unwrap_or(0);
+
+    let mut frames = 0u64;
+    let mut packets = 0u64;
+    let mut decode_errors = 0u64;
+    let mut sum_sq = 0f64;
+    let mut sample_count = 0u64;
+    let mut peak = 0f64;
+    let mut last_error: Option<String> = None;
+    let mut first_pcm_at: Option<Instant> = None;
+    let mut last_pcm_at: Option<Instant> = None;
+    let mut max_packet_gap_ms = 0u128;
+    let mut decode_cpu_us = 0u128;
+    let mut samples: Vec<f32> = Vec::new();
+
+    loop {
+        let packet = match reader.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(e) => return Err(format!("read ADTS packet from live stream: {e}")),
+        };
+
+        let decode_started = Instant::now();
+        match decoder.decode(&packet) {
+            Ok(buf) => {
+                decode_cpu_us += decode_started.elapsed().as_micros();
+                let spec = buf.spec();
+                sample_rate = spec.rate();
+                let ch = spec.channels().count();
+                if ch > 0 {
+                    channels = ch;
+                }
+                frames += buf.frames() as u64;
+                packets += 1;
+
+                buf.copy_to_vec_interleaved::<f32>(&mut samples);
+                for s in &samples {
+                    let x = f64::from(*s);
+                    sum_sq += x * x;
+                    let a = x.abs();
+                    if a > peak {
+                        peak = a;
+                    }
+                }
+                sample_count += samples.len() as u64;
+
+                let now = Instant::now();
+                if first_pcm_at.is_none() {
+                    first_pcm_at = Some(now);
+                    started.store(true, Ordering::Relaxed);
+                }
+                if let Some(prev) = last_pcm_at {
+                    max_packet_gap_ms =
+                        max_packet_gap_ms.max(now.saturating_duration_since(prev).as_millis());
+                }
+                last_pcm_at = Some(now);
+            }
+            Err(SymphoniaError::DecodeError(m)) => {
+                decode_cpu_us += decode_started.elapsed().as_micros();
+                decode_errors += 1;
+                last_error = Some(m.to_string());
+                if decode_errors > 16 {
+                    break;
+                }
+            }
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(e) => {
+                decode_cpu_us += decode_started.elapsed().as_micros();
+                decode_errors += 1;
+                last_error = Some(e.to_string());
+                if decode_errors > 16 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let loop_ms = loop_start.elapsed().as_millis();
+    if frames == 0 {
+        return Err(format!(
+            "no PCM frames decoded from live stream (packets={packets}, errors={decode_errors}, last={})",
+            last_error.unwrap_or_else(|| "none".to_string())
+        ));
+    }
+
+    let rms = if sample_count > 0 {
+        (sum_sq / sample_count as f64).sqrt()
+    } else {
+        0.0
+    };
+    let seconds = if sample_rate > 0 {
+        frames as f64 / f64::from(sample_rate)
+    } else {
+        0.0
+    };
+
+    Ok(StreamDecodeResult {
+        sample_rate,
+        channels,
+        frames,
+        packets,
+        decode_errors,
+        rms,
+        peak,
+        seconds,
+        first_pcm_at,
+        reader_init_ms,
+        loop_ms,
+        decode_cpu_us,
+        max_packet_gap_ms,
+        last_error,
     })
 }
 
