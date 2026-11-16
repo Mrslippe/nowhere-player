@@ -201,7 +201,8 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.search_editing_input() {
         return vec![
             ("←→", "光标"),
-            ("⌫", "删除"),
+            // `⌫` 在部分终端字体里实际占两格；留两格空白，确保“删除”不贴住字形。
+            ("⌫  ", "删除"),
             ("Tab", "平台"),
             ("Enter", "搜索"),
             ("Esc", "退出输入"),
@@ -383,7 +384,6 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         app.view_index + 1
     };
     let left_count = format!(" {view_number} of {} ", app.views.len());
-    let is_search = matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Search));
     let count_style = Style::default()
         .fg(app.palette.faint)
         .add_modifier(Modifier::ITALIC);
@@ -396,19 +396,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     );
     let bottom_y = area.bottom().saturating_sub(1);
     let total = format!(" total {} ", app.filtered_row_count());
-    if is_search {
-        // Search 的结果总数放左侧，右侧留给当前平台。
-        frame
-            .buffer_mut()
-            .set_string(split.saturating_add(2), bottom_y, &total, count_style);
-        let platform = format!(" {}", app.search_platform.label());
-        let platform_style = Style::default()
-            .fg(app.palette.faint)
-            .add_modifier(Modifier::ITALIC);
-        border_text(frame, area, bottom_y, &platform, true, platform_style);
-    } else {
-        border_text(frame, area, bottom_y, &total, true, count_style);
-    }
+    border_text(frame, area, bottom_y, &total, true, count_style);
     let left = Rect {
         x: inner.x,
         y: inner.y,
@@ -777,6 +765,26 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 let cursor_x = content.x.saturating_add(display_width(&prefix) as u16);
                 frame.set_cursor_position((cursor_x, content.y));
             }
+            // 平台名嵌在 Key Words 输入框的下边框，右对齐，前后各留一格。
+            let platform = format!(" {}", app.search_platform.id_label());
+            let platform_style = Style::default()
+                .fg(app.palette.faint)
+                .add_modifier(Modifier::ITALIC);
+            border_text(
+                frame,
+                box_area,
+                box_area.bottom().saturating_sub(1),
+                &platform,
+                true,
+                platform_style,
+            );
+            // 标签后保留一格空白，再接右下角；不能把边框线直接贴在平台名后面。
+            frame.buffer_mut().set_string(
+                box_area.right().saturating_sub(2),
+                box_area.bottom().saturating_sub(1),
+                " ",
+                Style::default().fg(app.palette.line),
+            );
         }
         SearchDisplay::Searching => {
             let frames = ["◰", "◳", "◲", "◱"];

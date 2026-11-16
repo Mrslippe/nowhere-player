@@ -1397,7 +1397,7 @@ fn player_transport_buttons_reveal_keys_only_with_ctrl() {
 }
 
 #[test]
-fn search_platform_is_shown_in_list_bottom_border() {
+fn search_platform_is_shown_in_key_words_border() {
     let mut app = App::new();
     app.views = vec![ViewData {
         title: "Search".to_owned(),
@@ -1408,29 +1408,33 @@ fn search_platform_is_shown_in_list_bottom_border() {
     app.focus = Focus::List;
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
-    let compact = |text: String| {
-        text.chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
+    let has = |terminal: &Terminal<TestBackend>, needle: &str| {
+        (0..24).any(|y| {
+            let row: String = row_text(terminal, y)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            row.contains(needle)
+        })
     };
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
-    assert!(compact(row_text(&terminal, 9)).contains("全部平台"));
+    assert!(has(&terminal, "all"));
 
     app.search_platform = SearchPlatform::Netease;
     terminal.clear().unwrap();
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
-    assert!(compact(row_text(&terminal, 9)).contains("网易云"));
+    assert!(has(&terminal, "netease"));
 
     app.search_platform = SearchPlatform::Bilibili;
     terminal.clear().unwrap();
     terminal
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
-    assert!(compact(row_text(&terminal, 9)).contains("B站"));
+    assert!(has(&terminal, "bilibili"));
 }
 
 #[test]

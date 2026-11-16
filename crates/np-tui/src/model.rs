@@ -27,11 +27,12 @@ impl SearchPlatform {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    /// 与命令层 `-source` 的短名一致；嵌在 Key Words 输入框下边框。
+    pub(crate) fn id_label(self) -> &'static str {
         match self {
-            Self::All => "全部平台",
-            Self::Netease => "网易云",
-            Self::Bilibili => "B站",
+            Self::All => "all",
+            Self::Netease => "netease",
+            Self::Bilibili => "bilibili",
         }
     }
 
