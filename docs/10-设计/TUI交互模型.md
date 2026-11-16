@@ -315,3 +315,10 @@ KeyEvent + InputContext
 - `np-app` 命令层保持独立：UI 使用类型化 `Action`，不把按键拼成 `"next"` / `"play"` 命令再解析。
 
 新增键位时只改 `keymap.rs`；展示层的键名会自动跟随。
+
+## 13. 直播音频（2026-11-17，B1）
+
+- TUI-only 入口：`/live <room>` / `live <room>`，由 `np-tui` 在 `np-core` 解析前拦截；不进入命令注册表。
+- 直播独占：开始直播停止当前播放，但**不清空队列**；`next/prev/seek` 禁用，`Esc` 停止，直播结束不自动下一首。
+- Player 时间区显示 `LIVE`；直播 ring 150ms，普通文件仍 300ms。
+- B1 不做断线重连、Live 页、弹幕；这些留 B2/B3。
