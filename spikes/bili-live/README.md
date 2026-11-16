@@ -52,7 +52,7 @@ CARGO_NET_OFFLINE=true cargo run --release -- --probe
 - `--send-danmaku <room> <text>`：仅从 `NP_BILI_SESSDATA` / `NP_BILI_JCT` 读凭据；缺失时打印 `SKIP: credentials unset` 并退出 0，不联网。
 - 有凭据时 `POST https://api.live.bilibili.com/msg/send`，只打印返回 `code` / `message`，不打印 Cookie、表单或完整请求。
 - `--dry-run-send <room> <text>`：只打印字段名和长度，不联网。
-- 本次验证未执行真实发送（环境无凭据）。
+- 2026-11-17 真实发送已验证：`room 23197314`，`code=0`，`status=SENT`；只发送一次，未记录 Cookie。
 
 ## 已知风险
 
