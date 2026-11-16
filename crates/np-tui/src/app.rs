@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::TuiAudio;
 use crate::playback::{QueueItem, TrackKey};
-use crate::settings_page::settings_view;
+use crate::settings_page::{SettingsField, settings_page};
 use crate::theme::Palette;
 #[cfg(windows)]
 use crate::tray;
@@ -57,6 +57,9 @@ pub(crate) struct App {
     pub(crate) search_cursor: usize,
     pub(crate) search_input_active: bool,
     pub(crate) search_attempted: bool,
+    pub(crate) search_platform: SearchPlatform,
+    pub(crate) show_key_hints: bool,
+    pub(crate) settings_fields: Vec<SettingsField>,
     pub(crate) no_color_ignored: bool,
     playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
     playlist_prepare_rx: std::sync::mpsc::Receiver<PlaylistReady>,
@@ -110,6 +113,9 @@ impl App {
             search_cursor: 0,
             search_input_active: false,
             search_attempted: false,
+            search_platform: SearchPlatform::All,
+            show_key_hints: false,
+            settings_fields: Vec::new(),
             no_color_ignored: false,
             playlist_prepare_tx,
             playlist_prepare_rx,
@@ -281,7 +287,9 @@ impl App {
             refs: Vec::new(),
             durations: Vec::new(),
         };
-        let settings_view = settings_view(settings);
+        let settings_page = settings_page(settings);
+        self.settings_fields = settings_page.fields;
+        let settings_view = settings_page.view;
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
             .iter()
@@ -324,12 +332,19 @@ impl App {
     }
 
     pub(crate) fn refresh_settings_view(&mut self, settings: &SettingsHandle) {
+        let page = settings_page(settings);
+        self.settings_fields = page.fields;
         if let Some(index) = self
             .view_kind
             .iter()
             .position(|kind| *kind == BrowseKind::Settings)
         {
-            self.views[index] = settings_view(settings);
+            self.views[index] = page.view;
+            if self.view_index == index {
+                self.row_index = self
+                    .row_index
+                    .min(self.settings_fields.len().saturating_sub(1));
+            }
         }
     }
 
@@ -965,10 +980,15 @@ impl App {
         library: &Arc<LibraryHandle>,
         tx: &std::sync::mpsc::Sender<(u64, Block)>,
     ) {
+        // 关键词里的 `-source` 优先；没有写时沿用 Tab 选中的平台。
+        let source = draft.source.or_else(|| self.search_platform.source());
+        if let Some(source) = draft.source {
+            self.search_platform = SearchPlatform::from_source(Some(source));
+        }
         let options = np_app::SearchOptions {
             keyword: draft.keyword,
             artist: draft.artist,
-            source: draft.source,
+            source,
             limit: np_app::DEFAULT_SEARCH_RESULTS,
             local: false,
             explicit_limit: false,
@@ -1421,6 +1441,7 @@ impl App {
         {
             self.load_theme(theme, &id);
         }
+        self.refresh_settings_view(settings);
     }
 }
 

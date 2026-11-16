@@ -1,12 +1,66 @@
 use std::path::PathBuf;
 
-use np_app::PlaybackTarget;
+use np_app::{PlaybackTarget, SourceId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SearchDisplay {
     Empty { query: String },
     Searching,
     NoResults,
+}
+
+/// 全局搜索的平台过滤；Tab 在三种状态间循环，不改变已输入关键词。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SearchPlatform {
+    #[default]
+    All,
+    Netease,
+    Bilibili,
+}
+
+impl SearchPlatform {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::All => Self::Netease,
+            Self::Netease => Self::Bilibili,
+            Self::Bilibili => Self::All,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::All => "全部平台",
+            Self::Netease => "网易云",
+            Self::Bilibili => "B站",
+        }
+    }
+
+    pub(crate) fn source(self) -> Option<SourceId> {
+        match self {
+            Self::All => None,
+            Self::Netease => Some(SourceId::Netease),
+            Self::Bilibili => Some(SourceId::Bilibili),
+        }
+    }
+
+    pub(crate) fn from_source(source: Option<SourceId>) -> Self {
+        match source {
+            Some(SourceId::Netease) => Self::Netease,
+            Some(SourceId::Bilibili) => Self::Bilibili,
+            _ => Self::All,
+        }
+    }
+}
+
+/// 播放模式在 TUI 里的短符号：顺序用双右箭头，避免 `·` 被误读成占位符。
+pub(crate) fn playback_mode_symbol(id: &str) -> &'static str {
+    match id {
+        "sequential" => "⇉",
+        "list" => "↻",
+        "single" => "↺",
+        "shuffle" => "⇄",
+        _ => "·",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

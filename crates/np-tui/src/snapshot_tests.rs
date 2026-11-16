@@ -89,6 +89,46 @@ fn library_app() -> App {
     app
 }
 
+fn themed_app() -> App {
+    let mut app = App::new();
+    let api = TuiThemeApi::new(std::env::temp_dir().join("np-tui-golden-theme"));
+    app.load_theme(&api, "milkgreen");
+    app
+}
+
+fn settings_app() -> App {
+    let dir = std::env::temp_dir().join(format!(
+        "np-tui-golden-settings-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let settings = np_app::SettingsHandle::load(dir.clone());
+    let page = crate::settings_page::settings_page(&settings);
+    let _ = std::fs::remove_dir_all(dir);
+    let mut app = themed_app();
+    app.views = vec![page.view];
+    app.view_kind = vec![BrowseKind::Settings];
+    app.view_depth = vec![0];
+    app.settings_fields = page.fields;
+    app.focus = Focus::List;
+    app.row_index = 0;
+    app
+}
+
+fn search_app() -> App {
+    let mut app = themed_app();
+    app.views = vec![ViewData {
+        title: "Search".to_owned(),
+        ..ViewData::default()
+    }];
+    app.view_kind = vec![BrowseKind::Search];
+    app.view_depth = vec![0];
+    app.focus = Focus::List;
+    app.search_platform = SearchPlatform::Netease;
+    app
+}
+
 #[test]
 fn golden_library_table() {
     let mut app = library_app();
@@ -127,6 +167,20 @@ fn golden_error_block() {
         .collect::<Vec<_>>()
         .join("\n");
     check_golden("error_block.txt", &text);
+}
+
+#[test]
+fn golden_settings_72x24() {
+    let mut app = settings_app();
+    let audio = TuiAudio::empty();
+    snapshot_app("settings_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_search_72x24() {
+    let mut app = search_app();
+    let audio = TuiAudio::empty();
+    snapshot_app("search_72x24.txt", 72, 24, &mut app, &audio);
 }
 
 #[test]

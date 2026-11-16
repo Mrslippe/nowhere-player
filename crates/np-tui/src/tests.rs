@@ -1040,6 +1040,13 @@ fn draw_text(app: &mut App, terminal: &mut Terminal<TestBackend>, audio: &TuiAud
         .collect()
 }
 
+fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+    let area = terminal.backend().buffer().area;
+    (0..area.width)
+        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+        .collect()
+}
+
 #[test]
 fn add_hotkey_starts_pending_track_and_jumps_to_playlist_root() {
     let mut app = browse_app();
@@ -1205,9 +1212,10 @@ fn status_bar_prioritizes_page_specific_actions() {
     assert!(detail.contains("移除"));
 
     app.view_index = 4;
+    terminal.clear().unwrap();
     let queue = compact(&draw_text(&mut app, &mut terminal, &audio));
     assert!(queue.contains("移除"));
-    assert!(queue.contains("切歌"));
+    assert!(queue.contains("播放"));
 }
 
 #[test]
@@ -1250,7 +1258,7 @@ fn input_window_scrolls_by_display_width_for_cjk() {
 }
 
 #[test]
-fn settings_view_lists_all_known_keys_by_category() {
+fn settings_page_lists_editable_fields_by_category() {
     let dir = std::env::temp_dir().join(format!(
         "np-tui-settings-view-{}-{}",
         std::process::id(),
@@ -1258,25 +1266,39 @@ fn settings_view_lists_all_known_keys_by_category() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let settings = SettingsHandle::load(dir.clone());
-    let view = crate::settings_page::settings_view(&settings);
-    assert_eq!(view.columns, vec!["分类", "设置项", "值"]);
-    let keys: Vec<&str> = view
+    let page = crate::settings_page::settings_page(&settings);
+    assert_eq!(page.view.columns, vec!["分类", "设置项", "值"]);
+    let labels: Vec<&str> = page
+        .view
         .rows
         .iter()
         .filter_map(|row| row.get(1).map(String::as_str))
         .collect();
-    for key in [
-        "playback.volume",
-        "playback.mode",
-        "theme.id",
-        "ui.splash",
-        "tui.focusMode",
-        "startup.enabled",
-        "source.bilibili.enabled",
-        "source.netease.enabled",
+    for label in [
+        "音量",
+        "播放模式",
+        "主题",
+        "启动页",
+        "专注模式",
+        "开机自启",
+        "B站",
+        "网易云",
     ] {
-        assert!(keys.contains(&key), "missing {key}");
+        assert!(labels.contains(&label), "missing {label}");
     }
+    assert_eq!(page.fields.len(), page.view.rows.len());
+    assert!(
+        page.fields
+            .iter()
+            .all(|field| field.kind != crate::settings_page::SettingsKind::ReadOnly)
+    );
+    let mode_row = page
+        .view
+        .rows
+        .iter()
+        .find(|row| row.get(1).is_some_and(|label| label == "播放模式"))
+        .expect("mode row");
+    assert_eq!(mode_row[2], "⇉");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1291,4 +1313,190 @@ fn playback_mode_setting_round_trips() {
     assert_eq!(audio.mode_id(), "list");
     assert!(audio.set_mode_id("sequential"));
     assert_eq!(audio.mode_id(), "sequential");
+}
+
+#[test]
+fn settings_editing_updates_audio_and_saves() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-settings-edit-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let settings = SettingsHandle::load(root.clone());
+    let page = crate::settings_page::settings_page(&settings);
+    let audio = TuiAudio::empty();
+    audio.set_volume(0.5);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let mut app = App::new();
+    app.views = vec![page.view];
+    app.view_kind = vec![BrowseKind::Settings];
+    app.view_depth = vec![0];
+    app.settings_fields = page.fields;
+    app.focus = Focus::List;
+
+    app.row_index = 0;
+    crate::settings_page::adjust_setting(&mut app, -1, &audio, &settings, &theme).unwrap();
+    assert!((audio.volume() - 0.45).abs() < 0.001);
+    assert!(matches!(
+        settings.get("playback.volume"),
+        Some(np_core::SettingValue::Num(value)) if (value - 0.45).abs() < 0.001
+    ));
+
+    app.row_index = 1;
+    crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
+    assert_eq!(audio.mode_id(), "list");
+    assert_eq!(settings.get_str("playback.mode").as_deref(), Some("list"));
+    assert_eq!(app.status, "播放模式 ↻");
+
+    app.row_index = 3;
+    crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
+    assert_eq!(settings.get_bool("ui.splash"), Some(false));
+    assert_eq!(app.status, "启动页 关");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn controller_input_scrolls_when_cursor_reaches_right_edge() {
+    let mut app = App::new();
+    app.enter_command();
+    app.input = "abcdefghijklmnopqrstuvwxyz0123456789".chars().collect();
+    app.cursor = app.input.len();
+    let (line, cursor_x) = input_line(&app, 18);
+    let text = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    assert!(text.contains("0123456789"), "{text:?}");
+    assert!(!text.contains("abcdefghij"), "{text:?}");
+    assert!(cursor_x < 18, "cursor_x={cursor_x}");
+}
+
+#[test]
+fn player_transport_buttons_reveal_keys_only_with_ctrl() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    app.show_key_hints = false;
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let normal = row_text(&terminal, 22);
+    assert!(normal.contains("◀◀"), "{normal:?}");
+    assert!(normal.contains("▶▶"), "{normal:?}");
+    assert!(!normal.contains("Space"), "{normal:?}");
+
+    app.show_key_hints = true;
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let hinted = row_text(&terminal, 22);
+    assert!(hinted.contains("Space"), "{hinted:?}");
+    assert!(hinted.contains("n "), "{hinted:?}");
+}
+
+#[test]
+fn search_platform_is_shown_in_list_bottom_border() {
+    let mut app = App::new();
+    app.views = vec![ViewData {
+        title: "Search".to_owned(),
+        ..ViewData::default()
+    }];
+    app.view_kind = vec![BrowseKind::Search];
+    app.view_depth = vec![0];
+    app.focus = Focus::List;
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    let compact = |text: String| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    assert!(compact(row_text(&terminal, 9)).contains("全部平台"));
+
+    app.search_platform = SearchPlatform::Netease;
+    terminal.clear().unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    assert!(compact(row_text(&terminal, 9)).contains("网易云"));
+
+    app.search_platform = SearchPlatform::Bilibili;
+    terminal.clear().unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    assert!(compact(row_text(&terminal, 9)).contains("B站"));
+}
+
+#[test]
+fn status_bar_right_gap_follows_last_text() {
+    let mut app = browse_app();
+    app.status = "X".to_owned();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    terminal.clear().unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let row: Vec<char> = row_text(&terminal, 23).chars().collect();
+    let command = row
+        .iter()
+        .position(|character| *character == '命')
+        .expect("command hint");
+    assert_eq!(row[command + 1], ' ');
+    assert_eq!(row[command + 2], '令');
+    assert_eq!(row[command + 3], ' ');
+    assert_eq!(row[command + 4], ' ');
+    assert_eq!(row[command + 5], '━');
+}
+
+#[test]
+fn status_message_uses_highlight_style() {
+    use ratatui::style::Modifier;
+
+    let mut app = browse_app();
+    app.status = "X".to_owned();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    terminal.clear().unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let cell = (0..72)
+        .map(|x| &buffer[(x, 23)])
+        .find(|cell| cell.symbol() == "X")
+        .expect("status cell");
+    assert_eq!(cell.style().fg, Some(Palette::terminal().accent));
+    assert!(cell.style().add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn global_search_entry_reopens_input_and_clears_results() {
+    let mut app = App::new();
+    app.views = vec![ViewData {
+        title: "Search".to_owned(),
+        columns: vec!["#".to_owned()],
+        rows: vec![vec!["1".to_owned()]],
+        ..ViewData::default()
+    }];
+    app.view_kind = vec![BrowseKind::Search];
+    app.view_depth = vec![0];
+    app.focus = Focus::Browse;
+    app.search_input = "晴天".to_owned();
+    app.search_attempted = true;
+    crate::search_ui::open_search(&mut app);
+    assert_eq!(app.view_index, 0);
+    assert_eq!(app.focus, Focus::List);
+    assert!(app.search_editing_input());
+    assert!(app.views[0].rows.is_empty());
+    assert_eq!(app.search_platform, SearchPlatform::All);
+    assert_eq!(SearchPlatform::All.next(), SearchPlatform::Netease);
+    assert_eq!(SearchPlatform::Netease.next(), SearchPlatform::Bilibili);
+    assert_eq!(SearchPlatform::Bilibili.next(), SearchPlatform::All);
 }

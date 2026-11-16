@@ -18,6 +18,12 @@
 - 状态栏上下文改造、歌单创建/删除、Enter 二次确认（745 tests）
 - CJK 输入滚动修复、[ ] 跳转 5s、m 模式循环
 - Controller 按需浮层、Player +3 行、Settings 分类、模式持久化
+- Player 下边框常驻播放按钮；按住 Ctrl 才显示 `p` / `Space` / `n`
+- 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台名嵌在 List 下边框右侧
+- Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
+- 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本
+- Controller 输入到达右边界后整体横向滚动
+- 顺序播放模式符号改为 `⇉`
 - 修复 n/p 切歌后 Queue view 不刷新
 - Key Words 左右留白、r 两击移除、音量持久化，搜索加入歌单时长修复
 - TUI 去命令化批次4：远程歌单后台准备、Executor listing 快照

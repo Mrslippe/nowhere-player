@@ -1,6 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 #[cfg(test)]
@@ -26,31 +26,75 @@ pub(crate) fn truncate_width(value: &str, width: usize) -> String {
     out
 }
 
-pub(crate) fn input_width_before(app: &App) -> usize {
-    let prefix: String = app.input[..app.cursor].iter().collect();
-    UnicodeWidthStr::width("› ") + UnicodeWidthStr::width(prefix.as_str())
-}
-
-pub(crate) fn input_line(app: &App) -> Line<'static> {
-    let before: String = app.input[..app.cursor].iter().collect();
-    let after: String = app.input[app.cursor..].iter().collect();
-    let cursor_char = if app.cursor < app.input.len() {
-        app.input[app.cursor].to_string()
-    } else {
-        " ".to_owned()
-    };
-    Line::from(vec![
-        TuiSpan::styled("› ", Style::default().fg(app.palette.accent)),
-        TuiSpan::raw(before),
-        TuiSpan::styled(
-            cursor_char,
+/// Controller 输入行：按显示宽度裁剪，光标靠近右侧时把文本整体左移。
+/// 返回行和光标相对内容区左边缘的列偏移。
+pub(crate) fn input_line(app: &App, width: usize) -> (Line<'static>, usize) {
+    let width = width.max(3);
+    let text_width = width - 2;
+    let (start, end) = input_window(&app.input, app.cursor, text_width);
+    let mut spans = vec![TuiSpan::styled(
+        "› ",
+        Style::default().fg(app.palette.accent),
+    )];
+    for (index, character) in app.input.iter().enumerate().take(end).skip(start) {
+        if index == app.cursor {
+            spans.push(TuiSpan::styled(
+                character.to_string(),
+                Style::default()
+                    .bg(app.palette.fg)
+                    .fg(app.palette.bg.unwrap_or(Color::Reset))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(TuiSpan::raw(character.to_string()));
+        }
+    }
+    if app.cursor == app.input.len() {
+        spans.push(TuiSpan::styled(
+            " ",
             Style::default()
                 .bg(app.palette.fg)
-                .fg(app.palette.bg.unwrap_or(Color::Reset))
-                .add_modifier(Modifier::BOLD),
-        ),
-        TuiSpan::raw(after),
-    ])
+                .fg(app.palette.bg.unwrap_or(Color::Reset)),
+        ));
+    }
+    let prefix: String = app.input[start..app.cursor].iter().collect();
+    let cursor_x = 2 + UnicodeWidthStr::width(prefix.as_str());
+    (Line::from(spans), cursor_x.min(width.saturating_sub(1)))
+}
+
+/// 返回输入文本的可见区间；宽度按终端显示列计算，CJK 占两格。
+pub(crate) fn input_window(chars: &[char], cursor: usize, width: usize) -> (usize, usize) {
+    if width == 0 {
+        return (cursor, cursor);
+    }
+    let char_width = |character: char| UnicodeWidthChar::width(character).unwrap_or(0);
+    let cursor_width = chars
+        .get(cursor)
+        .map(|character| char_width(*character))
+        .unwrap_or(1)
+        .max(1)
+        .min(width);
+    let mut start = cursor;
+    let mut used = 0;
+    while start > 0 {
+        let character_width = char_width(chars[start - 1]);
+        if used + character_width + cursor_width > width {
+            break;
+        }
+        used += character_width;
+        start -= 1;
+    }
+    let mut end = start;
+    let mut visible = 0;
+    while end < chars.len() {
+        let character_width = char_width(chars[end]);
+        if visible + character_width > width {
+            break;
+        }
+        visible += character_width;
+        end += 1;
+    }
+    (start, end)
 }
 
 #[cfg(test)]
@@ -232,6 +276,12 @@ pub(crate) fn list_widths(
     rows: &[Vec<String>],
     available: usize,
 ) -> Vec<usize> {
+    if columns.len() == 3 {
+        let category = 4.min(available.saturating_sub(2));
+        let label = 16.min(available.saturating_sub(category + 3)).max(1);
+        let value = available.saturating_sub(category + label + 2).max(1);
+        return vec![category, label, value];
+    }
     if columns.len() != 4 {
         return fit_table_widths(columns, rows, available);
     }

@@ -2,7 +2,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::{Block as TuiBlock, BorderType, Borders, Clear, Paragraph};
-use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Focus};
 use crate::audio::TuiAudio;
@@ -84,13 +83,17 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let max_x = area.right().saturating_sub(2);
     let mut x = area.x.saturating_add(2);
     let edge_style = Style::default().fg(app.palette.line);
+    // 状态栏直接覆盖外框下边线。先把这一行恢复成连续的边框线，
+    // 避免宽字符跳过相邻格时把上一帧的 `·` / 键名残留在缓冲里。
+    let border_line = "━".repeat(usize::from(area.width.saturating_sub(2)));
+    frame
+        .buffer_mut()
+        .set_string(area.x.saturating_add(1), y, &border_line, edge_style);
     frame
         .buffer_mut()
         .set_string(area.x.saturating_add(1), y, " ", edge_style);
-    frame
-        .buffer_mut()
-        .set_string(area.right().saturating_sub(2), y, " ", edge_style);
 
+    let mut drew_text = false;
     let status = app.status.trim();
     if !status.is_empty() && status != "就绪" {
         let status = truncate_width(status, 24);
@@ -100,13 +103,16 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 x,
                 y,
                 &status,
-                Style::default().fg(if is_pending_status(app) {
-                    app.palette.accent
-                } else {
-                    app.palette.muted
-                }),
+                Style::default()
+                    .fg(if is_pending_status(app) {
+                        app.palette.warn
+                    } else {
+                        app.palette.accent
+                    })
+                    .add_modifier(Modifier::BOLD),
             );
             x = x.saturating_add(width);
+            drew_text = true;
             let separator = " · ";
             let sep_width = display_width(separator) as u16;
             if x.saturating_add(sep_width) <= max_x {
@@ -122,21 +128,20 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     for (index, (key, description)) in status_hints(app).iter().enumerate() {
+        let key_width = display_width(key) as u16;
+        let description_width = display_width(description) as u16;
+        let item_width = key_width + description_width;
+        let separator = " · ";
+        let separator_width = display_width(separator) as u16;
+        let reserve = if index > 0 { separator_width } else { 0 };
+        if x.saturating_add(reserve + item_width) > max_x {
+            break;
+        }
         if index > 0 {
-            let separator = " · ";
-            let separator_width = display_width(separator) as u16;
-            if x.saturating_add(separator_width) > max_x {
-                break;
-            }
             frame
                 .buffer_mut()
                 .set_string(x, y, separator, Style::default().fg(app.palette.faint));
             x = x.saturating_add(separator_width);
-        }
-        let key_width = display_width(key) as u16;
-        let description_width = display_width(description) as u16;
-        if x.saturating_add(key_width + description_width) > max_x {
-            break;
         }
         frame.buffer_mut().set_string(
             x,
@@ -151,6 +156,12 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             .buffer_mut()
             .set_string(x, y, description, Style::default().fg(app.palette.muted));
         x = x.saturating_add(description_width);
+        drew_text = true;
+    }
+    // 右侧留白必须紧跟最后一段文本，而不是固定在倒数第二格：
+    // 文本结束后先空一格，再让外框线继续。
+    if drew_text && x <= max_x {
+        frame.buffer_mut().set_string(x, y, " ", edge_style);
     }
 }
 
@@ -191,6 +202,7 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         return vec![
             ("←→", "光标"),
             ("⌫", "删除"),
+            ("Tab", "平台"),
             ("Enter", "搜索"),
             ("Esc", "退出输入"),
         ];
@@ -199,68 +211,58 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let kind = app.view_kind.get(app.view_index);
     let list = app.focus == Focus::List;
     let mut hints = match kind {
-        Some(BrowseKind::PlaylistRoot) if list => vec![
-            ("n", "新建"),
-            ("d", "删除"),
-            ("Enter", "打开"),
-            ("↑↓", "选择"),
-            ("Esc", "返回"),
-        ],
-        Some(BrowseKind::PlaylistRoot) => vec![
-            ("n", "新建"),
-            ("d", "删除"),
-            ("Enter", "进入"),
-            ("↑↓", "选择"),
-            ("Shift+Enter", "展开"),
-        ],
+        Some(BrowseKind::PlaylistRoot) if list => {
+            vec![("n", "新建"), ("d", "删除"), ("Enter", "打开")]
+        }
+        Some(BrowseKind::PlaylistRoot) => {
+            vec![("n", "新建"), ("d", "删除"), ("Enter", "进入")]
+        }
         Some(BrowseKind::Playlist(_)) if list => vec![
             ("a", "添加"),
             ("r", "移除"),
             ("Enter", "播放"),
-            ("↑↓", "选择"),
             ("Esc", "返回"),
         ],
-        Some(BrowseKind::Playlist(_)) => vec![("Enter", "进入"), ("↑↓", "选择"), ("←→", "焦点")],
-        Some(BrowseKind::Queue) if list => vec![
-            ("r", "移除"),
-            ("Space", "暂停"),
-            ("Enter", "播放"),
-            ("n/p", "切歌"),
-            ("Esc", "返回"),
-        ],
+        Some(BrowseKind::Playlist(_)) => vec![("Enter", "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Queue) if list => {
+            vec![("r", "移除"), ("Enter", "播放"), ("Esc", "返回")]
+        }
         Some(BrowseKind::Queue) => vec![("Enter", "进入"), ("↑↓", "选择")],
         Some(BrowseKind::Library) if list => vec![
             ("a", "添加"),
             ("r", "移除"),
             ("Enter", "播放"),
-            ("↑↓", "选择"),
             ("Esc", "返回"),
         ],
         Some(BrowseKind::Library) => vec![("Enter", "进入"), ("↑↓", "选择")],
         Some(BrowseKind::Search) if list => match app.search_display() {
             Some(SearchDisplay::Empty { .. }) => {
-                vec![("Enter", "输入"), ("Esc", "返回"), ("/", "命令")]
+                vec![("Enter", "输入"), ("Tab", "平台"), ("Esc", "返回")]
             }
             Some(SearchDisplay::Searching) => vec![("Esc", "停止")],
             Some(SearchDisplay::NoResults) => vec![("c", "清空"), ("Esc", "返回")],
             None => vec![
                 ("a", "添加"),
-                ("r", "移除"),
                 ("c", "清空"),
                 ("Enter", "播放"),
-                ("↑↓", "选择"),
+                ("Esc", "返回"),
             ],
         },
-        Some(BrowseKind::Search) => vec![("Enter", "进入"), ("↑↓", "选择")],
-        Some(BrowseKind::Settings) => vec![("↑↓", "选择"), ("Esc", "返回")],
+        Some(BrowseKind::Search) => vec![("Enter", "进入"), ("Tab", "平台")],
+        Some(BrowseKind::Settings) if list => vec![
+            ("←→", "调整"),
+            ("Enter", "切换"),
+            ("r", "重置"),
+            ("Esc", "返回"),
+        ],
+        Some(BrowseKind::Settings) => vec![("Enter", "进入"), ("↑↓", "选择")],
         None if list => vec![("↑↓", "选择"), ("Esc", "返回")],
-        None => vec![("↑↓", "选择"), ("←→", "焦点"), ("/", "命令")],
+        None => vec![("↑↓", "选择"), ("←→", "焦点")],
     };
-    if !matches!(kind, Some(BrowseKind::Settings)) {
-        hints.push(("[ ]", "±5s"));
-        hints.push(("m", "模式"));
-        hints.push(("/", "命令"));
+    if app.focus == Focus::Browse && !matches!(kind, Some(BrowseKind::Search)) {
+        hints.push(("s", "搜索"));
     }
+    hints.push(("/", "命令"));
     hints
 }
 
@@ -381,7 +383,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         app.view_index + 1
     };
     let left_count = format!(" {view_number} of {} ", app.views.len());
-    let right_count = format!(" total {} ", app.filtered_row_count());
+    let is_search = matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Search));
     let count_style = Style::default()
         .fg(app.palette.faint)
         .add_modifier(Modifier::ITALIC);
@@ -392,14 +394,21 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         &left_count,
         count_style,
     );
-    border_text(
-        frame,
-        area,
-        area.bottom().saturating_sub(1),
-        &right_count,
-        true,
-        count_style,
-    );
+    let bottom_y = area.bottom().saturating_sub(1);
+    let total = format!(" total {} ", app.filtered_row_count());
+    if is_search {
+        // Search 的结果总数放左侧，右侧留给当前平台。
+        frame
+            .buffer_mut()
+            .set_string(split.saturating_add(2), bottom_y, &total, count_style);
+        let platform = format!(" {}", app.search_platform.label());
+        let platform_style = Style::default()
+            .fg(app.palette.faint)
+            .add_modifier(Modifier::ITALIC);
+        border_text(frame, area, bottom_y, &platform, true, platform_style);
+    } else {
+        border_text(frame, area, bottom_y, &total, true, count_style);
+    }
     let left = Rect {
         x: inner.x,
         y: inner.y,
@@ -454,8 +463,9 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     if area.height < 2 {
         return;
     }
+    let (line, cursor_x) = input_line(app, usize::from(inner.width));
     frame.render_widget(
-        Paragraph::new(input_line(app)).style(
+        Paragraph::new(line).style(
             Style::default()
                 .bg(app.palette.bg.unwrap_or(Color::Reset))
                 .fg(app.palette.fg),
@@ -463,10 +473,7 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         inner,
     );
     if app.focus == Focus::Controller {
-        frame.set_cursor_position((
-            inner.x.saturating_add(input_width_before(app) as u16),
-            inner.y,
-        ));
+        frame.set_cursor_position((inner.x.saturating_add(cursor_x as u16), inner.y));
     }
 }
 
@@ -621,40 +628,6 @@ fn list_title(app: &App) -> String {
         Some(BrowseKind::Settings) => "Settings".to_owned(),
         None => "List".to_owned(),
     }
-}
-
-pub(crate) fn input_window(chars: &[char], cursor: usize, width: usize) -> (usize, usize) {
-    if width == 0 {
-        return (cursor, cursor);
-    }
-    let char_width = |character: char| UnicodeWidthChar::width(character).unwrap_or(0);
-    let cursor_width = chars
-        .get(cursor)
-        .map(|character| char_width(*character))
-        .unwrap_or(1)
-        .max(1)
-        .min(width);
-    let mut start = cursor;
-    let mut used = 0;
-    while start > 0 {
-        let character_width = char_width(chars[start - 1]);
-        if used + character_width + cursor_width > width {
-            break;
-        }
-        used += character_width;
-        start -= 1;
-    }
-    let mut end = start;
-    let mut visible = 0;
-    while end < chars.len() {
-        let character_width = char_width(chars[end]);
-        if visible + character_width > width {
-            break;
-        }
-        visible += character_width;
-        end += 1;
-    }
-    (start, end)
 }
 
 fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {

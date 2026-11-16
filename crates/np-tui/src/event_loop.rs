@@ -50,6 +50,33 @@ fn parse_duration(text: &str) -> u64 {
     (minutes * 60 + seconds) * 1000
 }
 
+fn is_settings(app: &App) -> bool {
+    matches!(
+        app.view_kind.get(app.view_index),
+        Some(BrowseKind::Settings)
+    )
+}
+
+fn cycle_search_platform(
+    app: &mut App,
+    library: &Arc<LibraryHandle>,
+    tx: &std::sync::mpsc::Sender<(u64, Block)>,
+) {
+    crate::search_ui::cycle_platform(app);
+    if !matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Search)) {
+        return;
+    }
+    // 已有查询时，Tab 不只是换标签，而是立刻用新平台重跑；旧请求会因 search_id 失配被丢弃。
+    if app.search_attempted
+        && !app.search_input.trim().is_empty()
+        && let Ok(mut draft) = parse_search_input(&app.search_input)
+    {
+        draft.source = app.search_platform.source();
+        app.end_search_edit();
+        app.start_search_draft(draft, library, tx);
+    }
+}
+
 fn queue_item_for(view: &ViewData, index: usize, _origin: &str) -> Option<QueueItem> {
     let track = view.refs.get(index)?.clone();
     let row = view.rows.get(index)?;
@@ -93,6 +120,11 @@ where
 {
     let mut draw_needed = true;
     loop {
+        let ctrl_down = crate::ctrl_hint::control_down();
+        if ctrl_down != app.show_key_hints {
+            app.show_key_hints = ctrl_down;
+            draw_needed = true;
+        }
         while let Ok((search_id, block)) = search.rx.try_recv() {
             if search_id == app.search_id {
                 app.upsert_block(block);
@@ -154,7 +186,8 @@ where
             // 12fps: Braille + truecolor 下 CPU 超过 2.8% 时按卡降帧。
             std::time::Duration::from_millis(83)
         } else {
-            std::time::Duration::from_millis(500)
+            // 空闲时也定期检查 Ctrl，保证按住后键位提示能及时出现。
+            std::time::Duration::from_millis(100)
         };
         if event::poll(timeout)? {
             match event::read()? {
@@ -165,6 +198,9 @@ where
                             KeyCode::Backspace => app.backspace_search_char(),
                             KeyCode::Left => app.move_search_cursor(false),
                             KeyCode::Right => app.move_search_cursor(true),
+                            KeyCode::Tab => {
+                                cycle_search_platform(app, library, search.tx);
+                            }
                             KeyCode::Enter => match parse_search_input(&app.search_input) {
                                 Ok(draft) => {
                                     app.end_search_edit();
@@ -254,6 +290,28 @@ where
                             }
                         }
                         match key.code {
+                            KeyCode::Tab
+                                if matches!(
+                                    app.view_kind.get(app.view_index),
+                                    Some(BrowseKind::Search)
+                                ) =>
+                            {
+                                cycle_search_platform(app, library, search.tx);
+                            }
+                            KeyCode::Left | KeyCode::Right
+                                if app.focus == Focus::List && is_settings(app) =>
+                            {
+                                let direction = if key.code == KeyCode::Left { -1 } else { 1 };
+                                if let Err(error) = crate::settings_page::adjust_setting(
+                                    app,
+                                    direction,
+                                    player,
+                                    theme_ctx.settings,
+                                    theme_ctx.api,
+                                ) {
+                                    app.status = error;
+                                }
+                            }
                             KeyCode::Left | KeyCode::Right => {
                                 app.search_input_active = false;
                                 app.focus = match app.focus {
@@ -317,7 +375,19 @@ where
                                             }
                                             Some(BrowseKind::Search)
                                                 if app.filtered_rows().is_empty() => {}
-                                            Some(BrowseKind::Settings) => {}
+                                            Some(BrowseKind::Settings) => {
+                                                if let Err(error) =
+                                                    crate::settings_page::adjust_setting(
+                                                        app,
+                                                        1,
+                                                        player,
+                                                        theme_ctx.settings,
+                                                        theme_ctx.api,
+                                                    )
+                                                {
+                                                    app.status = error;
+                                                }
+                                            }
                                             _ => {
                                                 let selected_ref = app
                                                     .selected_view()
@@ -447,6 +517,16 @@ where
                             {
                                 app.reset_search_to_empty();
                             }
+                            KeyCode::Char('r') if app.focus == Focus::List && is_settings(app) => {
+                                if let Err(error) = crate::settings_page::reset_setting(
+                                    app,
+                                    player,
+                                    theme_ctx.settings,
+                                    theme_ctx.api,
+                                ) {
+                                    app.status = error;
+                                }
+                            }
                             KeyCode::Char('r') if app.focus == Focus::List => {
                                 if app.pending_remove.is_some() {
                                     app.status = "请按 Enter 确认移除".to_owned();
@@ -460,6 +540,9 @@ where
                                 } else if let Err(error) = app.begin_add_to_playlist() {
                                     app.status = error;
                                 }
+                            }
+                            KeyCode::Char('s') => {
+                                crate::search_ui::open_search(app);
                             }
                             KeyCode::Char('m') => {
                                 let mode = player.cycle_mode();

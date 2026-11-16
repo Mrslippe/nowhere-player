@@ -1,5 +1,5 @@
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::Paragraph;
@@ -22,7 +22,14 @@ pub(crate) fn draw_player_strip(
     if area.width < 8 || area.height < 3 {
         return;
     }
-    draw_player_frame(frame, area, app, player.volume(), player.mode());
+    draw_player_frame(
+        frame,
+        area,
+        app,
+        player.volume(),
+        player.mode(),
+        player.is_playing(),
+    );
     let content = Rect {
         x: area.x.saturating_add(1),
         y: area.y.saturating_add(1),
@@ -158,6 +165,7 @@ fn draw_player_frame(
     app: &App,
     volume: f32,
     mode: PlaybackMode,
+    playing: bool,
 ) {
     let width = area.width as usize;
     if width < 4 {
@@ -168,7 +176,7 @@ fn draw_player_frame(
         (_, true) => " Mode ⇄ ",
         (RepeatMode::One, false) => " Mode ↺ ",
         (RepeatMode::All, false) => " Mode ↻ ",
-        (RepeatMode::Off, false) => " Mode · ",
+        (RepeatMode::Off, false) => " Mode ⇉ ",
     };
     let title_w = UnicodeWidthStr::width(title);
     let mode_w = UnicodeWidthStr::width(mode);
@@ -222,6 +230,48 @@ fn draw_player_frame(
             Style::default().fg(app.palette.muted),
         );
     }
+    draw_transport(frame, area, app, playing);
+}
+
+fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, playing: bool) {
+    if area.width < 34 {
+        return;
+    }
+    let key_style = Style::default()
+        .fg(app.palette.faint)
+        .add_modifier(Modifier::ITALIC);
+    let button_style = Style::default().fg(app.palette.accent);
+    let play_style = Style::default()
+        .fg(app.palette.accent)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    if app.show_key_hints {
+        spans.push(TuiSpan::styled("p ", key_style));
+    }
+    spans.push(TuiSpan::styled("◀◀", button_style));
+    spans.push(TuiSpan::raw("  "));
+    if app.show_key_hints {
+        spans.push(TuiSpan::styled("Space ", key_style));
+    }
+    if playing {
+        spans.push(TuiSpan::styled("▮▮", play_style));
+    } else {
+        spans.push(TuiSpan::styled("▶ ", play_style));
+    }
+    spans.push(TuiSpan::raw("  "));
+    if app.show_key_hints {
+        spans.push(TuiSpan::styled("n ", key_style));
+    }
+    spans.push(TuiSpan::styled("▶▶", button_style));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            x: area.x.saturating_add(3),
+            y: area.bottom().saturating_sub(1),
+            width: area.width.saturating_sub(5).min(32),
+            height: 1,
+        },
+    );
 }
 
 pub(crate) fn draw_spectrum(
