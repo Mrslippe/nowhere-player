@@ -1383,8 +1383,9 @@ fn player_transport_buttons_reveal_keys_only_with_ctrl() {
         .draw(|frame| draw(frame, &mut app, &audio))
         .unwrap();
     let normal = row_text(&terminal, 22);
-    assert!(normal.contains("◀◀"), "{normal:?}");
-    assert!(normal.contains("▶▶"), "{normal:?}");
+    assert!(normal.contains("◀◀ <<"), "{normal:?}");
+    assert!(normal.contains(">> ▶▶"), "{normal:?}");
+    assert!(normal.contains("┗ ◀◀"), "{normal:?}");
     assert!(!normal.contains("Space"), "{normal:?}");
 
     app.show_key_hints = true;
@@ -1393,7 +1394,58 @@ fn player_transport_buttons_reveal_keys_only_with_ctrl() {
         .unwrap();
     let hinted = row_text(&terminal, 22);
     assert!(hinted.contains("Space"), "{hinted:?}");
+    assert!(hinted.contains("[ "), "{hinted:?}");
+    assert!(hinted.contains("] "), "{hinted:?}");
     assert!(hinted.contains("n "), "{hinted:?}");
+}
+
+#[test]
+fn transport_buttons_are_gray_when_unavailable() {
+    use ratatui::style::Modifier;
+
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let prev = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "◀")
+        .expect("prev button");
+    assert_eq!(prev.style().fg, Some(app.palette.faint));
+    assert!(prev.style().add_modifier.contains(Modifier::DIM));
+    let play = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "▶")
+        .expect("play button");
+    assert_eq!(play.style().fg, Some(app.palette.fg));
+    assert!(play.style().add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn transport_feedback_flashes_the_pressed_button() {
+    let mut app = browse_app();
+    app.transport_feedback = Some((TransportButton::Play, std::time::Instant::now()));
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let play = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "▶")
+        .expect("play button");
+    assert_eq!(play.style().bg, Some(app.palette.accent));
+    assert_eq!(
+        play.style().fg,
+        Some(app.palette.bg.unwrap_or(Color::Reset))
+    );
 }
 
 #[test]

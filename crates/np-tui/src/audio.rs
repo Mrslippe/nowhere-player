@@ -138,6 +138,23 @@ impl TuiAudio {
         self.lock_queue().items().to_vec()
     }
 
+    pub fn can_next(&self) -> bool {
+        self.lock_queue().can_next()
+    }
+
+    pub fn can_prev(&self) -> bool {
+        self.lock_queue().can_prev()
+    }
+
+    pub fn can_seek_back(&self) -> bool {
+        self.position_ms() > 0
+    }
+
+    pub fn can_seek_forward(&self) -> bool {
+        self.duration_ms()
+            .is_some_and(|duration| duration > 0 && self.position_ms() < duration)
+    }
+
     pub fn mode(&self) -> PlaybackMode {
         self.lock_queue().mode().to_playback_mode()
     }

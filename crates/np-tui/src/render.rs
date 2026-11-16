@@ -201,7 +201,7 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.search_editing_input() {
         return vec![
             ("←→", "光标"),
-            // `⌫` 在部分终端字体里实际占两格；留两格空白，确保“删除”不贴住字形。
+            // `⌫` 实际占两格；字符串写两格空白，视觉上只留一格。
             ("⌫  ", "删除"),
             ("Tab", "平台"),
             ("Enter", "搜索"),

@@ -65,6 +65,15 @@ pub(crate) fn playback_mode_symbol(id: &str) -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportButton {
+    Prev,
+    SeekBack,
+    Play,
+    SeekForward,
+    Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisualMode {
     Spectrum,
     Waveform,

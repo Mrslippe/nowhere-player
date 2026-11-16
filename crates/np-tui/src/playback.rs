@@ -373,6 +373,44 @@ impl PlaybackQueue {
         }
     }
 
+    /// 只读判断：下一首是否会移动（不触发随机序重建）。
+    pub(crate) fn can_next(&self) -> bool {
+        let Some(current) = self.current else {
+            return false;
+        };
+        if self.items.is_empty() {
+            return false;
+        }
+        match self.mode {
+            QueueMode::SingleLoop | QueueMode::ListLoop => true,
+            QueueMode::Sequential => current + 1 < self.items.len(),
+            QueueMode::Shuffle => {
+                if self.shuffle_order.is_empty() {
+                    return self.items.len() > 1;
+                }
+                self.shuffle_order
+                    .iter()
+                    .position(|index| *index == current)
+                    .is_some_and(|position| position + 1 < self.shuffle_order.len())
+            }
+        }
+    }
+
+    /// 只读判断：上一首是否会移动。
+    pub(crate) fn can_prev(&self) -> bool {
+        let Some(current) = self.current else {
+            return false;
+        };
+        if self.items.is_empty() {
+            return false;
+        }
+        match self.mode {
+            QueueMode::SingleLoop | QueueMode::ListLoop => true,
+            QueueMode::Sequential => current > 0,
+            QueueMode::Shuffle => !self.history.is_empty(),
+        }
+    }
+
     fn rebuild_shuffle(&mut self) {
         self.shuffle_order = (0..self.items.len()).collect();
         if let Some(current) = self.current
@@ -487,6 +525,28 @@ mod tests {
         }
         seen.sort_unstable();
         assert_eq!(seen, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn can_navigate_matches_mode_edges() {
+        let mut queue = queue(&["a", "b"]);
+        queue.jump(0);
+        assert!(!queue.can_prev());
+        assert!(queue.can_next());
+        queue.jump(1);
+        assert!(queue.can_prev());
+        assert!(!queue.can_next());
+
+        queue.set_mode(QueueMode::ListLoop);
+        assert!(queue.can_prev());
+        assert!(queue.can_next());
+        queue.set_mode(QueueMode::SingleLoop);
+        assert!(queue.can_prev());
+        assert!(queue.can_next());
+
+        let empty = PlaybackQueue::with_seed(7);
+        assert!(!empty.can_prev());
+        assert!(!empty.can_next());
     }
 
     #[test]

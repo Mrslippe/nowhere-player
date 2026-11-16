@@ -1,7 +1,7 @@
 pub(crate) use crate::model::*;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audio::TuiAudio;
 use crate::playback::{QueueItem, TrackKey};
@@ -59,6 +59,7 @@ pub(crate) struct App {
     pub(crate) search_attempted: bool,
     pub(crate) search_platform: SearchPlatform,
     pub(crate) show_key_hints: bool,
+    pub(crate) transport_feedback: Option<(TransportButton, Instant)>,
     pub(crate) settings_fields: Vec<SettingsField>,
     pub(crate) no_color_ignored: bool,
     playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
@@ -115,6 +116,7 @@ impl App {
             search_attempted: false,
             search_platform: SearchPlatform::All,
             show_key_hints: false,
+            transport_feedback: None,
             settings_fields: Vec::new(),
             no_color_ignored: false,
             playlist_prepare_tx,
@@ -145,6 +147,10 @@ impl App {
 
     pub(crate) fn input_text(&self) -> String {
         self.input.iter().collect()
+    }
+
+    pub(crate) fn flash_transport(&mut self, button: TransportButton) {
+        self.transport_feedback = Some((button, Instant::now()));
     }
 
     pub(crate) fn insert(&mut self, character: char) {

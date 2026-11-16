@@ -125,6 +125,13 @@ where
             app.show_key_hints = ctrl_down;
             draw_needed = true;
         }
+        if app
+            .transport_feedback
+            .is_some_and(|(_, at)| at.elapsed() >= std::time::Duration::from_millis(180))
+        {
+            app.transport_feedback = None;
+            draw_needed = true;
+        }
         while let Ok((search_id, block)) = search.rx.try_recv() {
             if search_id == app.search_id {
                 app.upsert_block(block);
@@ -554,27 +561,41 @@ where
                                 app.refresh_settings_view(theme_ctx.settings);
                             }
                             KeyCode::Char('[') | KeyCode::Char('{') | KeyCode::Char('【') => {
-                                let target = player.position_ms().saturating_sub(5_000);
-                                if let Err(error) = PlayerApi::seek(player, target) {
-                                    app.status = error.message;
+                                if !player.can_seek_back() {
+                                    app.status = "已到开头".to_owned();
                                 } else {
-                                    app.status = "后退 5s".to_owned();
+                                    let target = player.position_ms().saturating_sub(5_000);
+                                    if let Err(error) = PlayerApi::seek(player, target) {
+                                        app.status = error.message;
+                                    } else {
+                                        app.status = "后退 5s".to_owned();
+                                        app.flash_transport(TransportButton::SeekBack);
+                                    }
                                 }
                             }
                             KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('】') => {
-                                let position = player.position_ms().saturating_add(5_000);
-                                let target = player
-                                    .duration_ms()
-                                    .map_or(position, |duration| position.min(duration));
-                                if let Err(error) = PlayerApi::seek(player, target) {
-                                    app.status = error.message;
+                                if !player.can_seek_forward() {
+                                    app.status = "已到结尾".to_owned();
                                 } else {
-                                    app.status = "前进 5s".to_owned();
+                                    let position = player.position_ms().saturating_add(5_000);
+                                    let target = player
+                                        .duration_ms()
+                                        .map_or(position, |duration| position.min(duration));
+                                    if let Err(error) = PlayerApi::seek(player, target) {
+                                        app.status = error.message;
+                                    } else {
+                                        app.status = "前进 5s".to_owned();
+                                        app.flash_transport(TransportButton::SeekForward);
+                                    }
                                 }
                             }
                             KeyCode::Char('/') => app.enter_command(),
                             KeyCode::Char(' ') => {
+                                let before = player.is_playing();
                                 player.toggle();
+                                if before != player.is_playing() {
+                                    app.flash_transport(TransportButton::Play);
+                                }
                             }
                             KeyCode::Char('n') => {
                                 if matches!(
@@ -590,11 +611,15 @@ where
                                     } else if let Err(error) = app.begin_playlist_create() {
                                         app.status = error;
                                     }
+                                } else if !player.can_next() {
+                                    app.status = "没有下一首".to_owned();
                                 } else {
-                                    if let Err(error) = player.next() {
-                                        app.status = error.message;
-                                    } else {
-                                        app.status = "下一首".to_owned();
+                                    match player.next() {
+                                        Ok(_) => {
+                                            app.status = "下一首".to_owned();
+                                            app.flash_transport(TransportButton::Next);
+                                        }
+                                        Err(error) => app.status = error.message,
                                     }
                                     app.refresh_queue_view(player, &**library);
                                 }
@@ -617,12 +642,18 @@ where
                                 }
                             }
                             KeyCode::Char('p') => {
-                                if let Err(error) = player.prev() {
-                                    app.status = error.message;
+                                if !player.can_prev() {
+                                    app.status = "没有上一首".to_owned();
                                 } else {
-                                    app.status = "上一首".to_owned();
+                                    match player.prev() {
+                                        Ok(_) => {
+                                            app.status = "上一首".to_owned();
+                                            app.flash_transport(TransportButton::Prev);
+                                        }
+                                        Err(error) => app.status = error.message,
+                                    }
+                                    app.refresh_queue_view(player, &**library);
                                 }
-                                app.refresh_queue_view(player, &**library);
                             }
                             KeyCode::Char('+') | KeyCode::Char('=') => {
                                 let step = (player.volume() * 20.0).round() as i32;

@@ -10,8 +10,18 @@ use crate::app::{App, VisualMode};
 use crate::audio::TuiAudio;
 use crate::fft::spectrum;
 use crate::glyphs;
+use crate::model::TransportButton;
 use crate::truncate_width;
 use np_core::{PlaybackMode, RepeatMode};
+
+#[derive(Clone, Copy)]
+struct TransportState {
+    playing: bool,
+    can_prev: bool,
+    can_next: bool,
+    can_back: bool,
+    can_forward: bool,
+}
 
 pub(crate) fn draw_player_strip(
     frame: &mut ratatui::Frame,
@@ -28,7 +38,13 @@ pub(crate) fn draw_player_strip(
         app,
         player.volume(),
         player.mode(),
-        player.is_playing(),
+        TransportState {
+            playing: player.is_playing(),
+            can_prev: player.can_prev(),
+            can_next: player.can_next(),
+            can_back: player.can_seek_back(),
+            can_forward: player.can_seek_forward(),
+        },
     );
     let content = Rect {
         x: area.x.saturating_add(1),
@@ -165,7 +181,7 @@ fn draw_player_frame(
     app: &App,
     volume: f32,
     mode: PlaybackMode,
-    playing: bool,
+    transport: TransportState,
 ) {
     let width = area.width as usize;
     if width < 4 {
@@ -230,48 +246,104 @@ fn draw_player_frame(
             Style::default().fg(app.palette.muted),
         );
     }
-    draw_transport(frame, area, app, playing);
+    draw_transport(frame, area, app, transport);
 }
 
-fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, playing: bool) {
-    if area.width < 34 {
+fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: TransportState) {
+    if area.width < 48 {
         return;
     }
+    let bottom = area.bottom().saturating_sub(1);
+    let start_x = area.x.saturating_add(2);
+    let edge_style = Style::default().fg(app.palette.line);
+    // 左端留一格空白，按钮从下一格开始。
+    frame
+        .buffer_mut()
+        .set_string(area.x.saturating_add(1), bottom, " ", edge_style);
+
+    let hints = app.show_key_hints;
+    let gap = if hints { "  " } else { " " };
     let key_style = Style::default()
         .fg(app.palette.faint)
         .add_modifier(Modifier::ITALIC);
+    let disabled = Style::default()
+        .fg(app.palette.faint)
+        .add_modifier(Modifier::DIM);
     let button_style = Style::default().fg(app.palette.accent);
-    let play_style = Style::default()
+    let paused_style = Style::default()
+        .fg(app.palette.fg)
+        .add_modifier(Modifier::BOLD);
+    let playing_style = Style::default()
         .fg(app.palette.accent)
         .add_modifier(Modifier::BOLD);
+    let flash_style = Style::default()
+        .bg(app.palette.accent)
+        .fg(app.palette.bg.unwrap_or(Color::Reset))
+        .add_modifier(Modifier::BOLD);
+    let feedback = |button: TransportButton| {
+        app.transport_feedback.is_some_and(|(current, at)| {
+            current == button && at.elapsed() < std::time::Duration::from_millis(180)
+        })
+    };
+    let play_label = if transport.playing { "❚❚" } else { "▶" };
+    let items = [
+        ("◀◀", "p", TransportButton::Prev, transport.can_prev),
+        ("<<", "[", TransportButton::SeekBack, transport.can_back),
+        (play_label, "Space", TransportButton::Play, true),
+        (
+            ">>",
+            "]",
+            TransportButton::SeekForward,
+            transport.can_forward,
+        ),
+        ("▶▶", "n", TransportButton::Next, transport.can_next),
+    ];
+
     let mut spans = Vec::new();
-    if app.show_key_hints {
-        spans.push(TuiSpan::styled("p ", key_style));
+    let mut width = 0u16;
+    for (index, (label, key, button, enabled)) in items.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(TuiSpan::raw(gap));
+            width = width.saturating_add(UnicodeWidthStr::width(gap) as u16);
+        }
+        let style = if feedback(button) {
+            flash_style
+        } else if !enabled {
+            disabled
+        } else if button == TransportButton::Play {
+            if transport.playing {
+                playing_style
+            } else {
+                paused_style
+            }
+        } else {
+            button_style
+        };
+        spans.push(TuiSpan::styled(label, style));
+        width = width.saturating_add(UnicodeWidthStr::width(label) as u16);
+        if hints {
+            spans.push(TuiSpan::raw(" "));
+            width = width.saturating_add(1);
+            spans.push(TuiSpan::styled(key, key_style));
+            width = width.saturating_add(UnicodeWidthStr::width(key) as u16);
+        }
     }
-    spans.push(TuiSpan::styled("◀◀", button_style));
-    spans.push(TuiSpan::raw("  "));
-    if app.show_key_hints {
-        spans.push(TuiSpan::styled("Space ", key_style));
+    if start_x.saturating_add(width) >= area.right().saturating_sub(1) {
+        return;
     }
-    if playing {
-        spans.push(TuiSpan::styled("▮▮", play_style));
-    } else {
-        spans.push(TuiSpan::styled("▶ ", play_style));
-    }
-    spans.push(TuiSpan::raw("  "));
-    if app.show_key_hints {
-        spans.push(TuiSpan::styled("n ", key_style));
-    }
-    spans.push(TuiSpan::styled("▶▶", button_style));
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
         Rect {
-            x: area.x.saturating_add(3),
-            y: area.bottom().saturating_sub(1),
-            width: area.width.saturating_sub(5).min(32),
+            x: start_x,
+            y: bottom,
+            width,
             height: 1,
         },
     );
+    // 右端留一格空白，再接后面的边框线。
+    frame
+        .buffer_mut()
+        .set_string(start_x.saturating_add(width), bottom, " ", edge_style);
 }
 
 pub(crate) fn draw_spectrum(
