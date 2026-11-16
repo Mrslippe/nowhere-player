@@ -55,7 +55,9 @@ pub(crate) fn execute(
         Action::TogglePlaylist => app.toggle_playlist(),
         Action::Enter => enter(app, player, library, search_tx, theme, settings),
         Action::Escape => {
-            if app.pending_add.is_some() {
+            if player.stop_live() {
+                app.status = "已停止直播".to_owned();
+            } else if app.pending_add.is_some() {
                 app.cancel_pending_add();
             } else if app.pending_remove.is_some() {
                 app.cancel_pending_remove();
@@ -99,33 +101,41 @@ pub(crate) fn execute(
             app.refresh_settings_view(settings);
         }
         Action::SeekBack => {
-            let availability = TransportAvailability::from_player(player);
-            if !availability.enabled(Action::SeekBack) {
-                app.status = "已到开头".to_owned();
+            if player.is_live() {
+                app.status = "直播中不可跳转".to_owned();
             } else {
-                let target = player.position_ms().saturating_sub(5_000);
-                if let Err(error) = PlayerApi::seek(player, target) {
-                    app.status = error.message;
+                let availability = TransportAvailability::from_player(player);
+                if !availability.enabled(Action::SeekBack) {
+                    app.status = "已到开头".to_owned();
                 } else {
-                    app.status = "后退 5s".to_owned();
-                    app.flash_transport(Action::SeekBack);
+                    let target = player.position_ms().saturating_sub(5_000);
+                    if let Err(error) = PlayerApi::seek(player, target) {
+                        app.status = error.message;
+                    } else {
+                        app.status = "后退 5s".to_owned();
+                        app.flash_transport(Action::SeekBack);
+                    }
                 }
             }
         }
         Action::SeekForward => {
-            let availability = TransportAvailability::from_player(player);
-            if !availability.enabled(Action::SeekForward) {
-                app.status = "已到结尾".to_owned();
+            if player.is_live() {
+                app.status = "直播中不可跳转".to_owned();
             } else {
-                let position = player.position_ms().saturating_add(5_000);
-                let target = player
-                    .duration_ms()
-                    .map_or(position, |duration| position.min(duration));
-                if let Err(error) = PlayerApi::seek(player, target) {
-                    app.status = error.message;
+                let availability = TransportAvailability::from_player(player);
+                if !availability.enabled(Action::SeekForward) {
+                    app.status = "已到结尾".to_owned();
                 } else {
-                    app.status = "前进 5s".to_owned();
-                    app.flash_transport(Action::SeekForward);
+                    let position = player.position_ms().saturating_add(5_000);
+                    let target = player
+                        .duration_ms()
+                        .map_or(position, |duration| position.min(duration));
+                    if let Err(error) = PlayerApi::seek(player, target) {
+                        app.status = error.message;
+                    } else {
+                        app.status = "前进 5s".to_owned();
+                        app.flash_transport(Action::SeekForward);
+                    }
                 }
             }
         }
@@ -149,18 +159,22 @@ pub(crate) fn execute(
             }
         }
         Action::NextTrack => {
-            let availability = TransportAvailability::from_player(player);
-            if !availability.enabled(Action::NextTrack) {
-                app.status = "没有下一首".to_owned();
+            if player.is_live() {
+                app.status = "直播中不可切换".to_owned();
             } else {
-                match player.next() {
-                    Ok(_) => {
-                        app.status = "下一首".to_owned();
-                        app.flash_transport(Action::NextTrack);
+                let availability = TransportAvailability::from_player(player);
+                if !availability.enabled(Action::NextTrack) {
+                    app.status = "没有下一首".to_owned();
+                } else {
+                    match player.next() {
+                        Ok(_) => {
+                            app.status = "下一首".to_owned();
+                            app.flash_transport(Action::NextTrack);
+                        }
+                        Err(error) => app.status = error.message,
                     }
-                    Err(error) => app.status = error.message,
+                    app.refresh_queue_view(player, &**library);
                 }
-                app.refresh_queue_view(player, &**library);
             }
         }
         Action::DeletePlaylist => {
@@ -173,18 +187,22 @@ pub(crate) fn execute(
             }
         }
         Action::PrevTrack => {
-            let availability = TransportAvailability::from_player(player);
-            if !availability.enabled(Action::PrevTrack) {
-                app.status = "没有上一首".to_owned();
+            if player.is_live() {
+                app.status = "直播中不可切换".to_owned();
             } else {
-                match player.prev() {
-                    Ok(_) => {
-                        app.status = "上一首".to_owned();
-                        app.flash_transport(Action::PrevTrack);
+                let availability = TransportAvailability::from_player(player);
+                if !availability.enabled(Action::PrevTrack) {
+                    app.status = "没有上一首".to_owned();
+                } else {
+                    match player.prev() {
+                        Ok(_) => {
+                            app.status = "上一首".to_owned();
+                            app.flash_transport(Action::PrevTrack);
+                        }
+                        Err(error) => app.status = error.message,
                     }
-                    Err(error) => app.status = error.message,
+                    app.refresh_queue_view(player, &**library);
                 }
-                app.refresh_queue_view(player, &**library);
             }
         }
         Action::VolumeUp | Action::VolumeDown => {

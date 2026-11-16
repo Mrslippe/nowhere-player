@@ -2,8 +2,10 @@ use super::*;
 use crate::audio::TuiAudio;
 use crate::keymap::Action;
 use crate::layout::*;
+use crate::live_command::parse_live_command;
 use crate::render::*;
 use crate::theme::Palette;
+use crate::transport::TransportAvailability;
 use np_app::{PlaybackTarget, SourceId};
 use np_core::{Block, BlockStatus, Output};
 use ratatui::backend::TestBackend;
@@ -1694,5 +1696,134 @@ fn controller_executes_resolved_actions() {
         &settings,
     );
     assert_eq!(app.search_platform, SearchPlatform::Netease);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_command_is_intercepted_with_a_numeric_room() {
+    assert_eq!(parse_live_command("live 123"), Some(Ok(123)));
+    assert_eq!(parse_live_command(":live 21622811"), Some(Ok(216_22811)));
+    assert_eq!(parse_live_command("/live 23197314"), Some(Ok(23197314)));
+    assert_eq!(parse_live_command("  live 510  "), Some(Ok(510)));
+    assert!(matches!(parse_live_command("live"), Some(Err(_))));
+    assert!(matches!(parse_live_command("live 0"), Some(Err(_))));
+    assert!(matches!(parse_live_command("live abc"), Some(Err(_))));
+    assert!(matches!(parse_live_command("live 1 extra"), Some(Err(_))));
+    assert_eq!(parse_live_command("search 晴天"), None);
+    assert_eq!(parse_live_command("play"), None);
+}
+
+#[test]
+fn live_state_disables_transport_and_has_no_duration() {
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST");
+    assert!(audio.is_live());
+    assert_eq!(audio.live_state(), crate::audio::LiveState::Playing);
+    assert_eq!(audio.live_room(), 21622811);
+    assert_eq!(audio.duration_ms(), None);
+    assert!(!audio.can_next());
+    assert!(!audio.can_prev());
+    assert!(!audio.can_seek_back());
+    assert!(!audio.can_seek_forward());
+
+    let availability = TransportAvailability::from_player(&audio);
+    for action in [
+        Action::NextTrack,
+        Action::PrevTrack,
+        Action::SeekBack,
+        Action::SeekForward,
+    ] {
+        assert!(!availability.enabled(action), "{action:?}");
+    }
+    assert!(availability.enabled(Action::TogglePlay));
+}
+
+#[test]
+fn live_player_bar_shows_live_instead_of_zero_time() {
+    let mut app = browse_app();
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST 决赛");
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    assert!(text.contains("LIVE"), "LIVE badge missing");
+    assert!(
+        !text.contains("00:00 / 00:00"),
+        "live must not render a zero position/duration"
+    );
+}
+
+#[test]
+fn stopping_live_keeps_the_queue() {
+    use np_app::PlayerApi;
+
+    let audio = TuiAudio::empty();
+    PlayerApi::queue_add(&audio, vec!["a.flac".to_owned(), "b.flac".to_owned()]).unwrap();
+    let before = audio.queue_items_snapshot().len();
+    assert_eq!(before, 2);
+    audio.live_for_test(21622811, "BLAST");
+    assert!(audio.stop_live());
+    assert!(!audio.is_live());
+    assert_eq!(audio.queue_items_snapshot().len(), before);
+    assert_eq!(audio.title(), "未播放");
+    assert!(!audio.stop_live());
+}
+
+#[test]
+fn escape_and_transport_actions_respect_live_mode() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-live-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &*library, &settings);
+    app.focus = Focus::List;
+    audio.live_for_test(21622811, "BLAST");
+
+    crate::controller::execute(
+        Action::NextTrack,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.status, "直播中不可切换");
+
+    crate::controller::execute(
+        Action::SeekForward,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.status, "直播中不可跳转");
+
+    crate::controller::execute(
+        Action::Escape,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.status, "已停止直播");
+    assert!(!audio.is_live());
+
     let _ = std::fs::remove_dir_all(root);
 }

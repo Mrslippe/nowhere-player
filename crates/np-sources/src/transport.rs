@@ -2,7 +2,7 @@
 //!
 //! 测试注入假实现返回夹具；生产实现见 [`ReqwestTransport`]。
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -44,6 +44,16 @@ pub trait Transport: Send + Sync {
         sink.write_all(&body)
             .map_err(|error| SourceError::Download(format!("写入下载文件失败: {error}")))?;
         Ok(body.len() as u64)
+    }
+
+    /// 打开一条流式 HTTP 连接（ADR-0008 §4.2）。
+    ///
+    /// 返回的 reader 没有总时限，供直播这类无限长的响应使用；默认实现
+    /// 明确返回 `NotImplemented`，旧测试假实现不需要改。
+    fn open_stream(&self, _url: &str, _headers: &[(&str, &str)]) -> Result<Box<dyn Read + Send>> {
+        Err(SourceError::NotImplemented(
+            "当前传输层不支持流式读取".to_owned(),
+        ))
     }
 }
 
@@ -132,6 +142,25 @@ impl Transport for ReqwestTransport {
         }
         Ok(copied)
     }
+
+    fn open_stream(&self, url: &str, headers: &[(&str, &str)]) -> Result<Box<dyn Read + Send>> {
+        // 单独建客户端：`self.client` 带 15s 总超时，直播会被误杀。
+        // 只保留 5s 连接超时；响应体由调用方按需读取，不做总时限。
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(None::<Duration>)
+            .user_agent(USER_AGENT)
+            .build()
+            .map_err(|error| SourceError::Network(format!("直播客户端初始化失败: {error}")))?;
+        self.throttle();
+        let mut request = client.get(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request.send().map_err(map_reqwest_error)?;
+        classify_status(response.status().as_u16())?;
+        Ok(Box::new(response))
+    }
 }
 
 /// 把 HTTP 状态码分成"成功 / 源不可用 / HTTP 错误"。
@@ -183,6 +212,23 @@ mod tests {
         assert!(matches!(
             classify_status(403),
             Err(SourceError::Unavailable(_))
+        ));
+    }
+
+    struct BodyOnlyTransport;
+
+    impl Transport for BodyOnlyTransport {
+        fn get(&self, _url: &str) -> Result<Vec<u8>> {
+            Ok(b"body".to_vec())
+        }
+    }
+
+    #[test]
+    fn open_stream_defaults_to_not_implemented() {
+        let transport = BodyOnlyTransport;
+        assert!(matches!(
+            transport.open_stream("https://example.invalid/stream.flv", &[]),
+            Err(SourceError::NotImplemented(_))
         ));
     }
 }

@@ -47,6 +47,29 @@ impl Player {
         })
     }
 
+    /// 打开任意 [`AudioSource`]（在线流 / 直播），使用默认 300 ms ring。
+    pub fn open_source(source: Box<dyn AudioSource>) -> Result<Self, AudioError> {
+        Self::open_source_with_ring(source, engine::DEFAULT_RING_MS)
+    }
+
+    /// 打开任意 [`AudioSource`] 并指定 ring 缓冲窗口。
+    ///
+    /// 直播用 150 ms，普通文件用默认 300 ms。不可 seek 的 source 会让
+    /// [`Player::seek`] 返回 [`AudioError::Seek`]。
+    pub fn open_source_with_ring(
+        source: Box<dyn AudioSource>,
+        ring_ms: u32,
+    ) -> Result<Self, AudioError> {
+        if ring_ms == 0 {
+            return Err(AudioError::InvalidArgument("ring_ms must be > 0"));
+        }
+        let (tap_writer, tap) = tap::create(48_000);
+        Ok(Self {
+            engine: engine::Engine::start_source(source, ring_ms, tap_writer)?,
+            tap,
+        })
+    }
+
     /// 只读样本 tap；供频谱等可视化读取，不改变播放路径。
     pub fn sample_tap(&self) -> SampleTapHandle {
         self.tap.clone()
@@ -136,5 +159,54 @@ impl Player {
     /// 设备回调不写错误文本，只翻转标志；actor 的 tick 里调用一次。
     pub fn take_device_error(&self) -> bool {
         self.engine.take_device_error()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::SampleFormat;
+
+    struct FakeSource {
+        seekable: bool,
+    }
+
+    impl AudioSource for FakeSource {
+        fn format(&self) -> AudioFormat {
+            AudioFormat::new(48_000, 2, SampleFormat::F32)
+        }
+
+        fn codec(&self) -> Codec {
+            Codec::Aac
+        }
+
+        fn duration_ms(&self) -> Option<u64> {
+            None
+        }
+
+        fn is_seekable(&self) -> bool {
+            self.seekable
+        }
+
+        fn read_frames(&mut self, _out: &mut [f32]) -> Result<usize, AudioError> {
+            Ok(0)
+        }
+
+        fn seek(&mut self, _position_ms: u64) -> Result<u64, AudioError> {
+            Err(AudioError::Seek("not seekable".to_owned()))
+        }
+    }
+
+    #[test]
+    fn zero_ring_is_rejected_before_opening_a_device() {
+        let result = Player::open_source_with_ring(Box::new(FakeSource { seekable: false }), 0);
+        assert!(matches!(result, Err(AudioError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn live_source_reports_no_duration_and_no_seek() {
+        let source = FakeSource { seekable: false };
+        assert!(source.duration_ms().is_none());
+        assert!(!source.is_seekable());
     }
 }

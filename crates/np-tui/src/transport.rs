@@ -14,12 +14,13 @@ pub(crate) struct TransportAvailability {
 
 impl TransportAvailability {
     pub(crate) fn from_player(player: &TuiAudio) -> Self {
+        let live = player.is_live();
         Self {
             playing: player.is_playing(),
-            can_prev: player.can_prev(),
-            can_next: player.can_next(),
-            can_back: player.can_seek_back(),
-            can_forward: player.can_seek_forward(),
+            can_prev: !live && player.can_prev(),
+            can_next: !live && player.can_next(),
+            can_back: !live && player.can_seek_back(),
+            can_forward: !live && player.can_seek_forward(),
         }
     }
 

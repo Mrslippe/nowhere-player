@@ -36,6 +36,9 @@ use crate::volume::gain_for_volume;
 /// decode-thread scheduling jitter while keeping startup buffering short.
 const RING_MS: u32 = 300;
 
+/// Default ring used by [`crate::Player::open_source`] (matches local files).
+pub(crate) const DEFAULT_RING_MS: u32 = RING_MS;
+
 /// Frames decoded per source read. 1024 frames ≈ 21 ms at 48 kHz.
 const READ_FRAMES: usize = 1024;
 
@@ -44,6 +47,12 @@ const FADE_MS: u32 = 12;
 
 /// How long the decoder waits for a renderer handshake before giving up.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Ring capacity in interleaved samples for a requested buffering window.
+fn ring_capacity_samples(format: AudioFormat, ring_ms: u32) -> usize {
+    let frames = (u64::from(format.sample_rate) * u64::from(ring_ms) / 1000).max(1) as usize;
+    frames * format.frame_samples()
+}
 
 /// State shared between control, decode thread and audio callback.
 pub(crate) struct Shared {
@@ -299,15 +308,32 @@ pub(crate) struct Engine {
     output_format: AudioFormat,
     plan: ProcessingPlan,
     duration_ms: Option<u64>,
+    seekable: bool,
     caps: DeviceCaps,
     device_name: String,
 }
 
 impl Engine {
     pub fn start(path: &Path, tap_writer: crate::tap::SampleTapWriter) -> Result<Self, AudioError> {
-        let source = FileSource::open(path)?;
+        let source = Box::new(FileSource::open(path)?);
+        Self::start_source(source, RING_MS, tap_writer)
+    }
+
+    /// Starts a decode thread over an arbitrary source and a caller-chosen ring.
+    ///
+    /// Live streams pass a shorter ring (150 ms) so playback starts quickly and
+    /// the listener stays closer to the live edge.
+    pub fn start_source(
+        source: Box<dyn AudioSource>,
+        ring_ms: u32,
+        tap_writer: crate::tap::SampleTapWriter,
+    ) -> Result<Self, AudioError> {
+        if ring_ms == 0 {
+            return Err(AudioError::InvalidArgument("ring_ms must be > 0"));
+        }
         let source_format = source.format();
         let duration_ms = source.duration_ms();
+        let seekable = source.is_seekable();
 
         let cpal_sink = CpalSharedSink::new()?;
         let device_name = cpal_sink.name().to_owned();
@@ -315,9 +341,8 @@ impl Engine {
         let output_format = negotiate(source_format, &caps)?;
         let plan = ProcessingPlan::compute(source_format, output_format);
 
-        let ring_frames =
-            (u64::from(output_format.sample_rate) * u64::from(RING_MS) / 1000) as usize;
-        let (producer, consumer) = ring::spsc(ring_frames * output_format.frame_samples());
+        let capacity = ring_capacity_samples(output_format, ring_ms);
+        let (producer, consumer) = ring::spsc(capacity);
 
         let shared = Arc::new(Shared::new());
         let mut renderer = Renderer::new(
@@ -334,13 +359,7 @@ impl Engine {
             Box::new(move |out: &mut [f32]| renderer.render(out)),
         )?;
 
-        let decode = spawn_decode(
-            Box::new(source),
-            plan,
-            output_format,
-            producer,
-            Arc::clone(&shared),
-        )?;
+        let decode = spawn_decode(source, plan, output_format, producer, Arc::clone(&shared))?;
 
         Ok(Self {
             shared,
@@ -350,6 +369,7 @@ impl Engine {
             output_format,
             plan,
             duration_ms,
+            seekable,
             caps,
             device_name,
         })
@@ -369,6 +389,9 @@ impl Engine {
 
     pub fn seek(&self, position_ms: u64) -> Result<(), AudioError> {
         self.check_device()?;
+        if !self.seekable {
+            return Err(AudioError::Seek("source is not seekable".to_owned()));
+        }
         let target = match self.duration_ms {
             Some(duration) => position_ms.min(duration),
             None => position_ms,
@@ -386,7 +409,7 @@ impl Engine {
 
     pub fn stop(&self) -> Result<(), AudioError> {
         self.pause()?;
-        self.seek(0)
+        if self.seekable { self.seek(0) } else { Ok(()) }
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -668,6 +691,13 @@ mod tests {
             previous = value;
         }
         max
+    }
+
+    #[test]
+    fn ring_capacity_scales_with_ring_ms() {
+        let format = AudioFormat::new(48_000, 2, crate::format::SampleFormat::F32);
+        assert_eq!(ring_capacity_samples(format, 150), 14_400);
+        assert_eq!(ring_capacity_samples(format, 300), 28_800);
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod instance;
 mod keymap;
 mod launcher;
 mod layout;
+mod live_command;
 mod logo;
 mod model;
 mod osc;

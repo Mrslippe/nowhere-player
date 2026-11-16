@@ -1917,6 +1917,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "np-live"
+version = "0.1.0"
+dependencies = [
+ "np-audio",
+ "np-sources",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "np-sources"
 version = "0.1.0"
 dependencies = [
@@ -1940,6 +1952,7 @@ dependencies = [
  "np-app",
  "np-audio",
  "np-core",
+ "np-live",
  "ratatui",
  "serde_json",
  "tray-icon",

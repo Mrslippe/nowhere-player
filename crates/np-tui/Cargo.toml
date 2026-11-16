@@ -10,6 +10,7 @@ publish = false
 np-app = { path = "../np-app" }
 np-audio = { path = "../np-audio" }
 np-core = { path = "../np-core" }
+np-live = { path = "../np-live" }
 ratatui = "0.30.1"
 crossterm = "0.29"
 unicode-width = "0.2"

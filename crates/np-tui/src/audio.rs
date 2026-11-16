@@ -2,7 +2,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
@@ -10,6 +11,18 @@ use np_core::{PlaybackMode, PlaybackState, PlaybackStatus, QueueView};
 
 use crate::model::TrackRef;
 use crate::playback::{PlaybackQueue, QueueItem, TrackKey};
+
+/// 直播的 ring 窗口：比本地文件的 300 ms 更短，启动更快、更贴近 live edge。
+pub(crate) const LIVE_RING_MS: u32 = 150;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveState {
+    Idle,
+    Preparing,
+    Playing,
+}
+
+type LivePreparation = (u64, Result<np_live::PreparedLive, String>);
 
 pub struct TuiAudio {
     player: RefCell<Option<Player>>,
@@ -22,6 +35,12 @@ pub struct TuiAudio {
     volume: Cell<f32>,
     pending_metadata: RefCell<Option<(String, String, u64)>>,
     queue: Mutex<PlaybackQueue>,
+    live_state: Cell<LiveState>,
+    live_generation: Cell<u64>,
+    live_rx: RefCell<Option<std::sync::mpsc::Receiver<LivePreparation>>>,
+    live_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    live_room: Cell<u64>,
+    live_note: RefCell<Option<String>>,
 }
 
 impl TuiAudio {
@@ -53,10 +72,19 @@ impl TuiAudio {
             volume: Cell::new(1.0),
             pending_metadata: RefCell::new(None),
             queue: Mutex::new(PlaybackQueue::new()),
+            live_state: Cell::new(LiveState::Idle),
+            live_generation: Cell::new(0),
+            live_rx: RefCell::new(None),
+            live_cancel: RefCell::new(None),
+            live_room: Cell::new(0),
+            live_note: RefCell::new(None),
         }
     }
 
     fn open_path(&self, path: &Path) -> Result<(), CmdError> {
+        if self.is_live() {
+            self.stop_live();
+        }
         let player = Player::open(path)
             .map_err(|error| CmdError::new("E_AUDIO", format!("打开音频失败：{error}")))?;
         player.set_volume(self.volume.get());
@@ -77,6 +105,174 @@ impl TuiAudio {
         Ok(())
     }
 
+    /// 当前是否处于直播独占模式（准备中或播放中）。
+    pub(crate) fn is_live(&self) -> bool {
+        self.live_state.get() != LiveState::Idle
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_state(&self) -> LiveState {
+        self.live_state.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_room(&self) -> u64 {
+        self.live_room.get()
+    }
+
+    /// 取走一次性的直播状态文本（成功 / 失败 / 结束）。
+    pub(crate) fn take_live_note(&self) -> Option<String> {
+        self.live_note.borrow_mut().take()
+    }
+
+    /// 开始一路直播：停止当前播放、保留队列，后台准备网络与首帧。
+    ///
+    /// 本方法不碰网络；准备线程完成后由 [`poll_live`](Self::poll_live) 在主线程
+    /// 打开 `Player`。
+    pub(crate) fn start_live(&self, room_id: u64) {
+        self.stop_playback();
+        let generation = self.live_generation.get().wrapping_add(1);
+        self.live_generation.set(generation);
+        self.live_state.set(LiveState::Preparing);
+        self.live_room.set(room_id);
+        *self.title.borrow_mut() = format!("直播 {room_id} 准备中…");
+        *self.artist.borrow_mut() = "B站直播".to_owned();
+        self.duration_ms.set(None);
+        self.live_note.borrow_mut().take();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.live_cancel.borrow_mut() = Some(Arc::clone(&cancel));
+        let (tx, rx) = std::sync::mpsc::channel();
+        *self.live_rx.borrow_mut() = Some(rx);
+
+        let spawn = std::thread::Builder::new()
+            .name("np-live-prepare".to_owned())
+            .spawn(move || {
+                let result = prepare_live(room_id, &cancel);
+                if cancel.load(Ordering::Acquire) {
+                    return;
+                }
+                let _ = tx.send((generation, result));
+            });
+        if let Err(error) = spawn {
+            self.live_state.set(LiveState::Idle);
+            *self.live_rx.borrow_mut() = None;
+            *self.live_cancel.borrow_mut() = None;
+            *self.title.borrow_mut() = "未播放".to_owned();
+            *self.artist.borrow_mut() = "Nowhere Player".to_owned();
+            *self.live_note.borrow_mut() = Some(format!("直播准备线程启动失败：{error}"));
+        }
+    }
+
+    /// 主线程每 tick 调用：接住准备结果并打开播放器。
+    pub(crate) fn poll_live(&self) -> bool {
+        let received = {
+            let receiver = self.live_rx.borrow();
+            match receiver.as_ref() {
+                Some(receiver) => match receiver.try_recv() {
+                    Ok(value) => Some(value),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((
+                        self.live_generation.get(),
+                        Err("直播准备线程意外结束".to_owned()),
+                    )),
+                },
+                None => None,
+            }
+        };
+        let Some((generation, result)) = received else {
+            return false;
+        };
+        if generation != self.live_generation.get() {
+            return false;
+        }
+        *self.live_rx.borrow_mut() = None;
+        *self.live_cancel.borrow_mut() = None;
+
+        match result {
+            Ok(prepared) => {
+                let title = if prepared.title.trim().is_empty() {
+                    format!("直播 {}", prepared.room_id)
+                } else {
+                    prepared.title
+                };
+                match Player::open_source_with_ring(prepared.source, LIVE_RING_MS) {
+                    Ok(player) => {
+                        player.set_volume(self.volume.get());
+                        let tap = player.sample_tap();
+                        if let Err(error) = player.play() {
+                            self.live_state.set(LiveState::Idle);
+                            *self.title.borrow_mut() = "未播放".to_owned();
+                            *self.artist.borrow_mut() = "Nowhere Player".to_owned();
+                            *self.live_note.borrow_mut() = Some(format!("直播播放失败：{error}"));
+                            return true;
+                        }
+                        *self.tap.borrow_mut() = Some(tap);
+                        *self.player.borrow_mut() = Some(player);
+                        self.playing.set(true);
+                        self.duration_ms.set(None);
+                        self.live_state.set(LiveState::Playing);
+                        *self.title.borrow_mut() = title.clone();
+                        *self.artist.borrow_mut() = "B站直播".to_owned();
+                        *self.live_note.borrow_mut() = Some(format!("直播：{title}"));
+                    }
+                    Err(error) => {
+                        self.live_state.set(LiveState::Idle);
+                        *self.title.borrow_mut() = "未播放".to_owned();
+                        *self.artist.borrow_mut() = "Nowhere Player".to_owned();
+                        *self.live_note.borrow_mut() = Some(format!("直播音频输出失败：{error}"));
+                    }
+                }
+            }
+            Err(message) => {
+                self.live_state.set(LiveState::Idle);
+                *self.title.borrow_mut() = "未播放".to_owned();
+                *self.artist.borrow_mut() = "Nowhere Player".to_owned();
+                *self.live_note.borrow_mut() = Some(format!("直播失败：{message}"));
+            }
+        }
+        true
+    }
+
+    /// `Esc`：停止直播（best-effort），队列保留。
+    ///
+    /// 若解码线程正阻塞在单次 HTTP read 上，drop `Player` 会等这次 read
+    /// 返回；正常网络下应在 2 秒内完成。
+    pub(crate) fn stop_live(&self) -> bool {
+        if !self.is_live() {
+            return false;
+        }
+        self.shutdown_live();
+        *self.player.borrow_mut() = None;
+        *self.tap.borrow_mut() = None;
+        self.playing.set(false);
+        self.duration_ms.set(None);
+        *self.source_path.borrow_mut() = None;
+        *self.title.borrow_mut() = "未播放".to_owned();
+        *self.artist.borrow_mut() = "Nowhere Player".to_owned();
+        self.live_room.set(0);
+        true
+    }
+
+    /// 取消准备、丢弃结果，但不重置标题等展示字段。
+    fn shutdown_live(&self) {
+        if let Some(cancel) = self.live_cancel.borrow_mut().take() {
+            cancel.store(true, Ordering::Release);
+        }
+        *self.live_rx.borrow_mut() = None;
+        self.live_state.set(LiveState::Idle);
+    }
+
+    /// 停止当前播放（本地或直播），不动队列。
+    fn stop_playback(&self) {
+        self.shutdown_live();
+        *self.player.borrow_mut() = None;
+        *self.tap.borrow_mut() = None;
+        self.playing.set(false);
+        self.duration_ms.set(None);
+        *self.source_path.borrow_mut() = None;
+    }
+
     pub fn title(&self) -> String {
         self.title.borrow().clone()
     }
@@ -86,6 +282,9 @@ impl TuiAudio {
     }
 
     pub fn duration_ms(&self) -> Option<u64> {
+        if self.is_live() {
+            return None;
+        }
         self.player
             .borrow()
             .as_ref()
@@ -139,20 +338,22 @@ impl TuiAudio {
     }
 
     pub fn can_next(&self) -> bool {
-        self.lock_queue().can_next()
+        !self.is_live() && self.lock_queue().can_next()
     }
 
     pub fn can_prev(&self) -> bool {
-        self.lock_queue().can_prev()
+        !self.is_live() && self.lock_queue().can_prev()
     }
 
     pub fn can_seek_back(&self) -> bool {
-        self.position_ms() > 0
+        !self.is_live() && self.position_ms() > 0
     }
 
     pub fn can_seek_forward(&self) -> bool {
-        self.duration_ms()
-            .is_some_and(|duration| duration > 0 && self.position_ms() < duration)
+        !self.is_live()
+            && self
+                .duration_ms()
+                .is_some_and(|duration| duration > 0 && self.position_ms() < duration)
     }
 
     pub fn mode(&self) -> PlaybackMode {
@@ -320,6 +521,9 @@ impl TuiAudio {
     }
 
     fn step(&self, forward: bool) -> Result<PlaybackState, CmdError> {
+        if self.is_live() {
+            return Err(CmdError::new("E_CMD_ARG", "直播中不可切换歌曲"));
+        }
         let (index, same) = {
             let mut queue = self.lock_queue();
             if queue.is_empty() {
@@ -338,6 +542,28 @@ impl TuiAudio {
         Ok(self.state())
     }
     pub fn handle_ended(&self) -> Result<bool, CmdError> {
+        if self.live_state.get() != LiveState::Idle {
+            if self.live_state.get() == LiveState::Preparing {
+                return Ok(false);
+            }
+            let (ended, error) = {
+                let player = self.player.borrow();
+                player.as_ref().map_or((false, None), |player| {
+                    (player.is_ended(), player.last_error())
+                })
+            };
+            if ended || error.is_some() {
+                let note = match error {
+                    Some(error) => format!("直播结束：{error}"),
+                    None => "直播已结束".to_owned(),
+                };
+                self.stop_live();
+                *self.live_note.borrow_mut() = Some(note);
+                return Ok(true);
+            }
+            // 直播结束不自动下一首。
+            return Ok(false);
+        }
         let ended = self
             .player
             .borrow()
@@ -413,6 +639,9 @@ impl PlayerApi for TuiAudio {
     }
 
     fn seek(&self, position_ms: u64) -> Result<PlaybackState, CmdError> {
+        if self.is_live() {
+            return Err(CmdError::new("E_CMD_ARG", "直播中不可跳转"));
+        }
         if let Some(player) = self.player.borrow().as_ref() {
             player
                 .seek(position_ms)
@@ -456,6 +685,9 @@ impl PlayerApi for TuiAudio {
     }
 
     fn queue_clear(&self) -> Result<QueueView, CmdError> {
+        if self.is_live() {
+            self.stop_live();
+        }
         self.lock_queue().clear();
         *self.player.borrow_mut() = None;
         *self.tap.borrow_mut() = None;
@@ -473,6 +705,22 @@ impl PlayerApi for TuiAudio {
         }
         self.open_queue_item(index)?;
         Ok(self.queue_view())
+    }
+}
+
+fn prepare_live(room_id: u64, cancel: &AtomicBool) -> Result<np_live::PreparedLive, String> {
+    np_live::prepare_default(room_id, cancel).map_err(|error| error.user_message())
+}
+
+#[cfg(test)]
+impl TuiAudio {
+    /// 只设置直播展示状态，不打开设备 / 网络；供 TUI 状态与渲染测试使用。
+    pub(crate) fn live_for_test(&self, room_id: u64, title: &str) {
+        self.live_state.set(LiveState::Playing);
+        self.live_room.set(room_id);
+        self.duration_ms.set(None);
+        *self.title.borrow_mut() = title.to_owned();
+        *self.artist.borrow_mut() = "B站直播".to_owned();
     }
 }
 

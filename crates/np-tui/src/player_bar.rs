@@ -65,10 +65,23 @@ pub(crate) fn draw_player_strip(
         }
     }
 
-    let duration = player.duration_ms().unwrap_or(0);
-    let position = player.position_ms().min(duration);
+    let live = player.is_live();
+    let duration = if live {
+        0
+    } else {
+        player.duration_ms().unwrap_or(0)
+    };
+    let position = if live {
+        0
+    } else {
+        player.position_ms().min(duration)
+    };
     let overlay_y = content.bottom().saturating_sub(2);
-    let time = format!("{} / {}", format_time(position), format_time(duration));
+    let time = if live {
+        "LIVE".to_owned()
+    } else {
+        format!("{} / {}", format_time(position), format_time(duration))
+    };
     let time_width = UnicodeWidthStr::width(time.as_str()) as u16;
     let bar_width = content
         .width

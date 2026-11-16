@@ -34,6 +34,13 @@ pub trait AudioSource: Send {
     /// Total duration when the container states it.
     fn duration_ms(&self) -> Option<u64>;
 
+    /// Whether [`seek`](Self::seek) is meaningful for this source.
+    ///
+    /// Local files are always seekable; live streams override this to `false`.
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
     /// Fills `out` with interleaved samples, returning the number of frames
     /// written. `0` means end of stream.
     fn read_frames(&mut self, out: &mut [f32]) -> Result<usize, AudioError>;
@@ -267,5 +274,70 @@ fn codec_from_params(
             "aiff" => Codec::Aiff,
             _ => Codec::Unknown,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeSource {
+        seekable: bool,
+    }
+
+    impl AudioSource for FakeSource {
+        fn format(&self) -> AudioFormat {
+            AudioFormat::new(48_000, 2, SampleFormat::F32)
+        }
+
+        fn codec(&self) -> Codec {
+            Codec::Aac
+        }
+
+        fn duration_ms(&self) -> Option<u64> {
+            None
+        }
+
+        fn is_seekable(&self) -> bool {
+            self.seekable
+        }
+
+        fn read_frames(&mut self, _out: &mut [f32]) -> Result<usize, AudioError> {
+            Ok(0)
+        }
+
+        fn seek(&mut self, _position_ms: u64) -> Result<u64, AudioError> {
+            Err(AudioError::Seek("fake source".to_owned()))
+        }
+    }
+
+    struct DefaultSource;
+
+    impl AudioSource for DefaultSource {
+        fn format(&self) -> AudioFormat {
+            AudioFormat::new(48_000, 2, SampleFormat::F32)
+        }
+
+        fn codec(&self) -> Codec {
+            Codec::Aac
+        }
+
+        fn duration_ms(&self) -> Option<u64> {
+            None
+        }
+
+        fn read_frames(&mut self, _out: &mut [f32]) -> Result<usize, AudioError> {
+            Ok(0)
+        }
+
+        fn seek(&mut self, _position_ms: u64) -> Result<u64, AudioError> {
+            Err(AudioError::Seek("not seekable".to_owned()))
+        }
+    }
+
+    #[test]
+    fn is_seekable_defaults_to_true() {
+        assert!(DefaultSource.is_seekable());
+        assert!(!FakeSource { seekable: false }.is_seekable());
     }
 }

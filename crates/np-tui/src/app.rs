@@ -1294,6 +1294,10 @@ impl App {
         self.cursor = 0;
         self.history_cursor = None;
         self.status = format!("执行：{input}");
+        if let Some(status) = crate::live_command::start_live_command(&input, player) {
+            self.status = status;
+            return;
+        }
         let block_id = format!("tui-{}", now_millis());
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "search"
