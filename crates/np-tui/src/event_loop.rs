@@ -470,7 +470,7 @@ where
                                 app.status = format!("模式：{}", playback_mode_label(mode));
                                 app.refresh_settings_view(theme_ctx.settings);
                             }
-                            KeyCode::Char('[') => {
+                            KeyCode::Char('[') | KeyCode::Char('{') | KeyCode::Char('【') => {
                                 let target = player.position_ms().saturating_sub(5_000);
                                 if let Err(error) = PlayerApi::seek(player, target) {
                                     app.status = error.message;
@@ -478,7 +478,7 @@ where
                                     app.status = "后退 5s".to_owned();
                                 }
                             }
-                            KeyCode::Char(']') => {
+                            KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('】') => {
                                 let position = player.position_ms().saturating_add(5_000);
                                 let target = player
                                     .duration_ms()
