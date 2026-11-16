@@ -454,6 +454,31 @@ fn test_backend_renders_title_and_input() {
 }
 
 #[test]
+fn theme_name_is_italic() {
+    use ratatui::style::Modifier;
+
+    let mut app = App::new();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    let symbols: Vec<&str> = (0..72).map(|x| buffer[(x, 0)].symbol()).collect();
+    let width = app.theme_name.chars().count();
+    let start = (0..72 - width)
+        .find(|&x| symbols[x..x + width].concat() == app.theme_name)
+        .expect("theme name in top border");
+    for offset in 0..width {
+        let cell = &buffer[(start as u16 + offset as u16, 0)];
+        assert!(
+            cell.style().add_modifier.contains(Modifier::ITALIC),
+            "theme name cell {cell:?} is not italic"
+        );
+    }
+}
+
+#[test]
 fn settings_file_is_read_as_theme_id() {
     let dir = std::env::temp_dir().join(format!("np-tui-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

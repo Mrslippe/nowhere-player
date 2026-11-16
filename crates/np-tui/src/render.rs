@@ -41,7 +41,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
         theme_x,
         full.y,
         &theme,
-        Style::default().fg(app.palette.accent),
+        Style::default()
+            .fg(app.palette.accent)
+            .add_modifier(Modifier::ITALIC),
     );
     let _ = border_style;
 
