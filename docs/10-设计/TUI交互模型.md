@@ -304,7 +304,7 @@ KeyEvent + InputContext
    App 状态（status / transport_feedback / 数据变化）
 ```
 
-- `keymap.rs`：唯一键位表；`<` / `>` / `p` / `n` 等只在这里绑定。
+- `keymap.rs`：唯一键位表；`,` / `.`（含全角 `，` / `。`）/ `p` / `n` 等只在这里绑定。
   - `InputContext` 只带聚焦区、当前视图等判断所需状态。
   - 不支持业务调用、不解析命令字符串。
 - `controller.rs`：只接收 `Action`，执行播放、歌单、设置、搜索平台切换等。

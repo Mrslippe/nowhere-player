@@ -57,7 +57,7 @@ NP_TUI_DATA_DIR=/tmp/np-data target/release/np-tui.exe
 | 键 | 动作 |
 |---|---|
 | `Space` | 播放 / 暂停 |
-| `>` / `<` | 下一首 / 上一首（PlayList 根 `n` 为新建歌单） |
+| `,` / `.`（全角 `，` / `。`） | 上一首 / 下一首（PlayList 根 `n` 为新建歌单） |
 | `+` / `-` | 音量 ±5% |
 | `←` / `→` | Browse ↔ List 焦点 |
 | `s` | 全局搜索：打开 Search 并聚焦输入框 |
@@ -69,7 +69,7 @@ NP_TUI_DATA_DIR=/tmp/np-data target/release/np-tui.exe
 | `r` | 从队列或歌单移除；Settings 内重置 |
 | `[` / `]` | 后退 / 前进 5 秒 |
 | `m` | 循环播放模式 |
-| 按住 `Ctrl` | Player 下边框显示 `<` / `[` / `Space` / `]` / `>` 键位 |
+| 按住 `Ctrl` | Player 下边框显示 `,` / `[` / `Space` / `]` / `.` 键位 |
 | `Esc` | 返回 / 取消当前确认 |
 | `q` | 退出（二次确认：再按 Enter） |
 

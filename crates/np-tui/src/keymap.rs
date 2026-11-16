@@ -150,18 +150,32 @@ const BINDINGS: &[Binding] = &[
         label: "Space",
     },
     Binding {
-        key: KeyCode::Char('<'),
+        key: KeyCode::Char(','),
         shift: false,
         scope: Scope::Global,
         action: Action::PrevTrack,
-        label: "<",
+        label: ",",
     },
     Binding {
-        key: KeyCode::Char('>'),
+        key: KeyCode::Char('，'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::PrevTrack,
+        label: ",",
+    },
+    Binding {
+        key: KeyCode::Char('.'),
         shift: false,
         scope: Scope::Global,
         action: Action::NextTrack,
-        label: ">",
+        label: ".",
+    },
+    Binding {
+        key: KeyCode::Char('。'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::NextTrack,
+        label: ".",
     },
     Binding {
         key: KeyCode::Char('['),
@@ -395,15 +409,23 @@ mod tests {
     fn transport_keys_are_resolved_from_the_table() {
         let library = ctx(Focus::List, BrowseKind::Library);
         assert_eq!(
-            resolve(&library, KeyCode::Char('<'), KeyModifiers::NONE),
+            resolve(&library, KeyCode::Char(','), KeyModifiers::NONE),
             Some(Action::PrevTrack)
         );
         assert_eq!(
-            resolve(&library, KeyCode::Char('>'), KeyModifiers::NONE),
+            resolve(&library, KeyCode::Char('，'), KeyModifiers::NONE),
+            Some(Action::PrevTrack)
+        );
+        assert_eq!(
+            resolve(&library, KeyCode::Char('.'), KeyModifiers::NONE),
             Some(Action::NextTrack)
         );
-        assert_eq!(label(Action::PrevTrack), "<");
-        assert_eq!(label(Action::NextTrack), ">");
+        assert_eq!(
+            resolve(&library, KeyCode::Char('。'), KeyModifiers::NONE),
+            Some(Action::NextTrack)
+        );
+        assert_eq!(label(Action::PrevTrack), ",");
+        assert_eq!(label(Action::NextTrack), ".");
     }
 
     #[test]
