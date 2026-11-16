@@ -152,7 +152,10 @@ where
         }
         while let Ok(path) = search.play_rx.try_recv() {
             match player.play(Some(path)) {
-                Ok(_) => app.status = "播放中".to_owned(),
+                Ok(_) => {
+                    app.status = "播放中".to_owned();
+                    app.flash_transport(TransportButton::Play);
+                }
                 Err(error) => app.status = error.message.clone(),
             }
             app.refresh_queue_view(player, &**library);
@@ -449,7 +452,10 @@ where
                                                         };
                                                         match result {
                                                             Ok(_) => {
-                                                                app.status = "播放中".to_owned()
+                                                                app.status = "播放中".to_owned();
+                                                                app.flash_transport(
+                                                                    TransportButton::Play,
+                                                                );
                                                             }
                                                             Err(error) => {
                                                                 app.status = error.message.clone()
