@@ -287,7 +287,7 @@ fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: 
     };
     let play_label = if transport.playing { "❚❚" } else { "▶" };
     let items = [
-        ("◀◀", "p", TransportButton::Prev, transport.can_prev),
+        ("◀◀", "<", TransportButton::Prev, transport.can_prev),
         ("<<", "[", TransportButton::SeekBack, transport.can_back),
         (play_label, "Space", TransportButton::Play, true),
         (
@@ -296,7 +296,7 @@ fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: 
             TransportButton::SeekForward,
             transport.can_forward,
         ),
-        ("▶▶", "n", TransportButton::Next, transport.can_next),
+        ("▶▶", ">", TransportButton::Next, transport.can_next),
     ];
 
     let mut spans = Vec::new();

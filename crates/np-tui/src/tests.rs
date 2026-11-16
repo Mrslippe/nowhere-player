@@ -1396,7 +1396,8 @@ fn player_transport_buttons_reveal_keys_only_with_ctrl() {
     assert!(hinted.contains("Space"), "{hinted:?}");
     assert!(hinted.contains("[ "), "{hinted:?}");
     assert!(hinted.contains("] "), "{hinted:?}");
-    assert!(hinted.contains("n "), "{hinted:?}");
+    assert!(hinted.contains("> "), "{hinted:?}");
+    assert!(hinted.contains("< "), "{hinted:?}");
 }
 
 #[test]

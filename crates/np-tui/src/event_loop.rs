@@ -603,21 +603,24 @@ where
                                     app.flash_transport(TransportButton::Play);
                                 }
                             }
-                            KeyCode::Char('n') => {
+                            KeyCode::Char('n')
                                 if matches!(
                                     app.view_kind.get(app.view_index),
                                     Some(BrowseKind::PlaylistRoot)
-                                ) {
-                                    if app.pending_add.is_some()
-                                        || app.pending_remove.is_some()
-                                        || app.pending_playlist_delete.is_some()
-                                        || app.quit_armed
-                                    {
-                                        app.status = "请先完成或取消当前确认".to_owned();
-                                    } else if let Err(error) = app.begin_playlist_create() {
-                                        app.status = error;
-                                    }
-                                } else if !player.can_next() {
+                                ) =>
+                            {
+                                if app.pending_add.is_some()
+                                    || app.pending_remove.is_some()
+                                    || app.pending_playlist_delete.is_some()
+                                    || app.quit_armed
+                                {
+                                    app.status = "请先完成或取消当前确认".to_owned();
+                                } else if let Err(error) = app.begin_playlist_create() {
+                                    app.status = error;
+                                }
+                            }
+                            KeyCode::Char('>') => {
+                                if !player.can_next() {
                                     app.status = "没有下一首".to_owned();
                                 } else {
                                     match player.next() {
@@ -647,7 +650,7 @@ where
                                     app.status = error;
                                 }
                             }
-                            KeyCode::Char('p') => {
+                            KeyCode::Char('<') => {
                                 if !player.can_prev() {
                                     app.status = "没有上一首".to_owned();
                                 } else {
