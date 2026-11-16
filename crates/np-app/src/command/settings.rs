@@ -106,3 +106,13 @@ fn save_settings(dir: &Path, settings: &Settings) -> Result<(), CmdError> {
 
 /// 当前注册表支持的全部源（`source list` 在禁用状态下也要能列出来）。
 pub const KNOWN_SOURCES: [SourceId; 2] = [SourceId::Bilibili, SourceId::Netease];
+
+/// 四模式规范 id；与 TUI `playback.mode` 设置共用。
+pub(crate) fn playback_mode_id(mode: PlaybackMode) -> &'static str {
+    match (mode.repeat, mode.shuffle) {
+        (RepeatMode::One, false) => "single",
+        (RepeatMode::Off, true) => "shuffle",
+        (RepeatMode::All, false) => "list",
+        _ => "sequential",
+    }
+}

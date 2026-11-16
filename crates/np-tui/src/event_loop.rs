@@ -463,7 +463,12 @@ where
                             }
                             KeyCode::Char('m') => {
                                 let mode = player.cycle_mode();
+                                let _ = theme_ctx.settings.set_and_save(
+                                    "playback.mode",
+                                    np_core::SettingValue::Str(player.mode_id().to_owned()),
+                                );
                                 app.status = format!("模式：{}", playback_mode_label(mode));
+                                app.refresh_settings_view(theme_ctx.settings);
                             }
                             KeyCode::Char('[') => {
                                 let target = player.position_ms().saturating_sub(5_000);
@@ -545,6 +550,7 @@ where
                                     np_core::SettingValue::Num(f64::from(volume)),
                                 );
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
+                                app.refresh_settings_view(theme_ctx.settings);
                             }
                             KeyCode::Char('-') => {
                                 let step = (player.volume() * 20.0).round() as i32;
@@ -555,6 +561,7 @@ where
                                     np_core::SettingValue::Num(f64::from(volume)),
                                 );
                                 app.status = format!("音量 {}%", (volume * 100.0).round());
+                                app.refresh_settings_view(theme_ctx.settings);
                             }
                             KeyCode::Char('q') => {
                                 if !app.quit_armed {

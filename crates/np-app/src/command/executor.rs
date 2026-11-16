@@ -487,12 +487,17 @@ impl Executor<'_> {
         };
 
         let state = self.api.mode(mode)?;
+        if let Some(settings) = self.services.settings {
+            settings.set_and_save(
+                "playback.mode",
+                SettingValue::Str(super::settings::playback_mode_id(state.mode).to_owned()),
+            )?;
+        }
         Ok(Outcome {
             outputs: vec![text_of(mode_spans(&state.mode))],
             footer: None,
         })
     }
-
     /// `queue`：`list` / `add` / `remove` / `clear` / `jump`。
     fn queue(&self, parsed: &Parsed) -> Result<Outcome, CmdError> {
         let subcommand = parsed

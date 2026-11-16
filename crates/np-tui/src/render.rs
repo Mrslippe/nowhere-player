@@ -8,7 +8,7 @@ use crate::app::{App, Focus};
 use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::*;
-use crate::layout::layout_areas;
+use crate::layout::{layout_areas, layout_inner};
 use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
 
@@ -45,22 +45,33 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     );
     let _ = border_style;
 
-    let [top, player_area, controller_area] = layout_areas(full);
+    let [top, player_area, _] = layout_areas(full);
 
     draw_browse_list(frame, top, app);
     draw_player_strip(frame, player_area, app, player);
-    draw_controller(frame, controller_area, app);
-    if app.completion.is_some() && controller_area.y > top.y + 3 {
-        let height = 7.min(controller_area.y - top.y - 1);
-        let width = 58.min(controller_area.width.saturating_sub(4));
-        let popup = Rect {
-            x: controller_area.x + 2,
-            y: controller_area.y - height,
-            width,
+    if app.focus == Focus::Controller {
+        let inner = layout_inner(full);
+        let height = 3.min(inner.height);
+        let overlay = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(height),
+            width: inner.width,
             height,
         };
-        frame.render_widget(Clear, popup);
-        draw_completion(frame, popup, app);
+        frame.render_widget(Clear, overlay);
+        draw_controller(frame, overlay, app);
+        if app.completion.is_some() && overlay.y > top.y + 3 {
+            let popup_height = 7.min(overlay.y.saturating_sub(top.y).saturating_sub(1));
+            let width = 58.min(overlay.width.saturating_sub(4));
+            let popup = Rect {
+                x: overlay.x + 2,
+                y: overlay.y.saturating_sub(popup_height),
+                width,
+                height: popup_height,
+            };
+            frame.render_widget(Clear, popup);
+            draw_completion(frame, popup, app);
+        }
     }
     draw_status_border(frame, full, app);
 }
@@ -72,6 +83,13 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let y = area.bottom().saturating_sub(1);
     let max_x = area.right().saturating_sub(2);
     let mut x = area.x.saturating_add(2);
+    let edge_style = Style::default().fg(app.palette.line);
+    frame
+        .buffer_mut()
+        .set_string(area.x.saturating_add(1), y, " ", edge_style);
+    frame
+        .buffer_mut()
+        .set_string(area.right().saturating_sub(2), y, " ", edge_style);
 
     let status = app.status.trim();
     if !status.is_empty() && status != "就绪" {
@@ -241,6 +259,7 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     if !matches!(kind, Some(BrowseKind::Settings)) {
         hints.push(("[ ]", "±5s"));
         hints.push(("m", "模式"));
+        hints.push(("/", "命令"));
     }
     hints
 }

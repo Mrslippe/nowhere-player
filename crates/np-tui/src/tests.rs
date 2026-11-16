@@ -326,9 +326,9 @@ fn missing_theme_setting_defaults_to_milkgreen() {
 
 #[test]
 fn layout_heights_for_three_window_sizes() {
-    assert_eq!(vertical_heights(28), (12, 13, 3)); // 100x30
-    assert_eq!(vertical_heights(38), (17, 18, 3)); // 140x40
-    assert_eq!(vertical_heights(22), (9, 10, 3)); // 72/80x24
+    assert_eq!(vertical_heights(28), (12, 16, 0)); // 100x30
+    assert_eq!(vertical_heights(38), (17, 21, 0)); // 140x40
+    assert_eq!(vertical_heights(22), (9, 13, 0)); // 72/80x24
     let (top, player, controller) = vertical_heights(28);
     assert!(top + player + controller == 28);
     assert!(player >= 10);
@@ -350,11 +350,15 @@ fn layout_areas_stay_inside_outer_border() {
             player.y >= top.bottom(),
             "{width}x{height} player {player:?}"
         );
-        assert!(
-            controller.y >= player.bottom(),
+        assert_eq!(
+            controller.height, 0,
+            "{width}x{height} controller must be hidden"
+        );
+        assert_eq!(
+            controller.y,
+            player.bottom(),
             "{width}x{height} controller {controller:?}"
         );
-        assert_eq!(controller.bottom(), outer.bottom() - 1);
         assert_eq!(outer.width, width);
     }
 }
@@ -366,7 +370,7 @@ fn chinese_title_truncates_by_display_width() {
 }
 
 #[test]
-fn controller_is_always_visible_and_colon_focuses_it() {
+fn controller_is_hidden_until_colon_focuses_it() {
     let mut app = App::new();
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
@@ -380,9 +384,20 @@ fn controller_is_always_visible_and_colon_focuses_it() {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.replace(' ', "").contains("Controller"));
+    assert!(!text.replace(' ', "").contains("Controller"));
     app.enter_command();
     assert_eq!(app.focus, Focus::Controller);
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.replace(' ', "").contains("Controller"));
     app.leave_command();
     assert_eq!(app.focus, Focus::List);
     assert!(app.input.is_empty());
@@ -880,8 +895,8 @@ fn baseline_72x24_horizontal_coordinates() {
     assert_eq!(buffer[(69, 10)].symbol(), "┓");
     assert_eq!(buffer[(2, 11)].symbol(), " ");
     assert_eq!(buffer[(69, 11)].symbol(), " ");
-    assert_eq!(buffer[(2, 20)].symbol(), "┏");
-    assert_eq!(buffer[(69, 20)].symbol(), "┓");
+    assert_eq!(buffer[(2, 22)].symbol(), "┗");
+    assert_eq!(buffer[(69, 22)].symbol(), "┛");
 }
 
 #[test]
@@ -1232,4 +1247,48 @@ fn input_window_scrolls_by_display_width_for_cjk() {
     let (start, end) = input_window(&chars, 2, 4);
     assert!(start <= 2);
     assert!(end >= 3);
+}
+
+#[test]
+fn settings_view_lists_all_known_keys_by_category() {
+    let dir = std::env::temp_dir().join(format!(
+        "np-tui-settings-view-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let settings = SettingsHandle::load(dir.clone());
+    let view = crate::settings_page::settings_view(&settings);
+    assert_eq!(view.columns, vec!["分类", "设置项", "值"]);
+    let keys: Vec<&str> = view
+        .rows
+        .iter()
+        .filter_map(|row| row.get(1).map(String::as_str))
+        .collect();
+    for key in [
+        "playback.volume",
+        "playback.mode",
+        "theme.id",
+        "ui.splash",
+        "tui.focusMode",
+        "startup.enabled",
+        "source.bilibili.enabled",
+        "source.netease.enabled",
+    ] {
+        assert!(keys.contains(&key), "missing {key}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn playback_mode_setting_round_trips() {
+    let audio = TuiAudio::empty();
+    assert!(audio.set_mode_id("single"));
+    assert_eq!(audio.mode_id(), "single");
+    assert!(audio.set_mode_id("shuffle"));
+    assert_eq!(audio.mode_id(), "shuffle");
+    assert!(audio.set_mode_id("list"));
+    assert_eq!(audio.mode_id(), "list");
+    assert!(audio.set_mode_id("sequential"));
+    assert_eq!(audio.mode_id(), "sequential");
 }

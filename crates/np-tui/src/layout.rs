@@ -1,13 +1,13 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-/// 主区域高度：Controller 固定 3 行，top/Player 按设计稿 9:10 分配。
+/// 主区域高度：Controller 改为按需浮层，不再常驻占位。
+/// 原来 Controller 的 3 行全部给 Player；顶部保持原 9/19 比例。
 /// 状态栏嵌在外框下边线，不占主区域。
 pub(crate) fn main_heights(inner_height: u16) -> (u16, u16, u16) {
-    let controller = 3.min(inner_height);
-    let remaining = inner_height.saturating_sub(controller);
-    let top = rounded_ratio(remaining, 9, 19);
-    let player = remaining.saturating_sub(top);
-    (top, player, controller)
+    let former_remaining = inner_height.saturating_sub(3);
+    let top = rounded_ratio(former_remaining, 9, 19);
+    let player = inner_height.saturating_sub(top);
+    (top, player, 0)
 }
 
 fn rounded_ratio(value: u16, numerator: u16, denominator: u16) -> u16 {
@@ -51,9 +51,9 @@ mod tests {
 
     #[test]
     fn designed_ratios_match_72x24_and_larger_windows() {
-        assert_eq!(main_heights(22), (9, 10, 3));
-        assert_eq!(main_heights(28), (12, 13, 3));
-        assert_eq!(main_heights(38), (17, 18, 3));
+        assert_eq!(main_heights(22), (9, 13, 0));
+        assert_eq!(main_heights(28), (12, 16, 0));
+        assert_eq!(main_heights(38), (17, 21, 0));
     }
 
     #[test]

@@ -15,8 +15,9 @@
 - Search 空态可在 Key Words 直接输入关键词与可选参数（支持中文，修复 char boundary panic）
 - List 英文标题、Queue 左游标、Player 标题—作者、a 添加到歌单
 - 频谱右边空 4 格、搜索时长丢失、歌单去重修复，a 确认跳歌单子项
-- 状态栏上下文改造、歌单创建/删除、Enter 二次确认（742 tests）
+- 状态栏上下文改造、歌单创建/删除、Enter 二次确认（745 tests）
 - CJK 输入滚动修复、[ ] 跳转 5s、m 模式循环
+- Controller 按需浮层、Player +3 行、Settings 分类、模式持久化
 - 修复 n/p 切歌后 Queue view 不刷新
 - Key Words 左右留白、r 两击移除、音量持久化，搜索加入歌单时长修复
 - TUI 去命令化批次4：远程歌单后台准备、Executor listing 快照

@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::TuiAudio;
 use crate::playback::{QueueItem, TrackKey};
+use crate::settings_page::settings_view;
 use crate::theme::Palette;
 #[cfg(windows)]
 use crate::tray;
@@ -280,17 +281,7 @@ impl App {
             refs: Vec::new(),
             durations: Vec::new(),
         };
-        let settings_view = ViewData {
-            title: "设置".to_owned(),
-            columns: vec!["设置项".to_owned(), "值".to_owned()],
-            rows: settings
-                .entries()
-                .into_iter()
-                .map(|(key, value)| vec![key, value.display()])
-                .collect(),
-            refs: Vec::new(),
-            durations: Vec::new(),
-        };
+        let settings_view = settings_view(settings);
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
             .iter()
@@ -330,6 +321,16 @@ impl App {
         self.playlist_expanded = playlist_expanded;
         self.view_index = 0;
         self.row_index = 0;
+    }
+
+    pub(crate) fn refresh_settings_view(&mut self, settings: &SettingsHandle) {
+        if let Some(index) = self
+            .view_kind
+            .iter()
+            .position(|kind| *kind == BrowseKind::Settings)
+        {
+            self.views[index] = settings_view(settings);
+        }
     }
 
     pub(crate) fn toggle_playlist(&mut self) {

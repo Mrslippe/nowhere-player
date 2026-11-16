@@ -142,6 +142,36 @@ impl TuiAudio {
         self.lock_queue().mode().to_playback_mode()
     }
 
+    pub fn mode_id(&self) -> &'static str {
+        match self.mode() {
+            PlaybackMode {
+                repeat: np_core::RepeatMode::One,
+                shuffle: false,
+            } => "single",
+            PlaybackMode {
+                repeat: np_core::RepeatMode::Off,
+                shuffle: true,
+            } => "shuffle",
+            PlaybackMode {
+                repeat: np_core::RepeatMode::All,
+                shuffle: false,
+            } => "list",
+            _ => "sequential",
+        }
+    }
+
+    pub fn set_mode_id(&self, id: &str) -> bool {
+        let mode = match id {
+            "single" => crate::playback::QueueMode::SingleLoop,
+            "shuffle" => crate::playback::QueueMode::Shuffle,
+            "sequential" => crate::playback::QueueMode::Sequential,
+            "list" => crate::playback::QueueMode::ListLoop,
+            _ => return false,
+        };
+        self.lock_queue().set_mode(mode);
+        true
+    }
+
     pub fn cycle_mode(&self) -> PlaybackMode {
         let mut queue = self.lock_queue();
         let next = match queue.mode() {
@@ -536,5 +566,25 @@ mod tests {
         let sequential = audio.cycle_mode();
         assert_eq!(sequential.repeat, np_core::RepeatMode::Off);
         assert!(!sequential.shuffle);
+    }
+    #[test]
+    fn seek_moves_playback_position() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/accept/tone.wav");
+        if !path.is_file() {
+            return;
+        }
+        let audio = TuiAudio::empty();
+        audio
+            .play(Some(path.to_string_lossy().into_owned()))
+            .expect("open tone");
+        let target = 1_000;
+        PlayerApi::seek(&audio, target).expect("seek");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let position = audio.position_ms();
+        assert!(
+            position >= 900,
+            "seek did not move position: target={target}, position={position}"
+        );
     }
 }

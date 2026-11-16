@@ -22,6 +22,7 @@ mod playback;
 mod player_bar;
 mod render;
 mod selftest;
+mod settings_page;
 mod splash;
 mod startup;
 mod theme;
@@ -109,6 +110,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut player = TuiAudio::from_env();
     if let Some(np_core::SettingValue::Num(volume)) = settings.get("playback.volume") {
         player.set_volume(volume as f32);
+    }
+    if let Some(mode) = settings.get_str("playback.mode") {
+        player.set_mode_id(&mode);
     }
     if let Some(script) = selftest {
         return run_selftest(&script, &player, &library, &settings, &theme_api);
