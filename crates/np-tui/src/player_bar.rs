@@ -10,18 +10,10 @@ use crate::app::{App, VisualMode};
 use crate::audio::TuiAudio;
 use crate::fft::spectrum;
 use crate::glyphs;
-use crate::model::TransportButton;
+use crate::keymap::{self, Action};
+use crate::transport::TransportAvailability;
 use crate::truncate_width;
 use np_core::{PlaybackMode, RepeatMode};
-
-#[derive(Clone, Copy)]
-struct TransportState {
-    playing: bool,
-    can_prev: bool,
-    can_next: bool,
-    can_back: bool,
-    can_forward: bool,
-}
 
 pub(crate) fn draw_player_strip(
     frame: &mut ratatui::Frame,
@@ -38,13 +30,7 @@ pub(crate) fn draw_player_strip(
         app,
         player.volume(),
         player.mode(),
-        TransportState {
-            playing: player.is_playing(),
-            can_prev: player.can_prev(),
-            can_next: player.can_next(),
-            can_back: player.can_seek_back(),
-            can_forward: player.can_seek_forward(),
-        },
+        TransportAvailability::from_player(player),
     );
     let content = Rect {
         x: area.x.saturating_add(1),
@@ -181,7 +167,7 @@ fn draw_player_frame(
     app: &App,
     volume: f32,
     mode: PlaybackMode,
-    transport: TransportState,
+    transport: TransportAvailability,
 ) {
     let width = area.width as usize;
     if width < 4 {
@@ -249,7 +235,12 @@ fn draw_player_frame(
     draw_transport(frame, area, app, transport);
 }
 
-fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: TransportState) {
+fn draw_transport(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    transport: TransportAvailability,
+) {
     if area.width < 48 {
         return;
     }
@@ -280,37 +271,25 @@ fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: 
         .bg(app.palette.accent)
         .fg(app.palette.bg.unwrap_or(Color::Reset))
         .add_modifier(Modifier::BOLD);
-    let feedback = |button: TransportButton| {
+    let feedback = |button: Action| {
         app.transport_feedback.is_some_and(|(current, at)| {
             current == button && at.elapsed() < std::time::Duration::from_millis(180)
         })
     };
-    let play_label = if transport.playing { "❚❚" } else { "▶" };
-    let items = [
-        ("◀◀", "<", TransportButton::Prev, transport.can_prev),
-        ("<<", "[", TransportButton::SeekBack, transport.can_back),
-        (play_label, "Space", TransportButton::Play, true),
-        (
-            ">>",
-            "]",
-            TransportButton::SeekForward,
-            transport.can_forward,
-        ),
-        ("▶▶", ">", TransportButton::Next, transport.can_next),
-    ];
-
     let mut spans = Vec::new();
     let mut width = 0u16;
-    for (index, (label, key, button, enabled)) in items.into_iter().enumerate() {
+    for (index, action) in keymap::TRANSPORT_ACTIONS.into_iter().enumerate() {
+        let label = transport_glyph(action, transport.playing);
         if index > 0 {
             spans.push(TuiSpan::raw(gap));
             width = width.saturating_add(UnicodeWidthStr::width(gap) as u16);
         }
-        let style = if feedback(button) {
+        let enabled = transport.enabled(action);
+        let style = if feedback(action) {
             flash_style
         } else if !enabled {
             disabled
-        } else if button == TransportButton::Play {
+        } else if action == Action::TogglePlay {
             if transport.playing {
                 playing_style
             } else {
@@ -322,6 +301,7 @@ fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: 
         spans.push(TuiSpan::styled(label, style));
         width = width.saturating_add(UnicodeWidthStr::width(label) as u16);
         if hints {
+            let key = keymap::label(action);
             spans.push(TuiSpan::raw(" "));
             width = width.saturating_add(1);
             spans.push(TuiSpan::styled(key, key_style));
@@ -344,6 +324,23 @@ fn draw_transport(frame: &mut ratatui::Frame, area: Rect, app: &App, transport: 
     frame
         .buffer_mut()
         .set_string(start_x.saturating_add(width), bottom, " ", edge_style);
+}
+
+fn transport_glyph(action: Action, playing: bool) -> &'static str {
+    match action {
+        Action::PrevTrack => "◀◀",
+        Action::SeekBack => "<<",
+        Action::TogglePlay => {
+            if playing {
+                "❚❚"
+            } else {
+                "▶"
+            }
+        }
+        Action::SeekForward => ">>",
+        Action::NextTrack => "▶▶",
+        _ => "",
+    }
 }
 
 pub(crate) fn draw_spectrum(

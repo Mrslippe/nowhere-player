@@ -1,5 +1,6 @@
 use super::*;
 use crate::audio::TuiAudio;
+use crate::keymap::Action;
 use crate::layout::*;
 use crate::render::*;
 use crate::theme::Palette;
@@ -1430,7 +1431,7 @@ fn transport_buttons_are_gray_when_unavailable() {
 #[test]
 fn transport_feedback_flashes_the_pressed_button() {
     let mut app = browse_app();
-    app.transport_feedback = Some((TransportButton::Play, std::time::Instant::now()));
+    app.transport_feedback = Some((Action::TogglePlay, std::time::Instant::now()));
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
     terminal
@@ -1556,4 +1557,60 @@ fn global_search_entry_reopens_input_and_clears_results() {
     assert_eq!(SearchPlatform::All.next(), SearchPlatform::Netease);
     assert_eq!(SearchPlatform::Netease.next(), SearchPlatform::Bilibili);
     assert_eq!(SearchPlatform::Bilibili.next(), SearchPlatform::All);
+}
+
+#[test]
+fn controller_executes_resolved_actions() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-controller-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &*library, &settings);
+    app.focus = Focus::List;
+    app.view_index = app
+        .view_kind
+        .iter()
+        .position(|kind| *kind == BrowseKind::PlaylistRoot)
+        .unwrap();
+    crate::controller::execute(
+        Action::CreatePlaylist,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(app.playlist_input.is_some());
+
+    app.cancel_playlist_create();
+    app.view_index = app
+        .view_kind
+        .iter()
+        .position(|kind| *kind == BrowseKind::Search)
+        .unwrap();
+    crate::controller::execute(
+        Action::NextSearchPlatform,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.search_platform, SearchPlatform::Netease);
+    let _ = std::fs::remove_dir_all(root);
 }

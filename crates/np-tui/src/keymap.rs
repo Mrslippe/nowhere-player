@@ -1,0 +1,450 @@
+//! 输入映射：把按键 + 当前上下文解析成语义动作。
+//!
+//! 这里不碰播放器、库、网络；只回答“现在这个键是什么动作”。
+//! 展示层需要键名时也查同一张表，避免 player_bar / 状态栏各写一份。
+
+use crossterm::event::{KeyCode, KeyModifiers};
+
+use crate::model::{BrowseKind, Focus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Action {
+    PrevTrack,
+    NextTrack,
+    SeekBack,
+    SeekForward,
+    TogglePlay,
+    MoveUp,
+    MoveDown,
+    FocusLeft,
+    FocusRight,
+    Enter,
+    Escape,
+    TogglePlaylist,
+    CreatePlaylist,
+    DeletePlaylist,
+    Add,
+    Remove,
+    ResetSetting,
+    ClearSearch,
+    OpenSearch,
+    NextSearchPlatform,
+    OpenCommand,
+    CycleMode,
+    VolumeUp,
+    VolumeDown,
+    Quit,
+    SettingsAdjust(i32),
+}
+
+pub(crate) const TRANSPORT_ACTIONS: [Action; 5] = [
+    Action::PrevTrack,
+    Action::SeekBack,
+    Action::TogglePlay,
+    Action::SeekForward,
+    Action::NextTrack,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Global,
+    Browse,
+    List,
+    PlaylistRoot,
+    Search,
+    SearchList,
+    SettingsList,
+}
+
+struct Binding {
+    key: KeyCode,
+    shift: bool,
+    scope: Scope,
+    action: Action,
+    label: &'static str,
+}
+
+const BINDINGS: &[Binding] = &[
+    // 设置页的左右调整与重置优先于全局焦点键。
+    Binding {
+        key: KeyCode::Left,
+        shift: false,
+        scope: Scope::SettingsList,
+        action: Action::SettingsAdjust(-1),
+        label: "←",
+    },
+    Binding {
+        key: KeyCode::Right,
+        shift: false,
+        scope: Scope::SettingsList,
+        action: Action::SettingsAdjust(1),
+        label: "→",
+    },
+    Binding {
+        key: KeyCode::Char('r'),
+        shift: false,
+        scope: Scope::SettingsList,
+        action: Action::ResetSetting,
+        label: "r",
+    },
+    // PlayList 根。
+    Binding {
+        key: KeyCode::Char('n'),
+        shift: false,
+        scope: Scope::PlaylistRoot,
+        action: Action::CreatePlaylist,
+        label: "n",
+    },
+    Binding {
+        key: KeyCode::Char('d'),
+        shift: false,
+        scope: Scope::PlaylistRoot,
+        action: Action::DeletePlaylist,
+        label: "d",
+    },
+    // Search 结果清空。
+    Binding {
+        key: KeyCode::Char('c'),
+        shift: false,
+        scope: Scope::SearchList,
+        action: Action::ClearSearch,
+        label: "c",
+    },
+    // Search 内切平台。
+    Binding {
+        key: KeyCode::Tab,
+        shift: false,
+        scope: Scope::Search,
+        action: Action::NextSearchPlatform,
+        label: "Tab",
+    },
+    // 列表通用。
+    Binding {
+        key: KeyCode::Char('a'),
+        shift: false,
+        scope: Scope::List,
+        action: Action::Add,
+        label: "a",
+    },
+    Binding {
+        key: KeyCode::Char('r'),
+        shift: false,
+        scope: Scope::List,
+        action: Action::Remove,
+        label: "r",
+    },
+    // Browse 内展开/折叠歌单。
+    Binding {
+        key: KeyCode::Enter,
+        shift: true,
+        scope: Scope::Browse,
+        action: Action::TogglePlaylist,
+        label: "Shift+Enter",
+    },
+    // 全局。
+    Binding {
+        key: KeyCode::Char(' '),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::TogglePlay,
+        label: "Space",
+    },
+    Binding {
+        key: KeyCode::Char('<'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::PrevTrack,
+        label: "<",
+    },
+    Binding {
+        key: KeyCode::Char('>'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::NextTrack,
+        label: ">",
+    },
+    Binding {
+        key: KeyCode::Char('['),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::SeekBack,
+        label: "[",
+    },
+    Binding {
+        key: KeyCode::Char('{'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::SeekBack,
+        label: "[",
+    },
+    Binding {
+        key: KeyCode::Char('【'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::SeekBack,
+        label: "[",
+    },
+    Binding {
+        key: KeyCode::Char(']'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::SeekForward,
+        label: "]",
+    },
+    Binding {
+        key: KeyCode::Char('}'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::SeekForward,
+        label: "]",
+    },
+    Binding {
+        key: KeyCode::Char('】'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::SeekForward,
+        label: "]",
+    },
+    Binding {
+        key: KeyCode::Char('+'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::VolumeUp,
+        label: "+",
+    },
+    Binding {
+        key: KeyCode::Char('='),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::VolumeUp,
+        label: "+",
+    },
+    Binding {
+        key: KeyCode::Char('-'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::VolumeDown,
+        label: "-",
+    },
+    Binding {
+        key: KeyCode::Char('m'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::CycleMode,
+        label: "m",
+    },
+    Binding {
+        key: KeyCode::Char('s'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::OpenSearch,
+        label: "s",
+    },
+    Binding {
+        key: KeyCode::Char('/'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::OpenCommand,
+        label: "/",
+    },
+    Binding {
+        key: KeyCode::Char('q'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::Quit,
+        label: "q",
+    },
+    Binding {
+        key: KeyCode::Char('j'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::MoveDown,
+        label: "↓",
+    },
+    Binding {
+        key: KeyCode::Down,
+        shift: false,
+        scope: Scope::Global,
+        action: Action::MoveDown,
+        label: "↓",
+    },
+    Binding {
+        key: KeyCode::Char('k'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::MoveUp,
+        label: "↑",
+    },
+    Binding {
+        key: KeyCode::Up,
+        shift: false,
+        scope: Scope::Global,
+        action: Action::MoveUp,
+        label: "↑",
+    },
+    Binding {
+        key: KeyCode::Left,
+        shift: false,
+        scope: Scope::Global,
+        action: Action::FocusLeft,
+        label: "←",
+    },
+    Binding {
+        key: KeyCode::Right,
+        shift: false,
+        scope: Scope::Global,
+        action: Action::FocusRight,
+        label: "→",
+    },
+    Binding {
+        key: KeyCode::Enter,
+        shift: false,
+        scope: Scope::Global,
+        action: Action::Enter,
+        label: "Enter",
+    },
+    Binding {
+        key: KeyCode::Enter,
+        shift: true,
+        scope: Scope::Global,
+        action: Action::Enter,
+        label: "Enter",
+    },
+    Binding {
+        key: KeyCode::Esc,
+        shift: false,
+        scope: Scope::Global,
+        action: Action::Escape,
+        label: "Esc",
+    },
+];
+
+pub(crate) struct InputContext {
+    pub(crate) focus: Focus,
+    pub(crate) kind: Option<BrowseKind>,
+}
+
+impl InputContext {
+    fn scopes(&self) -> Vec<Scope> {
+        let mut scopes = Vec::with_capacity(5);
+        if self.focus == Focus::List {
+            if matches!(self.kind, Some(BrowseKind::Settings)) {
+                scopes.push(Scope::SettingsList);
+            }
+            if matches!(self.kind, Some(BrowseKind::PlaylistRoot)) {
+                scopes.push(Scope::PlaylistRoot);
+            }
+            if matches!(self.kind, Some(BrowseKind::Search)) {
+                scopes.push(Scope::SearchList);
+            }
+            scopes.push(Scope::List);
+        } else {
+            if matches!(self.kind, Some(BrowseKind::PlaylistRoot)) {
+                scopes.push(Scope::PlaylistRoot);
+            }
+            scopes.push(Scope::Browse);
+        }
+        if matches!(self.kind, Some(BrowseKind::Search)) {
+            scopes.push(Scope::Search);
+        }
+        scopes.push(Scope::Global);
+        scopes
+    }
+}
+
+pub(crate) fn resolve(
+    context: &InputContext,
+    key: KeyCode,
+    modifiers: KeyModifiers,
+) -> Option<Action> {
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+    for scope in context.scopes() {
+        for binding in BINDINGS {
+            if binding.scope != scope || binding.key != key {
+                continue;
+            }
+            if key == KeyCode::Enter && binding.shift != shift {
+                continue;
+            }
+            return Some(binding.action);
+        }
+    }
+    None
+}
+
+/// 展示层查键名：和 resolve 共用同一张表。
+pub(crate) fn label(action: Action) -> &'static str {
+    BINDINGS
+        .iter()
+        .find(|binding| binding.action == action)
+        .map_or("", |binding| binding.label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(focus: Focus, kind: BrowseKind) -> InputContext {
+        InputContext {
+            focus,
+            kind: Some(kind),
+        }
+    }
+
+    #[test]
+    fn transport_keys_are_resolved_from_the_table() {
+        let library = ctx(Focus::List, BrowseKind::Library);
+        assert_eq!(
+            resolve(&library, KeyCode::Char('<'), KeyModifiers::NONE),
+            Some(Action::PrevTrack)
+        );
+        assert_eq!(
+            resolve(&library, KeyCode::Char('>'), KeyModifiers::NONE),
+            Some(Action::NextTrack)
+        );
+        assert_eq!(label(Action::PrevTrack), "<");
+        assert_eq!(label(Action::NextTrack), ">");
+    }
+
+    #[test]
+    fn n_is_contextual_and_not_next_track() {
+        let root = ctx(Focus::List, BrowseKind::PlaylistRoot);
+        assert_eq!(
+            resolve(&root, KeyCode::Char('n'), KeyModifiers::NONE),
+            Some(Action::CreatePlaylist)
+        );
+        let library = ctx(Focus::List, BrowseKind::Library);
+        assert_eq!(
+            resolve(&library, KeyCode::Char('n'), KeyModifiers::NONE),
+            None
+        );
+    }
+
+    #[test]
+    fn settings_and_search_scopes_win_over_global() {
+        let settings = ctx(Focus::List, BrowseKind::Settings);
+        assert_eq!(
+            resolve(&settings, KeyCode::Left, KeyModifiers::NONE),
+            Some(Action::SettingsAdjust(-1))
+        );
+        let search = ctx(Focus::List, BrowseKind::Search);
+        assert_eq!(
+            resolve(&search, KeyCode::Tab, KeyModifiers::NONE),
+            Some(Action::NextSearchPlatform)
+        );
+    }
+
+    #[test]
+    fn shift_enter_only_toggles_playlist_from_browse() {
+        let browse = ctx(Focus::Browse, BrowseKind::PlaylistRoot);
+        assert_eq!(
+            resolve(&browse, KeyCode::Enter, KeyModifiers::SHIFT),
+            Some(Action::TogglePlaylist)
+        );
+        let list = ctx(Focus::List, BrowseKind::PlaylistRoot);
+        assert_eq!(
+            resolve(&list, KeyCode::Enter, KeyModifiers::SHIFT),
+            Some(Action::Enter)
+        );
+    }
+}

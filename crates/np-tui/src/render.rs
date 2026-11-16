@@ -7,6 +7,7 @@ use crate::app::{App, Focus};
 use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::*;
+use crate::keymap::{self, Action};
 use crate::layout::{layout_areas, layout_inner};
 use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
@@ -175,38 +176,50 @@ fn is_pending_status(app: &App) -> bool {
 }
 
 fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let enter = keymap::label(Action::Enter);
+    let esc = keymap::label(Action::Escape);
+    let tab = keymap::label(Action::NextSearchPlatform);
+    let create = keymap::label(Action::CreatePlaylist);
+    let delete = keymap::label(Action::DeletePlaylist);
+    let add = keymap::label(Action::Add);
+    let remove = keymap::label(Action::Remove);
+    let reset = keymap::label(Action::ResetSetting);
+    let clear = keymap::label(Action::ClearSearch);
+    let search = keymap::label(Action::OpenSearch);
+    let command = keymap::label(Action::OpenCommand);
+
     if app.focus == Focus::Controller {
         return vec![
             ("←→", "光标"),
-            ("Tab", "补全"),
+            (tab, "补全"),
             ("↑↓", "历史"),
-            ("Enter", "执行"),
-            ("Esc", "返回"),
+            (enter, "执行"),
+            (esc, "返回"),
         ];
     }
     if app.playlist_input.is_some() {
-        return vec![("Enter", "创建"), ("Esc", "取消")];
+        return vec![(enter, "创建"), (esc, "取消")];
     }
     if app.pending_add.is_some() {
-        return vec![("Enter", "确认添加"), ("↑↓", "选择歌单"), ("Esc", "取消")];
+        return vec![(enter, "确认添加"), ("↑↓", "选择歌单"), (esc, "取消")];
     }
     if app.pending_remove.is_some() {
-        return vec![("Enter", "确认移除"), ("Esc", "取消")];
+        return vec![(enter, "确认移除"), (esc, "取消")];
     }
     if app.pending_playlist_delete.is_some() {
-        return vec![("Enter", "确认删除"), ("Esc", "取消")];
+        return vec![(enter, "确认删除"), (esc, "取消")];
     }
     if app.quit_armed {
-        return vec![("Enter", "确认退出"), ("Esc", "取消")];
+        return vec![(enter, "确认退出"), (esc, "取消")];
     }
     if app.search_editing_input() {
         return vec![
             ("←→", "光标"),
             // `⌫` 实际占两格；字符串写两格空白，视觉上只留一格。
             ("⌫  ", "删除"),
-            ("Tab", "平台"),
-            ("Enter", "搜索"),
-            ("Esc", "退出输入"),
+            (tab, "平台"),
+            (enter, "搜索"),
+            (esc, "退出输入"),
         ];
     }
 
@@ -214,57 +227,61 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let list = app.focus == Focus::List;
     let mut hints = match kind {
         Some(BrowseKind::PlaylistRoot) if list => {
-            vec![("n", "新建"), ("d", "删除"), ("Enter", "打开")]
+            vec![(create, "新建"), (delete, "删除"), (enter, "打开")]
         }
         Some(BrowseKind::PlaylistRoot) => {
-            vec![("n", "新建"), ("d", "删除"), ("Enter", "进入")]
+            vec![(create, "新建"), (delete, "删除"), (enter, "进入")]
         }
-        Some(BrowseKind::Playlist(_)) if list => vec![
-            ("a", "添加"),
-            ("r", "移除"),
-            ("Enter", "播放"),
-            ("Esc", "返回"),
-        ],
-        Some(BrowseKind::Playlist(_)) => vec![("Enter", "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Playlist(_)) if list => {
+            vec![
+                (add, "添加"),
+                (remove, "移除"),
+                (enter, "播放"),
+                (esc, "返回"),
+            ]
+        }
+        Some(BrowseKind::Playlist(_)) => vec![(enter, "进入"), ("↑↓", "选择")],
         Some(BrowseKind::Queue) if list => {
-            vec![("r", "移除"), ("Enter", "播放"), ("Esc", "返回")]
+            vec![(remove, "移除"), (enter, "播放"), (esc, "返回")]
         }
-        Some(BrowseKind::Queue) => vec![("Enter", "进入"), ("↑↓", "选择")],
-        Some(BrowseKind::Library) if list => vec![
-            ("a", "添加"),
-            ("r", "移除"),
-            ("Enter", "播放"),
-            ("Esc", "返回"),
-        ],
-        Some(BrowseKind::Library) => vec![("Enter", "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Queue) => vec![(enter, "进入"), ("↑↓", "选择")],
+        Some(BrowseKind::Library) if list => {
+            vec![
+                (add, "添加"),
+                (remove, "移除"),
+                (enter, "播放"),
+                (esc, "返回"),
+            ]
+        }
+        Some(BrowseKind::Library) => vec![(enter, "进入"), ("↑↓", "选择")],
         Some(BrowseKind::Search) if list => match app.search_display() {
             Some(SearchDisplay::Empty { .. }) => {
-                vec![("Enter", "输入"), ("Tab", "平台"), ("Esc", "返回")]
+                vec![(enter, "输入"), (tab, "平台"), (esc, "返回")]
             }
-            Some(SearchDisplay::Searching) => vec![("Esc", "停止")],
-            Some(SearchDisplay::NoResults) => vec![("c", "清空"), ("Esc", "返回")],
+            Some(SearchDisplay::Searching) => vec![(esc, "停止")],
+            Some(SearchDisplay::NoResults) => vec![(clear, "清空"), (esc, "返回")],
             None => vec![
-                ("a", "添加"),
-                ("c", "清空"),
-                ("Enter", "播放"),
-                ("Esc", "返回"),
+                (add, "添加"),
+                (clear, "清空"),
+                (enter, "播放"),
+                (esc, "返回"),
             ],
         },
-        Some(BrowseKind::Search) => vec![("Enter", "进入"), ("Tab", "平台")],
+        Some(BrowseKind::Search) => vec![(enter, "进入"), (tab, "平台")],
         Some(BrowseKind::Settings) if list => vec![
             ("←→", "调整"),
-            ("Enter", "切换"),
-            ("r", "重置"),
-            ("Esc", "返回"),
+            (enter, "切换"),
+            (reset, "重置"),
+            (esc, "返回"),
         ],
-        Some(BrowseKind::Settings) => vec![("Enter", "进入"), ("↑↓", "选择")],
-        None if list => vec![("↑↓", "选择"), ("Esc", "返回")],
+        Some(BrowseKind::Settings) => vec![(enter, "进入"), ("↑↓", "选择")],
+        None if list => vec![("↑↓", "选择"), (esc, "返回")],
         None => vec![("↑↓", "选择"), ("←→", "焦点")],
     };
     if app.focus == Focus::Browse && !matches!(kind, Some(BrowseKind::Search)) {
-        hints.push(("s", "搜索"));
+        hints.push((search, "搜索"));
     }
-    hints.push(("/", "命令"));
+    hints.push((command, "命令"));
     hints
 }
 

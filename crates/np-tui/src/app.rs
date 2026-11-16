@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audio::TuiAudio;
+use crate::keymap::Action;
 use crate::playback::{QueueItem, TrackKey};
 use crate::settings_page::{SettingsField, settings_page};
 use crate::theme::Palette;
@@ -59,7 +60,7 @@ pub(crate) struct App {
     pub(crate) search_attempted: bool,
     pub(crate) search_platform: SearchPlatform,
     pub(crate) show_key_hints: bool,
-    pub(crate) transport_feedback: Option<(TransportButton, Instant)>,
+    pub(crate) transport_feedback: Option<(Action, Instant)>,
     pub(crate) settings_fields: Vec<SettingsField>,
     pub(crate) no_color_ignored: bool,
     playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
@@ -149,7 +150,7 @@ impl App {
         self.input.iter().collect()
     }
 
-    pub(crate) fn flash_transport(&mut self, button: TransportButton) {
+    pub(crate) fn flash_transport(&mut self, button: Action) {
         self.transport_feedback = Some((button, Instant::now()));
     }
 

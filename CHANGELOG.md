@@ -20,6 +20,7 @@
 - Controller 按需浮层、Player +3 行、Settings 分类、模式持久化
 - Player 下边框五键播放控制：上一首 / 后退 5s / 播放暂停 / 前进 5s / 下一首；两端留白、等间距
 - 播放控制按钮支持不可用灰显、播放/暂停配色、按键 180ms 反白反馈；按住 Ctrl 才显示 `<` / `[` / `Space` / `]` / `>`
+- 输入层拆为 `keymap`（唯一键位表）/ `controller`（动作执行）/ `TransportAvailability`（唯一可用性）；`player_bar` 与状态栏共用键名
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本

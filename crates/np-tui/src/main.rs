@@ -9,11 +9,13 @@ use std::sync::Arc;
 mod app;
 mod app_dirs;
 mod audio;
+mod controller;
 mod ctrl_hint;
 mod fft;
 mod glyphs;
 mod input;
 mod instance;
+mod keymap;
 mod launcher;
 mod layout;
 mod logo;
@@ -28,6 +30,7 @@ mod settings_page;
 mod splash;
 mod startup;
 mod theme;
+mod transport;
 #[cfg(windows)]
 mod tray;
 
