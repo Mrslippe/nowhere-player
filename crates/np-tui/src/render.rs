@@ -82,7 +82,8 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let y = area.bottom().saturating_sub(1);
     let max_x = area.right().saturating_sub(2);
     let mut x = area.x.saturating_add(2);
-    let edge_style = Style::default().fg(app.palette.line);
+    // 状态栏覆盖在外框下边线上，延伸线沿用外框的深色，而不是内容区的浅色 line。
+    let edge_style = Style::default().fg(app.palette.muted);
     // 状态栏直接覆盖外框下边线。先把这一行恢复成连续的边框线，
     // 避免宽字符跳过相邻格时把上一帧的 `·` / 键名残留在缓冲里。
     let border_line = "━".repeat(usize::from(area.width.saturating_sub(2)));
