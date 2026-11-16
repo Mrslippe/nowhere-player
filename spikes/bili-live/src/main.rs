@@ -108,7 +108,7 @@ fn run_probe(args: &[String]) -> u8 {
         Err(e) => {
             println!(
                 "{}",
-                json!({"status": "FAILED", "stage": e.stage, "error": e.message})
+                json!({"status": "FAILED", "only_audio": true, "stage": e.stage, "error": e.message})
             );
             return 1;
         }
@@ -151,6 +151,7 @@ fn run_probe(args: &[String]) -> u8 {
             "{}",
             json!({
                 "status": "BLOCKED",
+                "only_audio": true,
                 "reason": "no room in target list reported live_status=1 with an FLV stream",
                 "rooms": rooms,
                 "rooms_tried": tried
@@ -176,6 +177,7 @@ fn run_probe(args: &[String]) -> u8 {
                 "{}",
                 json!({
                     "status": "FAILED",
+                    "only_audio": true,
                     "stage": e.stage,
                     "error": e.message,
                     "room": {
@@ -203,6 +205,7 @@ fn run_probe(args: &[String]) -> u8 {
                 "{}",
                 json!({
                     "status": "FAILED",
+                    "only_audio": true,
                     "stage": "DECODE",
                     "error": e,
                     "room": {
@@ -233,6 +236,7 @@ fn run_probe(args: &[String]) -> u8 {
     let st = &capture.stats;
     let output = json!({
         "status": "OK",
+        "only_audio": true,
         "room": {
             "requested_room": info.requested_room,
             "room_id": info.room_id,

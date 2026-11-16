@@ -148,6 +148,7 @@ pub fn fetch_play_info(client: &Client, room_id: u64) -> Result<PlayInfo, StageE
             ("qn", "80"),
             ("platform", "web"),
             ("ptype", "8"),
+            ("only_audio", "1"),
         ],
         "API",
     )?;

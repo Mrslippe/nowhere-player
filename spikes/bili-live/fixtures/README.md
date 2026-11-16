@@ -21,7 +21,7 @@
 
 - `base_url`：替换为 `/redacted/stream.flv?`（原始值包含房间/主播/流 ID）。
 - `url_info[].host`：替换为 `https://example.invalid`。
-- `url_info[].extra`：替换为 `redacted=1`（原始值含 `expires` / `upsig` / `sk` / `trid` 等签名参数）。
+- `url_info[].extra`：替换为 `redacted=1`（原始值含 CDN 过期时间与签名参数）。
 - `url_info`：只保留第一项，避免重复 CDN 条目。
 - `session`：替换为 `redacted`。
 - 其余结构、`code`、`live_status`、`codec_name`、`current_qn`、`audio_codecs`、`video_codecs`、`media_info`、`g_qn_desc` 保留。
@@ -36,7 +36,7 @@
 
 ## 校验
 
-已检查四个 JSON 文件，不包含 `bilivideo`、`expires=`、`upsig`、`sk=`、`trid=`、`oi=0x` 或 `/live-bvc/`。
+已检查四个 JSON 文件：不含 CDN 主机、流路径、签名查询串或会话凭据。
 
 ## 备注
 
