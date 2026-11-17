@@ -3,6 +3,7 @@
 //! 这一步可能阻塞（网络 + 首帧），只能在 prepare 线程里跑；主线程用
 //! `Player::open_source_with_ring(source, 150)` 接成品。
 
+use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use np_audio::AudioFormat;
@@ -44,6 +45,38 @@ pub fn prepare(
         return Err(LiveError::InvalidRoom("房间号必须是正整数".to_owned()));
     }
     ensure_not_cancelled(cancel)?;
+
+    // 诊断：直接使用浏览器同一条 FLV URL，跳过 playurl 选择。
+    if let Some(path) = std::env::var_os("NP_LIVE_STREAM_URL_FILE") {
+        let stream_url = fs::read_to_string(&path)
+            .map_err(LiveError::Io)?
+            .trim()
+            .to_owned();
+        if stream_url.is_empty() {
+            return Err(LiveError::BadStream(
+                "NP_LIVE_STREAM_URL_FILE 为空".to_owned(),
+            ));
+        }
+        ensure_not_cancelled(cancel)?;
+        let title = api::fetch_room_info(transport, room_id)
+            .map(|room| room.title)
+            .unwrap_or_default();
+        ensure_not_cancelled(cancel)?;
+        let stream = transport.open_stream(&stream_url, api::stream_headers())?;
+        ensure_not_cancelled(cancel)?;
+        let control = LiveControl::default();
+        let (source, metrics) = LiveAudioSource::open(stream, control.clone())?;
+        ensure_not_cancelled(cancel)?;
+        let format = source.format();
+        return Ok(PreparedLive {
+            room_id,
+            title,
+            format,
+            source: Box::new(source),
+            metrics,
+            control,
+        });
+    }
 
     let play_info = api::fetch_play_info(transport, room_id)?;
     ensure_not_cancelled(cancel)?;
