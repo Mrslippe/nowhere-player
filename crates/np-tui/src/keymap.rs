@@ -30,6 +30,7 @@ pub(crate) enum Action {
     OpenSearch,
     NextSearchPlatform,
     OpenCommand,
+    RefreshLive,
     CycleMode,
     VolumeUp,
     VolumeDown,
@@ -65,6 +66,14 @@ struct Binding {
 }
 
 const BINDINGS: &[Binding] = &[
+    // F5 手动刷新直播到 live edge；非直播时只给提示。
+    Binding {
+        key: KeyCode::F(5),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::RefreshLive,
+        label: "F5",
+    },
     // 设置页的左右调整与重置优先于全局焦点键。
     Binding {
         key: KeyCode::Left,

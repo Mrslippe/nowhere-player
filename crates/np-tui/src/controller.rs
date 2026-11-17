@@ -140,6 +140,13 @@ pub(crate) fn execute(
             }
         }
         Action::OpenCommand => app.enter_command(),
+        Action::RefreshLive => {
+            if player.refresh_live() {
+                app.status = "直播已刷新到最新".to_owned();
+            } else {
+                app.status = "当前没有直播".to_owned();
+            }
+        }
         Action::TogglePlay => {
             let before = player.is_playing();
             player.toggle();

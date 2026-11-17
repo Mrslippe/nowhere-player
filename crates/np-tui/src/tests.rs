@@ -1778,7 +1778,8 @@ fn live_pause_keeps_room_and_stops_player() {
     assert_eq!(audio.live_state(), crate::audio::LiveState::Paused);
     assert_eq!(audio.live_room(), 21622811);
     assert!(!audio.is_playing());
-    assert_eq!(audio.live_status_label().as_deref(), Some("LIVE PAUSED"));
+    let label = audio.live_status_label().expect("paused label");
+    assert!(label.starts_with("LIVE PAUSED"), "{label}");
     assert!(audio.stop_live(), "stop must work from paused");
     assert!(!audio.is_live());
 }

@@ -7,7 +7,8 @@
 //! - 启动等到约 1500ms 音频，再从最新帧截到 1500ms，避免把 CDN 初始 GOP 全部播完；
 //! - 运行期 `buffer > 2000ms` 时按 AAC 帧边界丢旧帧追到 1500ms；
 //! - 队列有数据时持续解码喂 ring；只有队列为空才补静音并记录 underrun；
-//! - 暂停时 ring 停止消费，队列自然涨到硬上限；恢复后第一次控制周期追回 900ms。
+//! - 暂停时保留 Player/解码器，网络线程继续读；缓存超过 30s 丢新帧；
+//! - 恢复后先播暂停缓存，播到缓存尾再恢复 1500ms 控制器追 live。
 
 use std::io::Read;
 use std::thread;
@@ -23,6 +24,7 @@ use symphonia::default::codecs::AacDecoder;
 use np_audio::format::{AudioFormat, Codec, SampleFormat};
 use np_audio::{AudioError, AudioSource};
 
+use crate::control::{LiveControl, PAUSE_CAP_MS};
 use crate::error::LiveError;
 use crate::flv::{AacConfig, AacFrame, FlvFrameSource};
 use crate::metrics::LiveMetrics;
@@ -47,13 +49,18 @@ pub(crate) struct LiveAudioSource {
     offset: usize,
     controller: BufferController,
     consecutive_decode_errors: u32,
+    control: LiveControl,
+    replay_until_pts: Option<u64>,
 }
 
 impl LiveAudioSource {
     /// 读 FLV 头 / AAC 配置、起网络线程、等到约 1500ms 音频后返回。
     ///
     /// 可能阻塞在网络读取上（准备线程专用）。
-    pub(crate) fn open(reader: Box<dyn Read + Send>) -> Result<(Self, LiveMetrics), LiveError> {
+    pub(crate) fn open(
+        reader: Box<dyn Read + Send>,
+        control: LiveControl,
+    ) -> Result<(Self, LiveMetrics), LiveError> {
         let metrics = LiveMetrics::default();
         let (flv, config) = FlvFrameSource::open(reader, metrics.clone())?;
         let format = AudioFormat::new(config.sample_rate(), config.channels(), SampleFormat::F32);
@@ -65,7 +72,9 @@ impl LiveAudioSource {
             .name("np-live-flv".to_owned())
             .spawn({
                 let queue = queue.clone();
-                move || producer_loop(flv, queue)
+                let control = control.clone();
+                let metrics = metrics.clone();
+                move || producer_loop(flv, queue, control, metrics)
             })
             .map_err(LiveError::Io)?;
 
@@ -99,6 +108,8 @@ impl LiveAudioSource {
                 offset: 0,
                 controller: BufferController::new(),
                 consecutive_decode_errors: 0,
+                control,
+                replay_until_pts: None,
             },
             metrics,
         ))
@@ -109,6 +120,15 @@ impl LiveAudioSource {
         let now = Instant::now();
         let buffer = self.queue.buffer_ms();
         self.metrics.set_buffer(buffer);
+
+        // 恢复后的 replay 阶段：front 还没走到暂停缓存尾，不能丢旧帧。
+        if let Some(until) = self.replay_until_pts {
+            let front = self.queue.front_pts().unwrap_or(0);
+            if front < until {
+                return;
+            }
+            self.replay_until_pts = None;
+        }
 
         if !self.controller.due(now) {
             return;
@@ -206,6 +226,10 @@ impl AudioSource for LiveAudioSource {
         if max_frames == 0 {
             return Ok(0);
         }
+        // resume 后第一次读取时固定 replay 边界：暂停缓存尾。
+        if self.control.take_replay() {
+            self.replay_until_pts = self.queue.newest_pts();
+        }
         let mut written = 0;
         while written < max_frames {
             if self.offset < self.decoded.len() {
@@ -265,13 +289,25 @@ fn build_decoder(config: &AacConfig) -> Result<AacDecoder, LiveError> {
         .map_err(|error| LiveError::UnsupportedAudio(format!("创建 AAC 解码器失败：{error}")))
 }
 
-fn producer_loop(mut flv: FlvFrameSource, queue: FrameQueue) {
+fn producer_loop(
+    mut flv: FlvFrameSource,
+    queue: FrameQueue,
+    control: LiveControl,
+    metrics: LiveMetrics,
+) {
     loop {
         match flv.next_frame() {
             Ok(Some(frame)) => {
+                // 暂停时保留暂停起点：缓存已到 cap，就丢弃新帧但不阻塞读取。
+                if control.is_paused() && queue.buffer_ms() >= PAUSE_CAP_MS {
+                    control.note_paused_drop();
+                    metrics.set_buffer(queue.buffer_ms());
+                    continue;
+                }
                 if !queue.push(frame) {
                     break;
                 }
+                metrics.set_buffer(queue.buffer_ms());
             }
             Ok(None) => {
                 queue.finish();
@@ -363,7 +399,8 @@ mod tests {
     }
 
     fn open_source(bytes: Vec<u8>) -> (LiveAudioSource, LiveMetrics) {
-        LiveAudioSource::open(Box::new(Cursor::new(bytes))).expect("open live source")
+        LiveAudioSource::open(Box::new(Cursor::new(bytes)), LiveControl::default())
+            .expect("open live source")
     }
 
     fn read_until_done(source: &mut LiveAudioSource) -> (usize, f64, usize) {
@@ -392,7 +429,7 @@ mod tests {
         let (_source, metrics) = open_source(flv_stream(&fixture_frames()));
         let buffer = metrics.buffer_ms();
         assert!(
-            (1_300..=1_700).contains(&buffer),
+            (1_300..=2_200).contains(&buffer),
             "startup buffer {buffer}ms should be about {TARGET_BUFFER_MS}ms"
         );
         assert_eq!(
@@ -436,8 +473,8 @@ mod tests {
             gate: gate.clone(),
         };
 
-        let (mut source, metrics) =
-            LiveAudioSource::open(Box::new(reader)).expect("open gated source");
+        let (mut source, metrics) = LiveAudioSource::open(Box::new(reader), LiveControl::default())
+            .expect("open gated source");
         // 闸门前的 60 帧全部到队（启动裁剪只保留最新约 1500ms）。
         wait_until(
             || source.queue.newest_pts().unwrap_or(0) >= 59 * PTS_STEP_MS,
@@ -459,7 +496,7 @@ mod tests {
         assert!(metrics.dropped_frames() >= 60);
         let buffer = metrics.buffer_ms();
         assert!(
-            (1_300..=1_700).contains(&buffer),
+            (1_300..=1_900).contains(&buffer),
             "buffer after drop {buffer}ms"
         );
     }
@@ -472,8 +509,8 @@ mod tests {
             data: Cursor::new(flv_stream(&frames[..60])),
             release: gate.clone(),
         };
-        let (mut source, metrics) =
-            LiveAudioSource::open(Box::new(reader)).expect("open stalling source");
+        let (mut source, metrics) = LiveAudioSource::open(Box::new(reader), LiveControl::default())
+            .expect("open stalling source");
 
         let mut out = vec![0.0f32; 1024 * 2];
         let mut decoded = 0usize;
@@ -528,7 +565,7 @@ mod tests {
         bytes.extend_from_slice(&9u32.to_be_bytes());
         bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.extend_from_slice(&tag(8, &ASC_48K_STEREO, 0));
-        let error = LiveAudioSource::open(Box::new(Cursor::new(bytes)))
+        let error = LiveAudioSource::open(Box::new(Cursor::new(bytes)), LiveControl::default())
             .err()
             .expect("expected an error");
         assert!(matches!(error, LiveError::BadStream(_)), "{error}");

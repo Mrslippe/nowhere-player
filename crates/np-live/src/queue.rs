@@ -25,8 +25,9 @@ pub(crate) const MIN_BUFFER_MS: u64 = 1200;
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
 /// 一次丢帧后的冷却时间，避免连续跳变。
 pub(crate) const DROP_COOLDOWN_MS: u64 = 500;
-/// 帧队列硬上限：约 11s 音频，只作为网络突发时的安全带。
-pub(crate) const QUEUE_CAPACITY_FRAMES: usize = 512;
+/// 帧队列硬上限：约 87s 音频。暂停缓存 cap 30s，恢复后还要容纳
+/// 生成中的 live 数据，所以不能只按 30s 配。
+pub(crate) const QUEUE_CAPACITY_FRAMES: usize = 4096;
 
 #[derive(Default)]
 struct QueueState {

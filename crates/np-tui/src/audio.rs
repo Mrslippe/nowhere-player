@@ -43,6 +43,7 @@ pub struct TuiAudio {
     live_room: Cell<u64>,
     live_note: RefCell<Option<String>>,
     live_metrics: RefCell<Option<np_live::LiveMetrics>>,
+    live_control: RefCell<Option<np_live::LiveControl>>,
 }
 
 impl TuiAudio {
@@ -81,6 +82,7 @@ impl TuiAudio {
             live_room: Cell::new(0),
             live_note: RefCell::new(None),
             live_metrics: RefCell::new(None),
+            live_control: RefCell::new(None),
         }
     }
 
@@ -125,7 +127,7 @@ impl TuiAudio {
 
     /// 直播队列里还没播的音频长度（毫秒）；非直播或还没接上时 `None`。
     ///
-    /// 目标 900ms、上限 1400ms、下限 500ms（T-0091 B1.2）。
+    /// 目标 1500ms、上限 2000ms、下限 1200ms（T-0091 B1.2g）。
     pub(crate) fn live_buffer_ms(&self) -> Option<u64> {
         if !self.is_live() {
             return None;
@@ -144,7 +146,26 @@ impl TuiAudio {
             return None;
         }
         if self.live_state.get() == LiveState::Paused {
-            return Some("LIVE PAUSED".to_owned());
+            return Some(match self.live_metrics.borrow().as_ref() {
+                Some(metrics) => {
+                    let control = self.live_control.borrow();
+                    let paused = control
+                        .as_ref()
+                        .is_some_and(np_live::LiveControl::is_paused);
+                    let paused_drops = control
+                        .as_ref()
+                        .map(np_live::LiveControl::paused_dropped_frames)
+                        .unwrap_or(0);
+                    format!(
+                        "LIVE PAUSED {}ms F:{} C:{} P:{}",
+                        metrics.buffer_ms(),
+                        metrics.frames_received(),
+                        u8::from(paused),
+                        paused_drops
+                    )
+                }
+                None => "LIVE PAUSED".to_owned(),
+            });
         }
         let metrics = self.live_metrics.borrow();
         let metrics = metrics.as_ref()?;
@@ -240,6 +261,7 @@ impl TuiAudio {
         match result {
             Ok(prepared) => {
                 let metrics = prepared.metrics.clone();
+                let control = prepared.control.clone();
                 let title = if prepared.title.trim().is_empty() {
                     format!("直播 {}", prepared.room_id)
                 } else {
@@ -262,6 +284,7 @@ impl TuiAudio {
                         self.duration_ms.set(None);
                         self.live_state.set(LiveState::Playing);
                         *self.live_metrics.borrow_mut() = Some(metrics);
+                        *self.live_control.borrow_mut() = Some(control);
                         *self.title.borrow_mut() = title.clone();
                         *self.artist.borrow_mut() = "B站直播".to_owned();
                         *self.live_note.borrow_mut() = Some(format!("直播：{title}"));
@@ -311,6 +334,7 @@ impl TuiAudio {
         }
         *self.live_rx.borrow_mut() = None;
         *self.live_metrics.borrow_mut() = None;
+        *self.live_control.borrow_mut() = None;
         self.live_state.set(LiveState::Idle);
     }
 
@@ -540,36 +564,62 @@ impl TuiAudio {
         }
     }
 
-    /// 暂停直播：立即停声并丢弃旧 Player；恢复时重新接 live edge。
+    /// 暂停直播：保留 Player/解码器，网络继续读；缓存超过 30s 丢新帧。
     fn pause_live(&self) {
         if self.live_state.get() != LiveState::Playing {
             return;
         }
+        if let Some(control) = self.live_control.borrow().as_ref() {
+            control.pause();
+        }
         if let Some(player) = self.player.borrow().as_ref() {
             let _ = player.pause();
         }
-        *self.player.borrow_mut() = None;
-        *self.tap.borrow_mut() = None;
-        *self.live_metrics.borrow_mut() = None;
         self.playing.set(false);
         self.duration_ms.set(None);
         self.live_state.set(LiveState::Paused);
+        *self.live_note.borrow_mut() = Some("直播已暂停，继续缓存".to_owned());
     }
 
-    /// 从暂停恢复：不续播旧缓冲，重新走 API/playurl，接当前 live edge。
+    /// 从暂停恢复：继续播暂停缓存；缓存播完后自动追 live。
     fn resume_live(&self) {
         if self.live_state.get() != LiveState::Paused {
             return;
         }
+        if let Some(control) = self.live_control.borrow().as_ref() {
+            control.resume();
+        }
+        if let Some(player) = self.player.borrow().as_ref() {
+            if let Err(error) = player.play() {
+                *self.live_note.borrow_mut() = Some(format!("直播恢复失败：{error}"));
+                return;
+            }
+            self.playing.set(true);
+            self.live_state.set(LiveState::Playing);
+            *self.live_note.borrow_mut() = Some("直播已恢复（先播缓存）".to_owned());
+            return;
+        }
+        // 没有 Player（异常/测试）才回退到重连。
         let room = self.live_room.get();
         if room == 0 {
             self.live_state.set(LiveState::Idle);
-            self.live_note
-                .borrow_mut()
-                .replace("直播恢复失败：房间号丢失".to_owned());
+            *self.live_note.borrow_mut() = Some("直播恢复失败：房间号丢失".to_owned());
             return;
         }
         self.start_live(room);
+    }
+
+    /// F5：丢弃暂停缓存，重新接 live edge。
+    pub(crate) fn refresh_live(&self) -> bool {
+        if !self.is_live() {
+            return false;
+        }
+        let room = self.live_room.get();
+        if room == 0 {
+            return false;
+        }
+        self.start_live(room);
+        true
     }
 
     fn queue_view(&self) -> QueueView {

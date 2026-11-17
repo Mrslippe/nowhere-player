@@ -10,6 +10,7 @@ use np_audio::AudioSource;
 use np_sources::Transport;
 
 use crate::api;
+use crate::control::LiveControl;
 use crate::error::LiveError;
 use crate::metrics::LiveMetrics;
 use crate::source::LiveAudioSource;
@@ -26,6 +27,8 @@ pub struct PreparedLive {
     pub source: Box<dyn AudioSource>,
     /// 缓冲 / drop / underrun 计数；TUI 用它显示 LIVE 状态。
     pub metrics: LiveMetrics,
+    /// 暂停/恢复控制；暂停保留连接，恢复先播缓存。
+    pub control: LiveControl,
 }
 
 /// 准备一路直播音频。
@@ -58,7 +61,8 @@ pub fn prepare(
     let stream = transport.open_stream(&stream_url, api::stream_headers())?;
     ensure_not_cancelled(cancel)?;
 
-    let (source, metrics) = LiveAudioSource::open(stream)?;
+    let control = LiveControl::default();
+    let (source, metrics) = LiveAudioSource::open(stream, control.clone())?;
     ensure_not_cancelled(cancel)?;
     let format = source.format();
     Ok(PreparedLive {
@@ -67,6 +71,7 @@ pub fn prepare(
         format,
         source: Box::new(source),
         metrics,
+        control,
     })
 }
 
