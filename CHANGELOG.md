@@ -23,7 +23,7 @@
 - 输入层拆为 `keymap`（唯一键位表）/ `controller`（动作执行）/ `TransportAvailability`（唯一可用性）；`player_bar` 与状态栏共用键名
 - B站直播音频（B1）：`:live <room>`、`only_audio=1` 纯音频 FLV、AAC 流式播放、`LIVE` 状态、直播独占与 150ms ring
 - B1.1 直播启动追帧：探测 CDN 初始突发，丢弃旧帧只保留最新 AAC 帧，降低约 1s 启动延迟
-- B1.2 直播低延迟队列：direct AacDecoder + 900/1400/500ms 有界帧队列，LIVE 状态显示 buffer，5min 稳定
+- B1.2 直播低延迟队列：direct AacDecoder + 1000/1500/800ms 有界帧队列，LIVE 状态显示 buffer，5min 存活
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本
