@@ -1769,6 +1769,17 @@ fn live_buffer_is_exposed_only_while_live() {
 }
 
 #[test]
+fn live_status_label_exposes_underrun_counters() {
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST");
+    let label = audio.live_status_label().expect("live label");
+    assert!(label.starts_with("LIVE "), "{label}");
+    for counter in ["U:", "Q:", "R:", "D:", "E:", "F:", "S:"] {
+        assert!(label.contains(counter), "missing {counter} in {label}");
+    }
+}
+
+#[test]
 fn stopping_live_keeps_the_queue() {
     use np_app::PlayerApi;
 

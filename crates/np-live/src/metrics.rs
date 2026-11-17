@@ -7,15 +7,39 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Counters {
     buffer_ms: AtomicU64,
+    min_buffer_ms: AtomicU64,
+    max_buffer_ms: AtomicU64,
     drop_events: AtomicU64,
     dropped_frames: AtomicU64,
     underruns: AtomicU64,
+    queue_empty_events: AtomicU64,
+    fill_silence_ms: AtomicU64,
+    max_read_stall_ms: AtomicU64,
     decode_errors: AtomicU64,
     frames_received: AtomicU64,
     video_tags: AtomicU64,
+}
+
+impl Default for Counters {
+    fn default() -> Self {
+        Self {
+            buffer_ms: AtomicU64::new(0),
+            min_buffer_ms: AtomicU64::new(u64::MAX),
+            max_buffer_ms: AtomicU64::new(0),
+            drop_events: AtomicU64::new(0),
+            dropped_frames: AtomicU64::new(0),
+            underruns: AtomicU64::new(0),
+            queue_empty_events: AtomicU64::new(0),
+            fill_silence_ms: AtomicU64::new(0),
+            max_read_stall_ms: AtomicU64::new(0),
+            decode_errors: AtomicU64::new(0),
+            frames_received: AtomicU64::new(0),
+            video_tags: AtomicU64::new(0),
+        }
+    }
 }
 
 /// 一路直播的只读计数器句柄（Clone 后共享同一份数据）。
@@ -45,6 +69,32 @@ impl LiveMetrics {
         self.counters.underruns.load(Ordering::Relaxed)
     }
 
+    /// `queue.pop()` 返回空、但流尚未结束的次数。
+    pub fn queue_empty_events(&self) -> u64 {
+        self.counters.queue_empty_events.load(Ordering::Relaxed)
+    }
+
+    /// 累计补静音的毫秒数。
+    pub fn fill_silence_ms(&self) -> u64 {
+        self.counters.fill_silence_ms.load(Ordering::Relaxed)
+    }
+
+    /// 单次 `FlvFrameSource::next_frame()` 的最长墙钟耗时（含阻塞 HTTP read）。
+    pub fn max_read_stall_ms(&self) -> u64 {
+        self.counters.max_read_stall_ms.load(Ordering::Relaxed)
+    }
+
+    /// 见过的队列 buffer 最小值（毫秒）；还没采样时为 0。
+    pub fn min_buffer_ms(&self) -> u64 {
+        let value = self.counters.min_buffer_ms.load(Ordering::Relaxed);
+        if value == u64::MAX { 0 } else { value }
+    }
+
+    /// 见过的队列 buffer 最大值（毫秒）。
+    pub fn max_buffer_ms(&self) -> u64 {
+        self.counters.max_buffer_ms.load(Ordering::Relaxed)
+    }
+
     /// AAC 解码失败次数。
     pub fn decode_errors(&self) -> u64 {
         self.counters.decode_errors.load(Ordering::Relaxed)
@@ -64,6 +114,30 @@ impl LiveMetrics {
         self.counters
             .buffer_ms
             .store(milliseconds, Ordering::Relaxed);
+        self.counters
+            .min_buffer_ms
+            .fetch_min(milliseconds, Ordering::Relaxed);
+        self.counters
+            .max_buffer_ms
+            .fetch_max(milliseconds, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_queue_empty(&self) {
+        self.counters
+            .queue_empty_events
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_fill_silence(&self, milliseconds: u64) {
+        self.counters
+            .fill_silence_ms
+            .fetch_add(milliseconds, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_read_stall(&self, milliseconds: u64) {
+        self.counters
+            .max_read_stall_ms
+            .fetch_max(milliseconds, Ordering::Relaxed);
     }
 
     pub(crate) fn note_drop(&self, frames: u64) {
@@ -101,15 +175,25 @@ mod tests {
         let metrics = LiveMetrics::default();
         let clone = metrics.clone();
         clone.set_buffer(900);
+        clone.set_buffer(1_200);
+        clone.set_buffer(700);
         clone.note_drop(3);
         clone.note_underrun();
+        clone.note_queue_empty();
+        clone.note_fill_silence(21);
+        clone.note_read_stall(1_050);
         clone.note_decode_error();
         clone.note_frame();
         clone.note_video_tag();
-        assert_eq!(metrics.buffer_ms(), 900);
+        assert_eq!(metrics.buffer_ms(), 700);
+        assert_eq!(metrics.min_buffer_ms(), 700);
+        assert_eq!(metrics.max_buffer_ms(), 1_200);
         assert_eq!(metrics.dropped_frames(), 3);
         assert_eq!(metrics.drop_events(), 1);
         assert_eq!(metrics.underruns(), 1);
+        assert_eq!(metrics.queue_empty_events(), 1);
+        assert_eq!(metrics.fill_silence_ms(), 21);
+        assert_eq!(metrics.max_read_stall_ms(), 1_050);
         assert_eq!(metrics.decode_errors(), 1);
         assert_eq!(metrics.frames_received(), 1);
         assert_eq!(metrics.video_tags(), 1);

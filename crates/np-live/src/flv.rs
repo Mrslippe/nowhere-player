@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read};
+use std::time::Instant;
 
 use crate::error::LiveError;
 use crate::metrics::LiveMetrics;
@@ -181,7 +182,18 @@ impl FlvFrameSource {
     }
 
     /// 返回下一帧 raw AAC；`None` 表示干净 EOF。
+    ///
+    /// 同时记录这次调用被阻塞了多久；它包含 tag header / payload 的
+    /// blocking HTTP read，是判断“CDN 停顿”最直接的数字。
     pub(crate) fn next_frame(&mut self) -> Result<Option<AacFrame>, LiveError> {
+        let started = Instant::now();
+        let result = self.next_frame_inner();
+        self.metrics
+            .note_read_stall(started.elapsed().as_millis() as u64);
+        result
+    }
+
+    fn next_frame_inner(&mut self) -> Result<Option<AacFrame>, LiveError> {
         while self.pending.is_empty() && !self.eof {
             if !self.pull_tag()? {
                 self.eof = true;

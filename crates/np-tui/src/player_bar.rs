@@ -78,7 +78,9 @@ pub(crate) fn draw_player_strip(
     };
     let overlay_y = content.bottom().saturating_sub(2);
     let time = if live {
-        live_time_label(player.live_buffer_ms())
+        player
+            .live_status_label()
+            .unwrap_or_else(|| live_time_label(player.live_buffer_ms()))
     } else {
         format!("{} / {}", format_time(position), format_time(duration))
     };

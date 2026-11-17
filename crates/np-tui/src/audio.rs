@@ -135,6 +135,34 @@ impl TuiAudio {
             .map(np_live::LiveMetrics::buffer_ms)
     }
 
+    /// 直播诊断标签：队列、under-run、ring under-run、drop、解码错误、读停顿。
+    ///
+    /// 例：`LIVE 2000ms U:0 Q:0 R:0 D:0 E:0 F:0 S:0`。
+    pub(crate) fn live_status_label(&self) -> Option<String> {
+        if !self.is_live() {
+            return None;
+        }
+        let metrics = self.live_metrics.borrow();
+        let metrics = metrics.as_ref()?;
+        let ring_underruns = self
+            .player
+            .borrow()
+            .as_ref()
+            .map(Player::underruns)
+            .unwrap_or(0);
+        Some(format!(
+            "LIVE {}ms U:{} Q:{} R:{} D:{} E:{} F:{} S:{}",
+            metrics.buffer_ms(),
+            metrics.underruns(),
+            metrics.queue_empty_events(),
+            ring_underruns,
+            metrics.drop_events(),
+            metrics.decode_errors(),
+            metrics.fill_silence_ms(),
+            metrics.max_read_stall_ms()
+        ))
+    }
+
     /// 取走一次性的直播状态文本（成功 / 失败 / 结束）。
     pub(crate) fn take_live_note(&self) -> Option<String> {
         self.live_note.borrow_mut().take()

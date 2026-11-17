@@ -175,6 +175,9 @@ impl LiveAudioSource {
         if self.controller.note_starved() {
             self.metrics.note_underrun();
         }
+        let remaining_frames = out.len() / channels - written;
+        let silence_ms = (remaining_frames as u64 * 1_000) / u64::from(self.format.sample_rate);
+        self.metrics.note_fill_silence(silence_ms);
         out[written * channels..].fill(0.0);
         out.len() / channels
     }
@@ -235,6 +238,7 @@ impl AudioSource for LiveAudioSource {
                         None => Ok(written),
                     };
                 }
+                self.metrics.note_queue_empty();
                 return Ok(self.fill_silence(out, channels, written));
             };
 
