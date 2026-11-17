@@ -24,6 +24,7 @@
 - B站直播音频（B1）：`:live <room>`、`only_audio=1` 纯音频 FLV、AAC 流式播放、`LIVE` 状态、直播独占与 150ms ring
 - B1.1 直播启动追帧：探测 CDN 初始突发，丢弃旧帧只保留最新 AAC 帧，降低约 1s 启动延迟
 - B1.2 直播低延迟队列：direct AacDecoder + 有界帧队列；B1.2d 诊断阈值 2000/2500/1800ms，LIVE 状态显示 buffer
+- B1.2e 直播诊断：LIVE 标签显示 U/Q/R/D/E/F/S 计数；5min 实测 R:29→145，定位到 ring underrun
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本
