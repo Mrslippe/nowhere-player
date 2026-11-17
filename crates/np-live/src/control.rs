@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// 暂停缓存上限：30s 音频约 0.5MB。
 pub const PAUSE_CAP_MS: u64 = 30_000;
 
+/// AAC-LC 每帧 1024 samples，48k 下 30s 约 1406 帧。
+/// 同时按帧数封顶，避免 FLV timestamp 跳变让毫秒 cap 失效。
+pub(crate) const PAUSE_CAP_FRAMES: usize = 1_406;
+
 #[derive(Debug, Default)]
 struct State {
     paused: AtomicBool,

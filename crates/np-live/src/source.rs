@@ -24,7 +24,7 @@ use symphonia::default::codecs::AacDecoder;
 use np_audio::format::{AudioFormat, Codec, SampleFormat};
 use np_audio::{AudioError, AudioSource};
 
-use crate::control::{LiveControl, PAUSE_CAP_MS};
+use crate::control::{LiveControl, PAUSE_CAP_FRAMES, PAUSE_CAP_MS};
 use crate::error::LiveError;
 use crate::flv::{AacConfig, AacFrame, FlvFrameSource};
 use crate::metrics::LiveMetrics;
@@ -299,7 +299,9 @@ fn producer_loop(
         match flv.next_frame() {
             Ok(Some(frame)) => {
                 // 暂停时保留暂停起点：缓存已到 cap，就丢弃新帧但不阻塞读取。
-                if control.is_paused() && queue.buffer_ms() >= PAUSE_CAP_MS {
+                if control.is_paused()
+                    && (queue.len() >= PAUSE_CAP_FRAMES || queue.buffer_ms() >= PAUSE_CAP_MS)
+                {
                     control.note_paused_drop();
                     metrics.set_buffer(queue.buffer_ms());
                     continue;
