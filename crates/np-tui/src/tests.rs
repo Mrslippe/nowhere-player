@@ -1769,6 +1769,21 @@ fn live_buffer_is_exposed_only_while_live() {
 }
 
 #[test]
+fn live_pause_keeps_room_and_stops_player() {
+    use np_app::PlayerApi;
+
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST");
+    PlayerApi::pause(&audio).expect("pause live");
+    assert_eq!(audio.live_state(), crate::audio::LiveState::Paused);
+    assert_eq!(audio.live_room(), 21622811);
+    assert!(!audio.is_playing());
+    assert_eq!(audio.live_status_label().as_deref(), Some("LIVE PAUSED"));
+    assert!(audio.stop_live(), "stop must work from paused");
+    assert!(!audio.is_live());
+}
+
+#[test]
 fn live_status_label_exposes_underrun_counters() {
     let audio = TuiAudio::empty();
     audio.live_for_test(21622811, "BLAST");

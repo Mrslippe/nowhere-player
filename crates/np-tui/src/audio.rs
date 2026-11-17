@@ -20,6 +20,7 @@ pub(crate) enum LiveState {
     Idle,
     Preparing,
     Playing,
+    Paused,
 }
 
 type LivePreparation = (u64, Result<np_live::PreparedLive, String>);
@@ -137,10 +138,13 @@ impl TuiAudio {
 
     /// 直播诊断标签：队列、under-run、ring under-run、drop、解码错误、读停顿。
     ///
-    /// 例：`LIVE 2000ms U:0 Q:0 R:0 D:0 E:0 F:0 S:0`。
+    /// 例：`LIVE 1500ms U:0 Q:0 R:0 D:0 E:0 F:0 S:0`；暂停时 `LIVE PAUSED`。
     pub(crate) fn live_status_label(&self) -> Option<String> {
         if !self.is_live() {
             return None;
+        }
+        if self.live_state.get() == LiveState::Paused {
+            return Some("LIVE PAUSED".to_owned());
         }
         let metrics = self.live_metrics.borrow();
         let metrics = metrics.as_ref()?;
@@ -511,6 +515,18 @@ impl TuiAudio {
     }
 
     pub fn toggle(&mut self) {
+        if self.is_live() {
+            match self.live_state.get() {
+                LiveState::Playing => {
+                    self.pause_live();
+                }
+                LiveState::Paused => {
+                    self.resume_live();
+                }
+                LiveState::Idle | LiveState::Preparing => {}
+            }
+            return;
+        }
         let player = self.player.borrow();
         let Some(player) = player.as_ref() else {
             return;
@@ -522,6 +538,38 @@ impl TuiAudio {
             let _ = player.play();
             self.playing.set(true);
         }
+    }
+
+    /// 暂停直播：立即停声并丢弃旧 Player；恢复时重新接 live edge。
+    fn pause_live(&self) {
+        if self.live_state.get() != LiveState::Playing {
+            return;
+        }
+        if let Some(player) = self.player.borrow().as_ref() {
+            let _ = player.pause();
+        }
+        *self.player.borrow_mut() = None;
+        *self.tap.borrow_mut() = None;
+        *self.live_metrics.borrow_mut() = None;
+        self.playing.set(false);
+        self.duration_ms.set(None);
+        self.live_state.set(LiveState::Paused);
+    }
+
+    /// 从暂停恢复：不续播旧缓冲，重新走 API/playurl，接当前 live edge。
+    fn resume_live(&self) {
+        if self.live_state.get() != LiveState::Paused {
+            return;
+        }
+        let room = self.live_room.get();
+        if room == 0 {
+            self.live_state.set(LiveState::Idle);
+            self.live_note
+                .borrow_mut()
+                .replace("直播恢复失败：房间号丢失".to_owned());
+            return;
+        }
+        self.start_live(room);
     }
 
     fn queue_view(&self) -> QueueView {
@@ -551,12 +599,16 @@ impl TuiAudio {
         PlaybackState {
             status: if self.playing.get() {
                 PlaybackStatus::Playing
-            } else if self.player.borrow().is_some() {
+            } else if self.live_state.get() == LiveState::Paused || self.player.borrow().is_some() {
                 PlaybackStatus::Paused
             } else {
                 PlaybackStatus::Idle
             },
-            track_id: self.player.borrow().as_ref().map(|_| self.title()),
+            track_id: if self.is_live() && self.live_state.get() == LiveState::Paused {
+                Some(self.title())
+            } else {
+                self.player.borrow().as_ref().map(|_| self.title())
+            },
             position_ms: self.position_ms(),
             duration_ms: self.duration_ms(),
             volume: self.volume.get(),
@@ -641,6 +693,10 @@ impl PlayerApi for TuiAudio {
     }
 
     fn play(&self, path: Option<String>) -> Result<PlaybackState, CmdError> {
+        if path.is_none() && self.live_state.get() == LiveState::Paused {
+            self.resume_live();
+            return Ok(self.state());
+        }
         if let Some(path) = path {
             let pending = self.pending_metadata.borrow_mut().take();
             let mut item = Self::queue_item(&path, "play");
@@ -661,6 +717,10 @@ impl PlayerApi for TuiAudio {
     }
 
     fn pause(&self) -> Result<PlaybackState, CmdError> {
+        if self.is_live() {
+            self.pause_live();
+            return Ok(self.state());
+        }
         if let Some(player) = self.player.borrow().as_ref() {
             player
                 .pause()
@@ -674,6 +734,10 @@ impl PlayerApi for TuiAudio {
     }
 
     fn resume(&self) -> Result<PlaybackState, CmdError> {
+        if self.live_state.get() == LiveState::Paused {
+            self.resume_live();
+            return Ok(self.state());
+        }
         self.play(None)
     }
 
