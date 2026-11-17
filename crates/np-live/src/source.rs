@@ -4,9 +4,9 @@
 //! `symphonia` 的 `AacDecoder`（ASC 作为 `extra_data`），中间只有 [`FrameQueue`]。
 //! 因此缓冲是显式、可观测的：
 //!
-//! - 启动等到约 900ms 音频，再从最新帧截到 900ms，避免把 CDN 初始 GOP 全部播完；
-//! - 运行期 `buffer > 1400ms` 时按 AAC 帧边界丢旧帧追到 900ms；
-//! - `buffer < 500ms` 时补静音（不减速），并记录一次 underrun；
+//! - 启动等到约 1000ms 音频，再从最新帧截到 1000ms，避免把 CDN 初始 GOP 全部播完；
+//! - 运行期 `buffer > 1500ms` 时按 AAC 帧边界丢旧帧追到 1000ms；
+//! - `buffer < 800ms` 时等待回填到 1000ms；超时才补静音并记录 underrun；
 //! - 暂停时 ring 停止消费，队列自然涨到硬上限；恢复后第一次控制周期追回 900ms。
 
 use std::io::Read;
@@ -50,7 +50,7 @@ pub(crate) struct LiveAudioSource {
 }
 
 impl LiveAudioSource {
-    /// 读 FLV 头 / AAC 配置、起网络线程、等到约 900ms 音频后返回。
+    /// 读 FLV 头 / AAC 配置、起网络线程、等到约 1000ms 音频后返回。
     ///
     /// 可能阻塞在网络读取上（准备线程专用）。
     pub(crate) fn open(reader: Box<dyn Read + Send>) -> Result<(Self, LiveMetrics), LiveError> {
@@ -80,7 +80,7 @@ impl LiveAudioSource {
             return Err(LiveError::BadStream(message));
         }
 
-        // 启动裁剪：只保留最新的约 900ms，不把 CDN 初始突发全部播一遍。
+        // 启动裁剪：只保留最新的约 1000ms，不把 CDN 初始突发全部播一遍。
         let newest = queue.newest_pts().unwrap_or_default();
         let front = queue.front_pts().unwrap_or_default();
         if newest.saturating_sub(front) > TARGET_BUFFER_MS {
@@ -219,11 +219,11 @@ impl AudioSource for LiveAudioSource {
 
             self.update_control();
 
-            // 低于下限时先等队列回填，不要继续把最后几百毫秒也消费掉。
+            // 低于下限时先回填到 target，不要踩着 800ms 继续消费。
             // 这不是“减速”，只是让 decode 线程暂停；网络恢复后自然继续。
             if !self.queue.is_done() && self.queue.buffer_ms() < MIN_BUFFER_MS {
                 let deadline = Instant::now() + Duration::from_millis(500);
-                self.queue.wait_span(MIN_BUFFER_MS, deadline);
+                self.queue.wait_span(TARGET_BUFFER_MS, deadline);
                 self.metrics.set_buffer(self.queue.buffer_ms());
             }
 
@@ -394,7 +394,7 @@ mod tests {
         let (_source, metrics) = open_source(flv_stream(&fixture_frames()));
         let buffer = metrics.buffer_ms();
         assert!(
-            (800..=1_000).contains(&buffer),
+            (900..=1_100).contains(&buffer),
             "startup buffer {buffer}ms should be about {TARGET_BUFFER_MS}ms"
         );
         assert_eq!(
@@ -413,7 +413,7 @@ mod tests {
         assert!(!source.is_seekable());
 
         let (frames, rms, _samples) = read_until_done(&mut source);
-        // 启动截到约 900ms，后面可能还有网络线程继续灌进来的帧。
+        // 启动截到约 1000ms，后面可能还有网络线程继续灌进来的帧。
         assert!(
             frames > 40_000,
             "expected about a second of PCM, got {frames} frames"
@@ -440,7 +440,7 @@ mod tests {
 
         let (mut source, metrics) =
             LiveAudioSource::open(Box::new(reader)).expect("open gated source");
-        // 闸门前的 60 帧全部到队（启动裁剪只保留最新约 900ms）。
+        // 闸门前的 60 帧全部到队（启动裁剪只保留最新约 1000ms）。
         wait_until(
             || source.queue.newest_pts().unwrap_or(0) >= 59 * PTS_STEP_MS,
             Duration::from_secs(2),

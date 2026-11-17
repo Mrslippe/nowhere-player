@@ -1,4 +1,4 @@
-//! 有界 `AacFrame` 队列 + 900ms 缓冲控制器。
+//! 有界 `AacFrame` 队列 + 1000ms 缓冲控制器。
 //!
 //! 队列是网络线程（producer）和解码线程（consumer）之间唯一的中转：
 //!
@@ -6,8 +6,8 @@
 //! - 解码线程按 AAC 帧 pop，落后太多时由控制器从队头丢旧帧；
 //! - `buffer_ms = 最新帧 pts - 已播放媒体时间`。
 //!
-//! 目标 900ms / 上限 1400ms / 下限 500ms 来自 `b12a_measurements.jsonl`
-//! 的 no-drop 诊断（平均 884ms、最大 1388ms）。
+//! 目标 1000ms / 上限 1500ms / 下限 800ms 来自 B1.2b 真机断音修正：
+//! 实测 CDN 空窗约 1s，500ms 下限会周期性补静音；回填到 1000ms 再恢复。
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 use crate::flv::AacFrame;
 
 /// 缓冲目标（毫秒）：超过上限后追到这个值。
-pub(crate) const TARGET_BUFFER_MS: u64 = 900;
+pub(crate) const TARGET_BUFFER_MS: u64 = 1000;
 /// 缓冲上限：超过才丢旧帧。
-pub(crate) const MAX_BUFFER_MS: u64 = 1400;
-/// 缓冲下限：低于它视为饥饿，补静音并记录 underrun。
-pub(crate) const MIN_BUFFER_MS: u64 = 500;
+pub(crate) const MAX_BUFFER_MS: u64 = 1500;
+/// 缓冲下限：低于它视为饥饿，先回填到 target 再恢复。
+pub(crate) const MIN_BUFFER_MS: u64 = 800;
 /// 控制周期：250ms 检查一次缓冲，不必每帧都判断。
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
 /// 一次丢帧后的冷却时间，避免连续跳变。
@@ -247,8 +247,8 @@ impl BufferController {
         })
     }
 
-    /// 推进一次控制周期。只有 `buffer > 1400ms` 且冷却已过才丢帧；
-    /// `buffer < 500ms` 不减速，由调用方补静音。
+    /// 推进一次控制周期。只有 `buffer > 1500ms` 且冷却已过才丢帧；
+    /// `buffer < 800ms` 不减速，由调用方回填/补静音。
     pub(crate) fn tick(&mut self, now: Instant, buffer_ms: u64) -> Control {
         self.last_tick = Some(now);
 
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(
             controller.tick(base + Duration::from_millis(250), MAX_BUFFER_MS),
             Control::Idle,
-            "1400ms is still acceptable"
+            "1500ms is still acceptable"
         );
         assert_eq!(
             controller.tick(base + Duration::from_millis(500), MAX_BUFFER_MS + 1),
