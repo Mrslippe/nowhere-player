@@ -11,6 +11,7 @@ use np_audio::AudioSource;
 use np_sources::Transport;
 
 use crate::api;
+use crate::auth::BiliAuth;
 use crate::control::LiveControl;
 use crate::error::LiveError;
 use crate::metrics::LiveMetrics;
@@ -40,6 +41,16 @@ pub fn prepare(
     transport: &dyn Transport,
     room_id: u64,
     cancel: &AtomicBool,
+) -> Result<PreparedLive, LiveError> {
+    prepare_auth(transport, room_id, cancel, None)
+}
+
+/// 带可选 B站登录态准备直播；cookie 只用于 playurl API。
+pub fn prepare_auth(
+    transport: &dyn Transport,
+    room_id: u64,
+    cancel: &AtomicBool,
+    auth: Option<&BiliAuth>,
 ) -> Result<PreparedLive, LiveError> {
     if room_id == 0 {
         return Err(LiveError::InvalidRoom("房间号必须是正整数".to_owned()));
@@ -78,7 +89,7 @@ pub fn prepare(
         });
     }
 
-    let play_info = api::fetch_play_info(transport, room_id)?;
+    let play_info = api::fetch_play_info_with_auth(transport, room_id, auth)?;
     ensure_not_cancelled(cancel)?;
     if !play_info.is_live() {
         return Err(LiveError::Offline);
@@ -110,8 +121,17 @@ pub fn prepare(
 
 /// 用生产 [`np_sources::ReqwestTransport`] 准备直播；TUI 只调这个入口。
 pub fn prepare_default(room_id: u64, cancel: &AtomicBool) -> Result<PreparedLive, LiveError> {
+    prepare_default_auth(room_id, cancel, None)
+}
+
+/// 生产入口；带可选登录态。
+pub fn prepare_default_auth(
+    room_id: u64,
+    cancel: &AtomicBool,
+    auth: Option<&BiliAuth>,
+) -> Result<PreparedLive, LiveError> {
     let transport = np_sources::ReqwestTransport::new()?;
-    prepare(&transport, room_id, cancel)
+    prepare_auth(&transport, room_id, cancel, auth)
 }
 
 fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<(), LiveError> {

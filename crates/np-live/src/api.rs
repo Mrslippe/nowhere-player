@@ -7,6 +7,7 @@
 use np_sources::Transport;
 use serde::Deserialize;
 
+use crate::auth::BiliAuth;
 use crate::error::LiveError;
 
 /// 直播 playurl 接口。
@@ -81,9 +82,35 @@ pub struct RoomInfo {
 /// 取 playurl。调用方负责把 [`PlayInfo::live_status`] / `flv_url` 映射成
 /// [`LiveError::Offline`] / [`LiveError::NoStream`]。
 pub fn fetch_play_info(transport: &dyn Transport, room_id: u64) -> Result<PlayInfo, LiveError> {
+    fetch_play_info_with_auth(transport, room_id, None)
+}
+
+/// 带登录 cookie 请求 playurl；匿名时与 [`fetch_play_info`] 相同。
+pub fn fetch_play_info_with_auth(
+    transport: &dyn Transport,
+    room_id: u64,
+    auth: Option<&BiliAuth>,
+) -> Result<PlayInfo, LiveError> {
     validate_room(room_id)?;
-    let body = transport.get(&play_info_url(room_id))?;
-    parse_play_info(&body, room_id)
+    let url = play_info_url(room_id);
+    let cookie = auth.map(BiliAuth::cookie_header).unwrap_or_default();
+    let response = if cookie.is_empty() {
+        transport.get_with_headers(&url, &[("Referer", "https://live.bilibili.com/")])?
+    } else {
+        transport.get_with_headers(
+            &url,
+            &[
+                ("Referer", "https://live.bilibili.com/"),
+                ("Cookie", &cookie),
+            ],
+        )?
+    };
+    if !(200..=299).contains(&response.status) {
+        return Err(LiveError::Source(np_sources::SourceError::Http(
+            response.status,
+        )));
+    }
+    parse_play_info(&response.body, room_id)
 }
 
 /// 取房间信息。标题是 best-effort，失败不应阻断播放。

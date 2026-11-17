@@ -24,6 +24,20 @@ const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
 /// 重试前的等待。
 const RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
+/// 一次 HTTP 响应的窄视图（T-0092a）。
+///
+/// 只保留调用方需要的状态、响应头与完整响应体。响应头保留原始顺序与重复项
+/// （例如多个 `Set-Cookie`），名称大小写由服务端决定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpResponse {
+    /// HTTP 状态码。
+    pub status: u16,
+    /// 响应头 `(name, value)`，顺序与线上一致。
+    pub headers: Vec<(String, String)>,
+    /// 完整响应体。
+    pub body: Vec<u8>,
+}
+
 /// 最小 HTTP GET 抽象（ADR-0004 §5）。
 ///
 /// 返回响应体字节。非 2xx 状态由实现映射为 [`crate::SourceError::Http`] 或
@@ -32,6 +46,23 @@ const RETRY_BACKOFF: Duration = Duration::from_millis(500);
 pub trait Transport: Send + Sync {
     /// 请求 `url` 并返回响应体。
     fn get(&self, url: &str) -> Result<Vec<u8>>;
+
+    /// 带额外请求头请求 `url`，返回状态、响应头与响应体（T-0092a）。
+    ///
+    /// 默认实现回退到 [`Transport::get`]：忽略 `headers`，把结果包装成
+    /// `status = 200`、`headers` 为空的 [`HttpResponse`]。这样旧测试假实现无需
+    /// 修改；生产实现应真正发送 `headers` 并回传线上状态和响应头。
+    ///
+    /// 与 [`Transport::get`] 不同，这个窄接口**不**把非 2xx 映射成错误，调用方
+    /// 需要自己检查 [`HttpResponse::status`]，以便读取登录接口的响应头。
+    fn get_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse> {
+        let _ = headers;
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: self.get(url)?,
+        })
+    }
 
     /// 带额外请求头把响应体写入 `sink`，返回写入的字节数。
     ///
@@ -120,6 +151,35 @@ impl Transport for ReqwestTransport {
             }
             result => result,
         }
+    }
+
+    fn get_with_headers(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse> {
+        self.throttle();
+        let mut request = self.client.get(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request.send().map_err(map_reqwest_error)?;
+        let status = response.status().as_u16();
+        let response_headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_owned(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
+        let body = response
+            .bytes()
+            .map(|bytes| bytes.to_vec())
+            .map_err(map_reqwest_error)?;
+        Ok(HttpResponse {
+            status,
+            headers: response_headers,
+            body,
+        })
     }
 
     fn get_to(&self, url: &str, headers: &[(&str, &str)], sink: &mut dyn Write) -> Result<u64> {
@@ -221,6 +281,17 @@ mod tests {
         fn get(&self, _url: &str) -> Result<Vec<u8>> {
             Ok(b"body".to_vec())
         }
+    }
+
+    #[test]
+    fn get_with_headers_defaults_to_get_without_headers() {
+        let transport = BodyOnlyTransport;
+        let response = transport
+            .get_with_headers("https://example.invalid/response", &[("X-Test", "1")])
+            .expect("默认实现应回退到 get");
+        assert_eq!(response.status, 200);
+        assert!(response.headers.is_empty());
+        assert_eq!(response.body, b"body");
     }
 
     #[test]

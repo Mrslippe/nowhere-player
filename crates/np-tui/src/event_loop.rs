@@ -101,6 +101,9 @@ where
         if player.poll_live() {
             draw_needed = true;
         }
+        if player.poll_login() {
+            draw_needed = true;
+        }
         match player.handle_ended() {
             Ok(true) => {
                 app.refresh_queue_view(player, &**library);
@@ -146,6 +149,11 @@ where
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if player.login_active() {
+                        player.handle_login_key(key.code);
+                        draw_needed = true;
+                        continue;
+                    }
                     if app.search_editing_input() {
                         match key.code {
                             KeyCode::Char(character) => app.insert_search_char(character),

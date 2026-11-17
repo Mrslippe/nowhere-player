@@ -1298,6 +1298,10 @@ impl App {
             self.status = status;
             return;
         }
+        if let Some(status) = crate::login_command::run(&input, player) {
+            self.status = status;
+            return;
+        }
         let block_id = format!("tui-{}", now_millis());
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "search"

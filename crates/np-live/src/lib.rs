@@ -9,6 +9,7 @@
 //! 只有一个目标 1500ms（上限 2000ms、下限 1200ms）的有界帧队列，缓冲可观测。
 
 pub mod api;
+pub mod auth;
 mod control;
 pub mod error;
 mod flv;
@@ -17,7 +18,8 @@ pub mod prepare;
 mod queue;
 mod source;
 
+pub use auth::{AuthError, AuthStore, BiliAuth, QR_POLL_INTERVAL, QrLogin, QrStatus};
 pub use control::LiveControl;
 pub use error::LiveError;
 pub use metrics::LiveMetrics;
-pub use prepare::{PreparedLive, prepare, prepare_default};
+pub use prepare::{PreparedLive, prepare, prepare_auth, prepare_default, prepare_default_auth};

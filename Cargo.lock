@@ -1926,6 +1926,7 @@ dependencies = [
  "serde_json",
  "symphonia",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1953,6 +1954,7 @@ dependencies = [
  "np-audio",
  "np-core",
  "np-live",
+ "np-sources",
  "ratatui",
  "serde_json",
  "tray-icon",

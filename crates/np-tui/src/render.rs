@@ -76,6 +76,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
         }
     }
     draw_status_border(frame, full, app);
+    player.draw_login(frame, &app.palette);
 }
 
 fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {

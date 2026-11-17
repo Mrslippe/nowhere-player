@@ -63,6 +63,9 @@ pub struct TuiAudio {
     live_control: RefCell<Option<np_live::LiveControl>>,
     reconnect_attempt: Cell<u32>,
     reconnect_at: Cell<Option<Instant>>,
+    login: RefCell<crate::login::LoginUi>,
+    bili_auth: RefCell<Option<np_live::BiliAuth>>,
+    auth_loaded: Cell<bool>,
 }
 
 impl TuiAudio {
@@ -104,6 +107,9 @@ impl TuiAudio {
             live_control: RefCell::new(None),
             reconnect_attempt: Cell::new(0),
             reconnect_at: Cell::new(None),
+            login: RefCell::new(crate::login::LoginUi::new()),
+            bili_auth: RefCell::new(None),
+            auth_loaded: Cell::new(false),
         }
     }
 
@@ -221,6 +227,52 @@ impl TuiAudio {
         self.live_note.borrow_mut().take()
     }
 
+    pub(crate) fn start_bili_login(&self) {
+        self.login.borrow_mut().start();
+    }
+
+    pub(crate) fn start_bili_logout(&self) -> String {
+        let note = self.login.borrow_mut().logout();
+        *self.bili_auth.borrow_mut() = None;
+        self.auth_loaded.set(true);
+        note
+    }
+
+    pub(crate) fn login_active(&self) -> bool {
+        self.login.borrow().active()
+    }
+
+    pub(crate) fn poll_login(&self) -> bool {
+        let changed = self.login.borrow_mut().poll();
+        if let Some(auth) = self.login.borrow().auth() {
+            *self.bili_auth.borrow_mut() = Some(auth);
+            self.auth_loaded.set(true);
+        }
+        changed
+    }
+
+    pub(crate) fn handle_login_key(&self, key: crossterm::event::KeyCode) -> bool {
+        self.login.borrow_mut().handle_key(key)
+    }
+
+    pub(crate) fn draw_login(&self, frame: &mut ratatui::Frame, palette: &crate::theme::Palette) {
+        self.login.borrow().draw(frame, frame.area(), palette);
+    }
+
+    fn auth_for_live(&self) -> Option<np_live::BiliAuth> {
+        if !self.auth_loaded.get() {
+            self.auth_loaded.set(true);
+            match np_live::AuthStore::new(crate::login::auth_path()).load() {
+                Ok(Some(auth)) => *self.bili_auth.borrow_mut() = Some(auth),
+                Ok(None) => {}
+                Err(error) => {
+                    *self.live_note.borrow_mut() = Some(format!("B站登录态读取失败：{error}"));
+                }
+            }
+        }
+        self.bili_auth.borrow().clone()
+    }
+
     /// 开始一路直播：停止当前播放、保留队列，后台准备网络与首帧。
     ///
     /// 本方法不碰网络；准备线程完成后由 [`poll_live`](Self::poll_live) 在主线程
@@ -239,6 +291,7 @@ impl TuiAudio {
         self.live_generation.set(generation);
         self.live_state.set(LiveState::Preparing);
         self.live_room.set(room_id);
+        let auth = self.auth_for_live();
         *self.title.borrow_mut() = format!("直播 {room_id} 准备中…");
         *self.artist.borrow_mut() = "B站直播".to_owned();
         self.duration_ms.set(None);
@@ -253,7 +306,7 @@ impl TuiAudio {
         let spawn = std::thread::Builder::new()
             .name("np-live-prepare".to_owned())
             .spawn(move || {
-                let result = prepare_live(room_id, &cancel);
+                let result = prepare_live(room_id, &cancel, auth);
                 if cancel.load(Ordering::Acquire) {
                     return;
                 }
@@ -1008,8 +1061,12 @@ impl PlayerApi for TuiAudio {
     }
 }
 
-fn prepare_live(room_id: u64, cancel: &AtomicBool) -> Result<np_live::PreparedLive, LiveFailure> {
-    np_live::prepare_default(room_id, cancel).map_err(|error| LiveFailure {
+fn prepare_live(
+    room_id: u64,
+    cancel: &AtomicBool,
+    auth: Option<np_live::BiliAuth>,
+) -> Result<np_live::PreparedLive, LiveFailure> {
+    np_live::prepare_default_auth(room_id, cancel, auth.as_ref()).map_err(|error| LiveFailure {
         message: error.user_message(),
         retryable: error.is_retryable(),
     })

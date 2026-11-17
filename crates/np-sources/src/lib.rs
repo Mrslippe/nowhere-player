@@ -29,7 +29,7 @@ pub use error::{Result, SourceError};
 pub use model::{MAX_TRACK_DURATION_MS, ResolvedStream, SourceId, SourceTrack, UpUser};
 pub use netease::NeteaseSource;
 pub use registry::{SearchMerge, SourceRegistry};
-pub use transport::{ReqwestTransport, Transport};
+pub use transport::{HttpResponse, ReqwestTransport, Transport};
 
 /// 在线音源适配器（ADR-0004 §3）。
 pub trait AudioSource: Send + Sync {
