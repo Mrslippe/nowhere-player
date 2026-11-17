@@ -47,4 +47,29 @@ impl LiveError {
     pub fn user_message(&self) -> String {
         self.to_string()
     }
+
+    /// 这类错误能否通过重新取 playurl 重连恢复。
+    ///
+    /// 未开播/房间不存在/不支持的音频/用户取消不重试；
+    /// 网络、读取、FLV 数据错误可以重试。
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            LiveError::Source(_) | LiveError::Io(_) | LiveError::BadStream(_)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_and_stream_errors_are_retryable() {
+        assert!(LiveError::BadStream("x".to_owned()).is_retryable());
+        assert!(LiveError::Io(std::io::Error::other("x")).is_retryable());
+        assert!(!LiveError::Offline.is_retryable());
+        assert!(!LiveError::Cancelled.is_retryable());
+        assert!(!LiveError::UnsupportedAudio("x".to_owned()).is_retryable());
+    }
 }

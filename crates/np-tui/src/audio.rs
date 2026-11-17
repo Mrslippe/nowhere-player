@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
@@ -14,6 +15,8 @@ use crate::playback::{PlaybackQueue, QueueItem, TrackKey};
 
 /// 直播的 ring 窗口：比本地文件的 300 ms 更短，启动更快、更贴近 live edge。
 pub(crate) const LIVE_RING_MS: u32 = 150;
+const MAX_RECONNECT_ATTEMPTS: u32 = 6;
+const RECONNECT_DELAYS_SECS: [u64; 6] = [1, 2, 5, 10, 20, 30];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LiveState {
@@ -21,9 +24,23 @@ pub(crate) enum LiveState {
     Preparing,
     Playing,
     Paused,
+    Reconnecting,
 }
 
-type LivePreparation = (u64, Result<np_live::PreparedLive, String>);
+#[derive(Debug)]
+struct LiveFailure {
+    message: String,
+    retryable: bool,
+}
+
+type LivePreparation = (u64, Result<np_live::PreparedLive, LiveFailure>);
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let index = usize::try_from(attempt.saturating_sub(1))
+        .unwrap_or(usize::MAX)
+        .min(RECONNECT_DELAYS_SECS.len() - 1);
+    Duration::from_secs(RECONNECT_DELAYS_SECS[index])
+}
 
 pub struct TuiAudio {
     player: RefCell<Option<Player>>,
@@ -44,6 +61,8 @@ pub struct TuiAudio {
     live_note: RefCell<Option<String>>,
     live_metrics: RefCell<Option<np_live::LiveMetrics>>,
     live_control: RefCell<Option<np_live::LiveControl>>,
+    reconnect_attempt: Cell<u32>,
+    reconnect_at: Cell<Option<Instant>>,
 }
 
 impl TuiAudio {
@@ -83,6 +102,8 @@ impl TuiAudio {
             live_note: RefCell::new(None),
             live_metrics: RefCell::new(None),
             live_control: RefCell::new(None),
+            reconnect_attempt: Cell::new(0),
+            reconnect_at: Cell::new(None),
         }
     }
 
@@ -145,6 +166,13 @@ impl TuiAudio {
         if !self.is_live() {
             return None;
         }
+        if self.live_state.get() == LiveState::Reconnecting {
+            return Some(format!(
+                "LIVE RECONNECTING {}/{}",
+                self.reconnect_attempt.get(),
+                MAX_RECONNECT_ATTEMPTS
+            ));
+        }
         if self.live_state.get() == LiveState::Paused {
             return Some(match self.live_metrics.borrow().as_ref() {
                 Some(metrics) => {
@@ -198,6 +226,14 @@ impl TuiAudio {
     /// 本方法不碰网络；准备线程完成后由 [`poll_live`](Self::poll_live) 在主线程
     /// 打开 `Player`。
     pub(crate) fn start_live(&self, room_id: u64) {
+        self.start_live_inner(room_id, true);
+    }
+
+    fn start_live_inner(&self, room_id: u64, reset_reconnect: bool) {
+        if reset_reconnect {
+            self.reconnect_attempt.set(0);
+        }
+        self.reconnect_at.set(None);
         self.stop_playback();
         let generation = self.live_generation.get().wrapping_add(1);
         self.live_generation.set(generation);
@@ -230,6 +266,12 @@ impl TuiAudio {
             *self.title.borrow_mut() = "未播放".to_owned();
             *self.artist.borrow_mut() = "Nowhere Player".to_owned();
             *self.live_note.borrow_mut() = Some(format!("直播准备线程启动失败：{error}"));
+        } else if !reset_reconnect {
+            *self.live_note.borrow_mut() = Some(format!(
+                "直播重连中（{}/{}）",
+                self.reconnect_attempt.get(),
+                MAX_RECONNECT_ATTEMPTS
+            ));
         }
     }
 
@@ -243,7 +285,10 @@ impl TuiAudio {
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((
                         self.live_generation.get(),
-                        Err("直播准备线程意外结束".to_owned()),
+                        Err(LiveFailure {
+                            message: "直播准备线程意外结束".to_owned(),
+                            retryable: true,
+                        }),
                     )),
                 },
                 None => None,
@@ -262,6 +307,9 @@ impl TuiAudio {
             Ok(prepared) => {
                 let metrics = prepared.metrics.clone();
                 let control = prepared.control.clone();
+                let reconnected = self.reconnect_attempt.get() > 0;
+                self.reconnect_attempt.set(0);
+                self.reconnect_at.set(None);
                 let title = if prepared.title.trim().is_empty() {
                     format!("直播 {}", prepared.room_id)
                 } else {
@@ -287,7 +335,11 @@ impl TuiAudio {
                         *self.live_control.borrow_mut() = Some(control);
                         *self.title.borrow_mut() = title.clone();
                         *self.artist.borrow_mut() = "B站直播".to_owned();
-                        *self.live_note.borrow_mut() = Some(format!("直播：{title}"));
+                        *self.live_note.borrow_mut() = Some(if reconnected {
+                            format!("直播已重连：{title}")
+                        } else {
+                            format!("直播：{title}")
+                        });
                     }
                     Err(error) => {
                         self.live_state.set(LiveState::Idle);
@@ -297,14 +349,54 @@ impl TuiAudio {
                     }
                 }
             }
-            Err(message) => {
-                self.live_state.set(LiveState::Idle);
-                *self.title.borrow_mut() = "未播放".to_owned();
-                *self.artist.borrow_mut() = "Nowhere Player".to_owned();
-                *self.live_note.borrow_mut() = Some(format!("直播失败：{message}"));
+            Err(failure) => {
+                if failure.retryable && self.live_state.get() != LiveState::Idle {
+                    self.begin_reconnect(Some(failure.message));
+                } else {
+                    self.fail_live(format!("直播失败：{}", failure.message));
+                }
             }
         }
         true
+    }
+
+    fn begin_reconnect(&self, reason: Option<String>) {
+        if !self.is_live() {
+            return;
+        }
+        let room = self.live_room.get();
+        if room == 0 {
+            self.fail_live("直播重连失败：房间号丢失".to_owned());
+            return;
+        }
+        let attempt = self.reconnect_attempt.get().saturating_add(1);
+        if attempt > MAX_RECONNECT_ATTEMPTS {
+            self.fail_live(format!(
+                "直播重连失败（已尝试 {MAX_RECONNECT_ATTEMPTS} 次）"
+            ));
+            return;
+        }
+        self.reconnect_attempt.set(attempt);
+        *self.player.borrow_mut() = None;
+        *self.tap.borrow_mut() = None;
+        *self.live_metrics.borrow_mut() = None;
+        *self.live_control.borrow_mut() = None;
+        self.playing.set(false);
+        self.live_state.set(LiveState::Reconnecting);
+        let delay = reconnect_delay(attempt);
+        self.reconnect_at.set(Some(Instant::now() + delay));
+        let reason = reason.unwrap_or_else(|| "连接中断".to_owned());
+        *self.live_note.borrow_mut() = Some(format!(
+            "直播断开：{reason}，{}s 后重连（{}/{}）",
+            delay.as_secs(),
+            attempt,
+            MAX_RECONNECT_ATTEMPTS
+        ));
+    }
+
+    fn fail_live(&self, note: String) {
+        self.stop_live();
+        *self.live_note.borrow_mut() = Some(note);
     }
 
     /// `Esc`：停止直播（best-effort），队列保留。
@@ -324,6 +416,8 @@ impl TuiAudio {
         *self.title.borrow_mut() = "未播放".to_owned();
         *self.artist.borrow_mut() = "Nowhere Player".to_owned();
         self.live_room.set(0);
+        self.reconnect_attempt.set(0);
+        self.reconnect_at.set(None);
         true
     }
 
@@ -335,6 +429,7 @@ impl TuiAudio {
         *self.live_rx.borrow_mut() = None;
         *self.live_metrics.borrow_mut() = None;
         *self.live_control.borrow_mut() = None;
+        self.reconnect_at.set(None);
         self.live_state.set(LiveState::Idle);
     }
 
@@ -547,7 +642,7 @@ impl TuiAudio {
                 LiveState::Paused => {
                     self.resume_live();
                 }
-                LiveState::Idle | LiveState::Preparing => {}
+                LiveState::Idle | LiveState::Preparing | LiveState::Reconnecting => {}
             }
             return;
         }
@@ -589,16 +684,27 @@ impl TuiAudio {
         if let Some(control) = self.live_control.borrow().as_ref() {
             control.resume();
         }
-        if let Some(player) = self.player.borrow().as_ref() {
-            if let Err(error) = player.play() {
-                *self.live_note.borrow_mut() = Some(format!("直播恢复失败：{error}"));
-                return;
+        let played = if let Some(player) = self.player.borrow().as_ref() {
+            match player.play() {
+                Ok(()) => true,
+                Err(error) => {
+                    *self.live_note.borrow_mut() = Some(format!("直播恢复失败，重新连接：{error}"));
+                    false
+                }
             }
+        } else {
+            false
+        };
+        if played {
             self.playing.set(true);
             self.live_state.set(LiveState::Playing);
             *self.live_note.borrow_mut() = Some("直播已恢复（先播缓存）".to_owned());
             return;
         }
+        *self.player.borrow_mut() = None;
+        *self.tap.borrow_mut() = None;
+        *self.live_control.borrow_mut() = None;
+        *self.live_metrics.borrow_mut() = None;
         // 没有 Player（异常/测试）才回退到重连。
         let room = self.live_room.get();
         if room == 0 {
@@ -649,12 +755,18 @@ impl TuiAudio {
         PlaybackState {
             status: if self.playing.get() {
                 PlaybackStatus::Playing
-            } else if self.live_state.get() == LiveState::Paused || self.player.borrow().is_some() {
+            } else if self.live_state.get() == LiveState::Paused
+                || self.live_state.get() == LiveState::Reconnecting
+                || self.player.borrow().is_some()
+            {
                 PlaybackStatus::Paused
             } else {
                 PlaybackStatus::Idle
             },
-            track_id: if self.is_live() && self.live_state.get() == LiveState::Paused {
+            track_id: if self.is_live()
+                && (self.live_state.get() == LiveState::Paused
+                    || self.live_state.get() == LiveState::Reconnecting)
+            {
                 Some(self.title())
             } else {
                 self.player.borrow().as_ref().map(|_| self.title())
@@ -691,27 +803,54 @@ impl TuiAudio {
         Ok(self.state())
     }
     pub fn handle_ended(&self) -> Result<bool, CmdError> {
-        if self.live_state.get() != LiveState::Idle {
-            if self.live_state.get() == LiveState::Preparing {
-                return Ok(false);
-            }
-            let (ended, error) = {
-                let player = self.player.borrow();
-                player.as_ref().map_or((false, None), |player| {
-                    (player.is_ended(), player.last_error())
-                })
-            };
-            if ended || error.is_some() {
-                let note = match error {
-                    Some(error) => format!("直播结束：{error}"),
-                    None => "直播已结束".to_owned(),
+        match self.live_state.get() {
+            LiveState::Idle => {}
+            LiveState::Preparing => return Ok(false),
+            LiveState::Reconnecting => {
+                let Some(at) = self.reconnect_at.get() else {
+                    return Ok(false);
                 };
-                self.stop_live();
-                *self.live_note.borrow_mut() = Some(note);
+                if Instant::now() < at {
+                    return Ok(false);
+                }
+                let room = self.live_room.get();
+                if room == 0 {
+                    self.fail_live("直播重连失败：房间号丢失".to_owned());
+                    return Ok(true);
+                }
+                self.reconnect_at.set(None);
+                self.start_live_inner(room, false);
                 return Ok(true);
             }
-            // 直播结束不自动下一首。
-            return Ok(false);
+            LiveState::Paused => {
+                let (ended, error) = {
+                    let player = self.player.borrow();
+                    player.as_ref().map_or((false, None), |player| {
+                        (player.is_ended(), player.last_error())
+                    })
+                };
+                if ended || error.is_some() {
+                    let mut note = self.live_note.borrow_mut();
+                    if note.is_none() {
+                        *note = Some("直播连接已断开，恢复时重新连接".to_owned());
+                    }
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            LiveState::Playing => {
+                let (ended, error) = {
+                    let player = self.player.borrow();
+                    player.as_ref().map_or((false, None), |player| {
+                        (player.is_ended(), player.last_error())
+                    })
+                };
+                if ended || error.is_some() {
+                    self.begin_reconnect(error);
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
         }
         let ended = self
             .player
@@ -869,8 +1008,11 @@ impl PlayerApi for TuiAudio {
     }
 }
 
-fn prepare_live(room_id: u64, cancel: &AtomicBool) -> Result<np_live::PreparedLive, String> {
-    np_live::prepare_default(room_id, cancel).map_err(|error| error.user_message())
+fn prepare_live(room_id: u64, cancel: &AtomicBool) -> Result<np_live::PreparedLive, LiveFailure> {
+    np_live::prepare_default(room_id, cancel).map_err(|error| LiveFailure {
+        message: error.user_message(),
+        retryable: error.is_retryable(),
+    })
 }
 
 #[cfg(test)]
@@ -994,6 +1136,29 @@ mod tests {
         assert_eq!(sequential.repeat, np_core::RepeatMode::Off);
         assert!(!sequential.shuffle);
     }
+    #[test]
+    fn reconnect_backoff_steps_and_state() {
+        assert_eq!(reconnect_delay(1).as_secs(), 1);
+        assert_eq!(reconnect_delay(2).as_secs(), 2);
+        assert_eq!(reconnect_delay(3).as_secs(), 5);
+        assert_eq!(reconnect_delay(4).as_secs(), 10);
+        assert_eq!(reconnect_delay(5).as_secs(), 20);
+        assert_eq!(reconnect_delay(6).as_secs(), 30);
+        assert_eq!(reconnect_delay(99).as_secs(), 30);
+
+        let audio = TuiAudio::empty();
+        audio.live_for_test(21622811, "BLAST");
+        audio.begin_reconnect(Some("测试断流".to_owned()));
+        assert_eq!(audio.live_state(), LiveState::Reconnecting);
+        assert_eq!(audio.reconnect_attempt.get(), 1);
+        assert_eq!(
+            audio.live_status_label().as_deref(),
+            Some("LIVE RECONNECTING 1/6")
+        );
+        assert!(audio.stop_live());
+        assert_eq!(audio.live_state(), LiveState::Idle);
+    }
+
     #[test]
     fn seek_moves_playback_position() {
         let path =
