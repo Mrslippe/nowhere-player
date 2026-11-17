@@ -1,4 +1,4 @@
-//! 有界 `AacFrame` 队列 + 1000ms 缓冲控制器。
+//! 有界 `AacFrame` 队列 + 2000ms 诊断缓冲控制器。
 //!
 //! 队列是网络线程（producer）和解码线程（consumer）之间唯一的中转：
 //!
@@ -6,8 +6,8 @@
 //! - 解码线程按 AAC 帧 pop，落后太多时由控制器从队头丢旧帧；
 //! - `buffer_ms = 最新帧 pts - 已播放媒体时间`。
 //!
-//! 目标 1000ms / 上限 1500ms / 下限 800ms 来自 B1.2b 真机断音修正：
-//! 实测 CDN 空窗约 1s，500ms 下限会周期性补静音；回填到 1000ms 再恢复。
+//! 目标 2000ms / 上限 2500ms / 下限 1800ms 是 B1.2d 断音诊断：
+//! 用户实测 1000ms 仍有断音，临时加厚到 2s 验证是否纯 buffer 不足。
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 use crate::flv::AacFrame;
 
 /// 缓冲目标（毫秒）：超过上限后追到这个值。
-pub(crate) const TARGET_BUFFER_MS: u64 = 1000;
+pub(crate) const TARGET_BUFFER_MS: u64 = 2000;
 /// 缓冲上限：超过才丢旧帧。
-pub(crate) const MAX_BUFFER_MS: u64 = 1500;
+pub(crate) const MAX_BUFFER_MS: u64 = 2500;
 /// 缓冲下限：低于它视为饥饿，先回填到 target 再恢复。
-pub(crate) const MIN_BUFFER_MS: u64 = 800;
+pub(crate) const MIN_BUFFER_MS: u64 = 1800;
 /// 控制周期：250ms 检查一次缓冲，不必每帧都判断。
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
 /// 一次丢帧后的冷却时间，避免连续跳变。
@@ -247,8 +247,8 @@ impl BufferController {
         })
     }
 
-    /// 推进一次控制周期。只有 `buffer > 1500ms` 且冷却已过才丢帧；
-    /// `buffer < 800ms` 不减速，由调用方回填/补静音。
+    /// 推进一次控制周期。只有 `buffer > 2500ms` 且冷却已过才丢帧；
+    /// `buffer < 1800ms` 不减速，由调用方回填/补静音。
     pub(crate) fn tick(&mut self, now: Instant, buffer_ms: u64) -> Control {
         self.last_tick = Some(now);
 
@@ -370,19 +370,19 @@ mod tests {
         assert_eq!(
             controller.tick(base + Duration::from_millis(250), MAX_BUFFER_MS),
             Control::Idle,
-            "1500ms is still acceptable"
+            "2500ms is still acceptable"
         );
         assert_eq!(
             controller.tick(base + Duration::from_millis(500), MAX_BUFFER_MS + 1),
             Control::DropTo(TARGET_BUFFER_MS)
         );
         assert_eq!(
-            controller.tick(base + Duration::from_millis(750), 2_500),
+            controller.tick(base + Duration::from_millis(750), MAX_BUFFER_MS + 1),
             Control::Idle,
             "cooldown blocks a second drop within 500ms"
         );
         assert_eq!(
-            controller.tick(base + Duration::from_millis(1_000), 2_500),
+            controller.tick(base + Duration::from_millis(1_000), MAX_BUFFER_MS + 1),
             Control::DropTo(TARGET_BUFFER_MS)
         );
     }
