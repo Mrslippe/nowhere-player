@@ -187,9 +187,11 @@ mod tests {
             calls.urls.push(url.to_owned());
             if url.contains("getRoomPlayInfo") {
                 assert!(
-                    url.contains("only_audio=1"),
-                    "URL missing only_audio: {url}"
+                    !url.contains("only_audio=1"),
+                    "default URL should be normal FLV: {url}"
                 );
+                assert!(url.contains("qn=25000"), "URL missing qn: {url}");
+                assert!(url.contains("codec=1"), "URL missing codec: {url}");
                 assert!(url.contains("format=0"), "URL missing format: {url}");
                 Ok(self.play.as_bytes().to_vec())
             } else {

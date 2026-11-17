@@ -17,9 +17,33 @@ use crate::flv::AacFrame;
 
 /// 缓冲目标（毫秒）：超过上限后追到这个值。
 pub(crate) const TARGET_BUFFER_MS: u64 = 1500;
-/// 缓冲上限：超过才丢旧帧。
+
+/// 运行期目标缓冲；`NP_LIVE_TARGET_MS` 仅供低延迟对比测试。
+pub(crate) fn target_buffer_ms() -> u64 {
+    std::env::var("NP_LIVE_TARGET_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(300, 3000))
+        .unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                TARGET_BUFFER_MS
+            }
+            #[cfg(not(test))]
+            {
+                if std::env::var_os("NP_LIVE_ONLY_AUDIO").is_some() {
+                    TARGET_BUFFER_MS
+                } else {
+                    900
+                }
+            }
+        })
+}
+/// 缓冲上限：超过才丢旧帧（测试夹具）。
+#[cfg(test)]
 pub(crate) const MAX_BUFFER_MS: u64 = 2000;
-/// 缓冲下限：低于它只作为诊断标记，不阻塞 decode 线程。
+/// 缓冲下限：低于它只作为诊断标记，不阻塞 decode 线程（测试夹具）。
+#[cfg(test)]
 pub(crate) const MIN_BUFFER_MS: u64 = 1200;
 /// 控制周期：250ms 检查一次缓冲，不必每帧都判断。
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
@@ -230,14 +254,21 @@ pub(crate) struct BufferController {
     last_tick: Option<Instant>,
     last_drop: Option<Instant>,
     starving: bool,
+    target_ms: u64,
+    max_ms: u64,
+    min_ms: u64,
 }
 
 impl BufferController {
     pub(crate) fn new() -> Self {
+        let target_ms = target_buffer_ms();
         Self {
             last_tick: None,
             last_drop: None,
             starving: false,
+            target_ms,
+            max_ms: target_ms.saturating_add(500),
+            min_ms: target_ms.saturating_sub(300),
         }
     }
 
@@ -256,12 +287,12 @@ impl BufferController {
         let cooldown_ok = self.last_drop.is_none_or(|last| {
             now.saturating_duration_since(last) >= Duration::from_millis(DROP_COOLDOWN_MS)
         });
-        if buffer_ms > MAX_BUFFER_MS && cooldown_ok {
+        if buffer_ms > self.max_ms && cooldown_ok {
             self.last_drop = Some(now);
-            return Control::DropTo(TARGET_BUFFER_MS);
+            return Control::DropTo(self.target_ms);
         }
 
-        if self.starving && buffer_ms >= MIN_BUFFER_MS {
+        if self.starving && buffer_ms >= self.min_ms {
             self.starving = false;
             return Control::Recovered;
         }

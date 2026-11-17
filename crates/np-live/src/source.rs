@@ -28,8 +28,10 @@ use crate::control::{LiveControl, PAUSE_CAP_FRAMES, PAUSE_CAP_MS};
 use crate::error::LiveError;
 use crate::flv::{AacConfig, AacFrame, FlvFrameSource};
 use crate::metrics::LiveMetrics;
+#[cfg(test)]
+use crate::queue::TARGET_BUFFER_MS;
 use crate::queue::{
-    BufferController, Control, FrameQueue, QUEUE_CAPACITY_FRAMES, TARGET_BUFFER_MS,
+    BufferController, Control, FrameQueue, QUEUE_CAPACITY_FRAMES, target_buffer_ms,
 };
 
 /// 启动最多等这么久攒够目标缓冲；超时就用手上已有的帧开始播。
@@ -78,8 +80,9 @@ impl LiveAudioSource {
             })
             .map_err(LiveError::Io)?;
 
+        let target_ms = target_buffer_ms();
         let deadline = Instant::now() + STARTUP_TIMEOUT;
-        queue.wait_span(TARGET_BUFFER_MS, deadline);
+        queue.wait_span(target_ms, deadline);
 
         if queue.len() == 0 {
             queue.stop();
@@ -92,8 +95,8 @@ impl LiveAudioSource {
         // 启动裁剪：只保留最新的约 1500ms，不把 CDN 初始突发全部播一遍。
         let newest = queue.newest_pts().unwrap_or_default();
         let front = queue.front_pts().unwrap_or_default();
-        if newest.saturating_sub(front) > TARGET_BUFFER_MS {
-            let threshold = newest.saturating_sub(TARGET_BUFFER_MS);
+        if newest.saturating_sub(front) > target_ms {
+            let threshold = newest.saturating_sub(target_ms);
             queue.drop_below(threshold);
         }
         metrics.set_buffer(queue.buffer_ms());

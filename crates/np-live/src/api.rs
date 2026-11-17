@@ -1,6 +1,7 @@
 //! B 站直播 API：`getRoomPlayInfo`（默认 `only_audio=1`）与 `room get_info`。
 //!
-//! 诊断开关：`NP_LIVE_NORMAL=1` 时请求普通 FLV，仍只解 type=8 音频。
+//! 默认请求 HEVC qn25000 普通 FLV，只解 type=8 音频；`NP_LIVE_ONLY_AUDIO=1`
+//! 回退到省带宽的 only_audio/AVC qn10000。
 //!
 //! 只走 [`np_sources::Transport`]，测试注入夹具，不会触网。
 
@@ -24,18 +25,20 @@ const STREAM_HEADERS: [(&str, &str); 3] = [
 
 /// `getRoomPlayInfo` URL。
 ///
-/// 默认 `only_audio=1`；`NP_LIVE_NORMAL=1` 时请求普通 FLV，用于和浏览器同源对比。
+/// 默认 HEVC qn25000 普通 FLV；`NP_LIVE_ONLY_AUDIO=1` 回退 only_audio/AVC。
 pub fn play_info_url(room_id: u64) -> String {
-    let only_audio = std::env::var_os("NP_LIVE_NORMAL").is_none();
+    let only_audio = std::env::var_os("NP_LIVE_ONLY_AUDIO").is_some();
     play_info_url_with_audio_mode(room_id, only_audio)
 }
 
 fn play_info_url_with_audio_mode(room_id: u64, only_audio: bool) -> String {
     let suffix = if only_audio { "&only_audio=1" } else { "" };
-    // 默认 10000（原画档）；qn=80 会命中另一组 CDN/转码，实测与浏览器不同源。
-    let qn = std::env::var("NP_LIVE_QN").unwrap_or_else(|_| "10000".to_owned());
+    let default_qn = if only_audio { "10000" } else { "25000" };
+    let default_codec = if only_audio { "0" } else { "1" };
+    let qn = std::env::var("NP_LIVE_QN").unwrap_or_else(|_| default_qn.to_owned());
+    let codec = std::env::var("NP_LIVE_CODEC").unwrap_or_else(|_| default_codec.to_owned());
     format!(
-        "{PLAY_INFO_URL}?room_id={room_id}&protocol=0&format=0&codec=0&qn={qn}&platform=web&ptype=8{suffix}"
+        "{PLAY_INFO_URL}?room_id={room_id}&protocol=0&format=0&codec={codec}&qn={qn}&platform=web&ptype=8{suffix}"
     )
 }
 
@@ -381,12 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn fetch_play_info_uses_only_audio_url() {
+    fn fetch_play_info_uses_normal_hevc_url() {
         let transport = RecordingTransport::new(LIVE);
         fetch_play_info(&transport, 21622811).unwrap();
         let urls = transport.urls.lock().unwrap();
         assert_eq!(urls.len(), 1);
-        assert!(urls[0].contains("only_audio=1"));
+        assert!(!urls[0].contains("only_audio=1"));
+        assert!(urls[0].contains("qn=25000"));
+        assert!(urls[0].contains("codec=1"));
     }
 
     #[test]
