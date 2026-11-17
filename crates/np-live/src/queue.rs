@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::flv::AacFrame;
 
 /// 缓冲目标（毫秒）：超过上限后追到这个值。
+#[cfg(test)]
 pub(crate) const TARGET_BUFFER_MS: u64 = 1500;
 
 /// 运行期目标缓冲；`NP_LIVE_TARGET_MS` 仅供低延迟对比测试。
@@ -31,11 +32,7 @@ pub(crate) fn target_buffer_ms() -> u64 {
             }
             #[cfg(not(test))]
             {
-                if std::env::var_os("NP_LIVE_ONLY_AUDIO").is_some() {
-                    TARGET_BUFFER_MS
-                } else {
-                    900
-                }
+                900
             }
         })
 }

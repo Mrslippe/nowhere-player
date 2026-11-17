@@ -1,7 +1,7 @@
 //! B 站直播 API：`getRoomPlayInfo`（默认 `only_audio=1`）与 `room get_info`。
 //!
-//! 默认请求 HEVC qn25000 普通 FLV，只解 type=8 音频；`NP_LIVE_ONLY_AUDIO=1`
-//! 回退到省带宽的 only_audio/AVC qn10000。
+//! 默认请求 qn25000 HEVC 的 only_audio 流；`NP_LIVE_NORMAL=1` 时请求普通 FLV，
+//! 仍只解 type=8 音频。
 //!
 //! 只走 [`np_sources::Transport`]，测试注入夹具，不会触网。
 
@@ -25,18 +25,16 @@ const STREAM_HEADERS: [(&str, &str); 3] = [
 
 /// `getRoomPlayInfo` URL。
 ///
-/// 默认 HEVC qn25000 普通 FLV；`NP_LIVE_ONLY_AUDIO=1` 回退 only_audio/AVC。
+/// 默认 qn25000 HEVC only_audio；`NP_LIVE_NORMAL=1` 请求普通 FLV。
 pub fn play_info_url(room_id: u64) -> String {
-    let only_audio = std::env::var_os("NP_LIVE_ONLY_AUDIO").is_some();
+    let only_audio = std::env::var_os("NP_LIVE_NORMAL").is_none();
     play_info_url_with_audio_mode(room_id, only_audio)
 }
 
 fn play_info_url_with_audio_mode(room_id: u64, only_audio: bool) -> String {
     let suffix = if only_audio { "&only_audio=1" } else { "" };
-    let default_qn = if only_audio { "10000" } else { "25000" };
-    let default_codec = if only_audio { "0" } else { "1" };
-    let qn = std::env::var("NP_LIVE_QN").unwrap_or_else(|_| default_qn.to_owned());
-    let codec = std::env::var("NP_LIVE_CODEC").unwrap_or_else(|_| default_codec.to_owned());
+    let qn = std::env::var("NP_LIVE_QN").unwrap_or_else(|_| "25000".to_owned());
+    let codec = std::env::var("NP_LIVE_CODEC").unwrap_or_else(|_| "1".to_owned());
     format!(
         "{PLAY_INFO_URL}?room_id={room_id}&protocol=0&format=0&codec={codec}&qn={qn}&platform=web&ptype=8{suffix}"
     )
@@ -332,7 +330,8 @@ mod tests {
         let url = play_info_url_with_audio_mode(21622811, true);
         assert!(url.contains("room_id=21622811"));
         assert!(url.contains("only_audio=1"));
-        assert!(url.contains("qn=10000"));
+        assert!(url.contains("qn=25000"));
+        assert!(url.contains("codec=1"));
         assert!(url.contains("protocol=0"));
         assert!(url.contains("format=0"));
     }
@@ -384,12 +383,12 @@ mod tests {
     }
 
     #[test]
-    fn fetch_play_info_uses_normal_hevc_url() {
+    fn fetch_play_info_uses_audio_only_hevc_url() {
         let transport = RecordingTransport::new(LIVE);
         fetch_play_info(&transport, 21622811).unwrap();
         let urls = transport.urls.lock().unwrap();
         assert_eq!(urls.len(), 1);
-        assert!(!urls[0].contains("only_audio=1"));
+        assert!(urls[0].contains("only_audio=1"));
         assert!(urls[0].contains("qn=25000"));
         assert!(urls[0].contains("codec=1"));
     }
