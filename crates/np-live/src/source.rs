@@ -4,8 +4,8 @@
 //! `symphonia` 的 `AacDecoder`（ASC 作为 `extra_data`），中间只有 [`FrameQueue`]。
 //! 因此缓冲是显式、可观测的：
 //!
-//! - 启动等到约 2000ms 音频，再从最新帧截到 2000ms，避免把 CDN 初始 GOP 全部播完；
-//! - 运行期 `buffer > 2500ms` 时按 AAC 帧边界丢旧帧追到 2000ms；
+//! - 启动等到约 1500ms 音频，再从最新帧截到 1500ms，避免把 CDN 初始 GOP 全部播完；
+//! - 运行期 `buffer > 2000ms` 时按 AAC 帧边界丢旧帧追到 1500ms；
 //! - 队列有数据时持续解码喂 ring；只有队列为空才补静音并记录 underrun；
 //! - 暂停时 ring 停止消费，队列自然涨到硬上限；恢复后第一次控制周期追回 900ms。
 
@@ -50,7 +50,7 @@ pub(crate) struct LiveAudioSource {
 }
 
 impl LiveAudioSource {
-    /// 读 FLV 头 / AAC 配置、起网络线程、等到约 2000ms 音频后返回。
+    /// 读 FLV 头 / AAC 配置、起网络线程、等到约 1500ms 音频后返回。
     ///
     /// 可能阻塞在网络读取上（准备线程专用）。
     pub(crate) fn open(reader: Box<dyn Read + Send>) -> Result<(Self, LiveMetrics), LiveError> {
@@ -80,7 +80,7 @@ impl LiveAudioSource {
             return Err(LiveError::BadStream(message));
         }
 
-        // 启动裁剪：只保留最新的约 2000ms，不把 CDN 初始突发全部播一遍。
+        // 启动裁剪：只保留最新的约 1500ms，不把 CDN 初始突发全部播一遍。
         let newest = queue.newest_pts().unwrap_or_default();
         let front = queue.front_pts().unwrap_or_default();
         if newest.saturating_sub(front) > TARGET_BUFFER_MS {
@@ -392,7 +392,7 @@ mod tests {
         let (_source, metrics) = open_source(flv_stream(&fixture_frames()));
         let buffer = metrics.buffer_ms();
         assert!(
-            (1_800..=2_200).contains(&buffer),
+            (1_300..=1_700).contains(&buffer),
             "startup buffer {buffer}ms should be about {TARGET_BUFFER_MS}ms"
         );
         assert_eq!(
@@ -411,7 +411,7 @@ mod tests {
         assert!(!source.is_seekable());
 
         let (frames, rms, _samples) = read_until_done(&mut source);
-        // 启动截到约 2000ms，后面可能还有网络线程继续灌进来的帧。
+        // 启动截到约 1500ms，后面可能还有网络线程继续灌进来的帧。
         assert!(
             frames > 40_000,
             "expected about a second of PCM, got {frames} frames"
@@ -438,7 +438,7 @@ mod tests {
 
         let (mut source, metrics) =
             LiveAudioSource::open(Box::new(reader)).expect("open gated source");
-        // 闸门前的 60 帧全部到队（启动裁剪只保留最新约 2000ms）。
+        // 闸门前的 60 帧全部到队（启动裁剪只保留最新约 1500ms）。
         wait_until(
             || source.queue.newest_pts().unwrap_or(0) >= 59 * PTS_STEP_MS,
             Duration::from_secs(2),
@@ -459,7 +459,7 @@ mod tests {
         assert!(metrics.dropped_frames() >= 60);
         let buffer = metrics.buffer_ms();
         assert!(
-            (1_800..=2_200).contains(&buffer),
+            (1_300..=1_700).contains(&buffer),
             "buffer after drop {buffer}ms"
         );
     }

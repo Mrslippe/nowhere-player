@@ -1,4 +1,4 @@
-//! 有界 `AacFrame` 队列 + 2000ms 诊断缓冲控制器。
+//! 有界 `AacFrame` 队列 + 1500ms 缓冲控制器。
 //!
 //! 队列是网络线程（producer）和解码线程（consumer）之间唯一的中转：
 //!
@@ -6,7 +6,7 @@
 //! - 解码线程按 AAC 帧 pop，落后太多时由控制器从队头丢旧帧；
 //! - `buffer_ms = 最新帧 pts - 已播放媒体时间`。
 //!
-//! 目标 2000ms / 上限 2500ms / 下限 1800ms 是 B1.2f 验证后的阈值：
+//! 目标 1500ms / 上限 2000ms / 下限 1200ms 是 B1.2g 稳定降延迟值：
 //! 低 buffer 只用于诊断，不再阻塞 decode 线程；队列空才补静音。
 
 use std::collections::VecDeque;
@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 use crate::flv::AacFrame;
 
 /// 缓冲目标（毫秒）：超过上限后追到这个值。
-pub(crate) const TARGET_BUFFER_MS: u64 = 2000;
+pub(crate) const TARGET_BUFFER_MS: u64 = 1500;
 /// 缓冲上限：超过才丢旧帧。
-pub(crate) const MAX_BUFFER_MS: u64 = 2500;
+pub(crate) const MAX_BUFFER_MS: u64 = 2000;
 /// 缓冲下限：低于它只作为诊断标记，不阻塞 decode 线程。
-pub(crate) const MIN_BUFFER_MS: u64 = 1800;
+pub(crate) const MIN_BUFFER_MS: u64 = 1200;
 /// 控制周期：250ms 检查一次缓冲，不必每帧都判断。
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
 /// 一次丢帧后的冷却时间，避免连续跳变。
@@ -247,8 +247,8 @@ impl BufferController {
         })
     }
 
-    /// 推进一次控制周期。只有 `buffer > 2500ms` 且冷却已过才丢帧；
-    /// `buffer < 1800ms` 不再阻塞解码；调用方只在队列空时补静音。
+    /// 推进一次控制周期。只有 `buffer > 2000ms` 且冷却已过才丢帧；
+    /// `buffer < 1200ms` 不再阻塞解码；调用方只在队列空时补静音。
     pub(crate) fn tick(&mut self, now: Instant, buffer_ms: u64) -> Control {
         self.last_tick = Some(now);
 
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(
             controller.tick(base + Duration::from_millis(250), MAX_BUFFER_MS),
             Control::Idle,
-            "2500ms is still acceptable"
+            "2000ms is still acceptable"
         );
         assert_eq!(
             controller.tick(base + Duration::from_millis(500), MAX_BUFFER_MS + 1),
