@@ -6,7 +6,7 @@
 //!
 //! - 启动等到约 2000ms 音频，再从最新帧截到 2000ms，避免把 CDN 初始 GOP 全部播完；
 //! - 运行期 `buffer > 2500ms` 时按 AAC 帧边界丢旧帧追到 2000ms；
-//! - `buffer < 1800ms` 时等待回填到 2000ms；超时才补静音并记录 underrun；
+//! - 队列有数据时持续解码喂 ring；只有队列为空才补静音并记录 underrun；
 //! - 暂停时 ring 停止消费，队列自然涨到硬上限；恢复后第一次控制周期追回 900ms。
 
 use std::io::Read;
@@ -27,7 +27,7 @@ use crate::error::LiveError;
 use crate::flv::{AacConfig, AacFrame, FlvFrameSource};
 use crate::metrics::LiveMetrics;
 use crate::queue::{
-    BufferController, Control, FrameQueue, MIN_BUFFER_MS, QUEUE_CAPACITY_FRAMES, TARGET_BUFFER_MS,
+    BufferController, Control, FrameQueue, QUEUE_CAPACITY_FRAMES, TARGET_BUFFER_MS,
 };
 
 /// 启动最多等这么久攒够目标缓冲；超时就用手上已有的帧开始播。
@@ -222,14 +222,8 @@ impl AudioSource for LiveAudioSource {
 
             self.update_control();
 
-            // 低于下限时先回填到 target，不要踩着 800ms 继续消费。
-            // 这不是“减速”，只是让 decode 线程暂停；网络恢复后自然继续。
-            if !self.queue.is_done() && self.queue.buffer_ms() < MIN_BUFFER_MS {
-                let deadline = Instant::now() + Duration::from_millis(500);
-                self.queue.wait_span(TARGET_BUFFER_MS, deadline);
-                self.metrics.set_buffer(self.queue.buffer_ms());
-            }
-
+            // 只要队列里还有帧，就必须持续解码喂 150ms ring。低 buffer 时
+            // 绝不能阻塞 decode 线程去等回填，否则 cpal 会先 underrun。
             let Some(frame) = self.queue.pop() else {
                 if self.queue.is_done() {
                     self.metrics.set_buffer(0);

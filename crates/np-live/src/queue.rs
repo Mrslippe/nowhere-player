@@ -6,8 +6,8 @@
 //! - 解码线程按 AAC 帧 pop，落后太多时由控制器从队头丢旧帧；
 //! - `buffer_ms = 最新帧 pts - 已播放媒体时间`。
 //!
-//! 目标 2000ms / 上限 2500ms / 下限 1800ms 是 B1.2d 断音诊断：
-//! 用户实测 1000ms 仍有断音，临时加厚到 2s 验证是否纯 buffer 不足。
+//! 目标 2000ms / 上限 2500ms / 下限 1800ms 是 B1.2f 验证后的阈值：
+//! 低 buffer 只用于诊断，不再阻塞 decode 线程；队列空才补静音。
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -19,7 +19,7 @@ use crate::flv::AacFrame;
 pub(crate) const TARGET_BUFFER_MS: u64 = 2000;
 /// 缓冲上限：超过才丢旧帧。
 pub(crate) const MAX_BUFFER_MS: u64 = 2500;
-/// 缓冲下限：低于它视为饥饿，先回填到 target 再恢复。
+/// 缓冲下限：低于它只作为诊断标记，不阻塞 decode 线程。
 pub(crate) const MIN_BUFFER_MS: u64 = 1800;
 /// 控制周期：250ms 检查一次缓冲，不必每帧都判断。
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
@@ -248,7 +248,7 @@ impl BufferController {
     }
 
     /// 推进一次控制周期。只有 `buffer > 2500ms` 且冷却已过才丢帧；
-    /// `buffer < 1800ms` 不减速，由调用方回填/补静音。
+    /// `buffer < 1800ms` 不再阻塞解码；调用方只在队列空时补静音。
     pub(crate) fn tick(&mut self, now: Instant, buffer_ms: u64) -> Control {
         self.last_tick = Some(now);
 
