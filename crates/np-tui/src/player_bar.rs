@@ -9,10 +9,10 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, VisualMode};
 use crate::audio::TuiAudio;
 use crate::fft::spectrum;
-use crate::glyphs;
 use crate::keymap::{self, Action};
 use crate::transport::TransportAvailability;
 use crate::truncate_width;
+use crate::ui::bars::draw_block_bar;
 use np_core::{PlaybackMode, RepeatMode};
 
 pub(crate) fn draw_player_strip(
@@ -124,30 +124,21 @@ pub(crate) fn draw_player_strip(
         position as f64 / duration as f64
     };
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
-    let mut spans = Vec::with_capacity(bar_width);
-    for column in 0..bar_width {
-        if column % 2 == 1 {
-            spans.push(TuiSpan::raw(" "));
-        } else if column < filled {
-            spans.push(TuiSpan::styled(
-                glyphs::PROGRESS_DONE,
-                Style::default().fg(app.palette.accent),
-            ));
-        } else {
-            spans.push(TuiSpan::styled(
-                glyphs::PROGRESS_DONE,
-                Style::default().fg(app.palette.faint),
-            ));
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
+    // 原有按列填充：偶数列是 ▰，奇数列留空；换成块数时向上取整。
+    let blocks = bar_width.div_ceil(2);
+    let filled_blocks = filled.div_ceil(2);
+    draw_block_bar(
+        frame,
         Rect {
             x: content.x,
             y: content.bottom().saturating_sub(1),
             width: bar_width as u16,
             height: 1,
         },
+        &app.palette,
+        filled_blocks,
+        blocks,
+        2,
     );
     frame.render_widget(
         Paragraph::new(time)
@@ -232,17 +223,20 @@ fn draw_player_frame(
             ((volume.clamp(0.0, 1.0) * f32::from(volume_width)).round() as u16).min(volume_width);
         let gap_x = area.right().saturating_sub(2);
         let start = gap_x.saturating_sub(volume_width);
-        let bright = Style::default().fg(app.palette.accent);
-        let dark = Style::default().fg(app.palette.faint);
         let bg = app.palette.bg.unwrap_or(Color::Reset);
-        for index in 0..volume_width {
-            frame.buffer_mut().set_string(
-                start + index,
-                area.y,
-                "▰",
-                if index < filled { bright } else { dark },
-            );
-        }
+        draw_block_bar(
+            frame,
+            Rect {
+                x: start,
+                y: area.y,
+                width: volume_width,
+                height: 1,
+            },
+            &app.palette,
+            usize::from(filled),
+            usize::from(volume_width),
+            1,
+        );
         frame
             .buffer_mut()
             .set_string(gap_x, area.y, " ", Style::default().bg(bg));

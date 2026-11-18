@@ -14,9 +14,10 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::audio::TuiAudio;
-use crate::glyphs;
 use crate::input::{display_width, input_window, truncate_width};
 use crate::player_bar::draw_visual;
+use crate::ui::bars;
+use crate::ui::chrome::{self, StatusHints, StatusState};
 
 /// 音高条左右各留 1 格（与 Player 页 bar 算法一致）。
 pub(crate) const PITCH_SIDE_PADDING: u16 = 2;
@@ -300,28 +301,12 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &App, player: &TuiAudio) {
 }
 
 fn draw_outer(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
-    let outer = TuiBlock::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(app.palette.muted))
-        .style(
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
-        );
-    frame.render_widget(outer.title(" NOWHERE PLAYER "), layout.outer);
-    let theme = format!(" {} ", app.theme_name);
-    let theme_x = layout
-        .outer
-        .right()
-        .saturating_sub(display_width(theme.as_str()) as u16 + 1);
-    frame.buffer_mut().set_string(
-        theme_x,
-        layout.outer.y,
-        &theme,
-        Style::default()
-            .fg(app.palette.accent)
-            .add_modifier(Modifier::ITALIC),
+    chrome::draw_outer_chrome(
+        frame,
+        layout.outer,
+        &app.palette,
+        " NOWHERE PLAYER ",
+        &app.theme_name,
     );
 }
 
@@ -382,16 +367,19 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
         .min(VOLUME_CELLS);
     let gap_x = right.saturating_sub(2);
     let start = gap_x.saturating_sub(VOLUME_CELLS);
-    let bright = Style::default().fg(app.palette.accent);
-    let dark = Style::default().fg(app.palette.faint);
-    for index in 0..VOLUME_CELLS {
-        frame.buffer_mut().set_string(
-            start.saturating_add(index),
+    bars::draw_block_bar(
+        frame,
+        Rect {
+            x: start,
             y,
-            glyphs::PROGRESS_DONE,
-            if index < filled { bright } else { dark },
-        );
-    }
+            width: VOLUME_CELLS,
+            height: 1,
+        },
+        &app.palette,
+        usize::from(filled),
+        usize::from(VOLUME_CELLS),
+        1,
+    );
     frame.buffer_mut().set_string(
         gap_x,
         y,
@@ -460,23 +448,8 @@ fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player
     let available_blocks = pitch_blocks(row.width);
     let cells = available_blocks.max(1);
     let filled = pitch_fill(&app.spectrum, usize::from(cells));
-    let bright = Style::default().fg(app.palette.accent);
-    let dark = Style::default().fg(app.palette.faint);
     // 进度条整体左移一格；开播时长块保持原位。
-    let mut x = row.x;
-    for index in 0..cells {
-        frame.buffer_mut().set_string(
-            x,
-            row.y,
-            glyphs::PROGRESS_DONE,
-            if usize::from(index) < filled {
-                bright
-            } else {
-                dark
-            },
-        );
-        x = x.saturating_add(2);
-    }
+    bars::draw_block_bar(frame, row, &app.palette, filled, usize::from(cells), 2);
     // 开播时长右对齐到内容区最后一格（整体比音高条再右移一格）。
     let time_x = row.right().saturating_sub(ELAPSED_WIDTH);
     frame.buffer_mut().set_string(
@@ -552,47 +525,21 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
 }
 
 fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player: &TuiAudio) {
-    let area = layout.outer;
-    if area.width < 8 {
-        return;
-    }
-    let y = layout.status_y;
-    let edge = Style::default().fg(app.palette.muted);
-    // 先把外框下边线补成连续线，避免上一帧的宽字符残留在缓冲里。
-    frame.buffer_mut().set_string(
-        area.x.saturating_add(1),
-        y,
-        "━".repeat(usize::from(area.width.saturating_sub(2))),
-        edge,
-    );
-    // 状态栏左右各空 1 格；最左只显示 LIVE / PAUSE。
-    frame
-        .buffer_mut()
-        .set_string(area.x.saturating_add(1), y, " ", edge);
-    let mut x = area.x.saturating_add(2);
-    let max_x = area.right().saturating_sub(2);
     let state = player.live_state_text();
     let paused = state == "暂停";
-    frame.buffer_mut().set_string(
-        x,
-        y,
-        state,
-        Style::default()
-            .fg(app.palette.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    x = x.saturating_add(display_width(state) as u16);
-    let available = usize::from(max_x.saturating_sub(x));
     let hints_text = chat_hints(app, paused);
-    let hints = truncate_width(&hints_text, available);
-    if hints.is_empty() {
-        return;
-    }
-    frame
-        .buffer_mut()
-        .set_string(x, y, &hints, Style::default().fg(app.palette.muted));
-    x = x.saturating_add(display_width(&hints) as u16);
-    frame.buffer_mut().set_string(x, y, " ", edge);
+    let state = StatusState {
+        text: state,
+        warn: false,
+        require_space: false,
+    };
+    chrome::draw_status_bar(
+        frame,
+        layout.outer,
+        &app.palette,
+        Some(&state),
+        StatusHints::Plain(&hints_text),
+    );
 }
 
 /// 状态栏提示：输入框打开时切换成发送/取消提示，发送结果短暂覆盖快捷键。

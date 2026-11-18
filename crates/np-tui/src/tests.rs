@@ -6,6 +6,7 @@ use crate::live_command::parse_live_command;
 use crate::render::*;
 use crate::theme::Palette;
 use crate::transport::TransportAvailability;
+use crate::ui::scroll::ScrollState;
 use crossterm::event::KeyCode;
 use np_app::{PlaybackTarget, SourceId};
 use np_core::{Block, BlockStatus, Output};
@@ -1755,7 +1756,9 @@ fn long_tree_app() -> App {
 
 #[test]
 fn browse_tree_scrolls_the_ninth_view_into_seven_rows() {
-    assert_eq!(scroll_first(8, 7), 2);
+    let mut scroll = ScrollState::new(7);
+    scroll.follow(8, 9);
+    assert_eq!(scroll.first, 2);
     let mut app = long_tree_app();
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
@@ -1781,7 +1784,9 @@ fn settings_list_scrolls_the_ninth_field_into_six_rows() {
     let (mut app, settings, _audio, _theme, root) = settings_fixture();
     assert_eq!(app.views[0].rows.len(), 9);
     app.row_index = 8;
-    assert_eq!(scroll_first(8, 6), 3);
+    let mut scroll = ScrollState::new(6);
+    scroll.follow(8, 9);
+    assert_eq!(scroll.first, 3);
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
     let _ = draw_text(&mut app, &mut terminal, &audio);

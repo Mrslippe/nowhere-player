@@ -11,6 +11,8 @@ use crate::keymap::{self, Action};
 use crate::layout::{layout_areas, layout_inner};
 use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
+use crate::ui::chrome::{self, StatusHints, StatusState};
+use crate::ui::scroll::ScrollState;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
     let full = frame.area();
@@ -28,31 +30,8 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
         player.draw_login(frame, &app.palette);
         return;
     }
-    let outer = TuiBlock::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(app.palette.muted))
-        .style(
-            Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
-        );
-    let version = format!(" NOWHERE PLAYER v{} ", env!("CARGO_PKG_VERSION"));
-    let theme = format!(" {} ", app.theme_name);
-    let border_style = Style::default().fg(app.palette.line);
-    frame.render_widget(outer.title(version.clone()), full);
-    let theme_x = full
-        .right()
-        .saturating_sub(display_width(theme.as_str()) as u16 + 1);
-    frame.buffer_mut().set_string(
-        theme_x,
-        full.y,
-        &theme,
-        Style::default()
-            .fg(app.palette.accent)
-            .add_modifier(Modifier::ITALIC),
-    );
-    let _ = border_style;
+    let outer_title = format!(" NOWHERE PLAYER v{} ", env!("CARGO_PKG_VERSION"));
+    chrome::draw_outer_chrome(frame, full, &app.palette, &outer_title, &app.theme_name);
 
     let [top, player_area, _] = layout_areas(full);
 
@@ -99,91 +78,25 @@ fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     if area.height < 2 || area.width < 8 {
         return;
     }
-    let y = area.bottom().saturating_sub(1);
-    let max_x = area.right().saturating_sub(2);
-    let mut x = area.x.saturating_add(2);
-    // 状态栏覆盖在外框下边线上，延伸线沿用外框的深色，而不是内容区的浅色 line。
-    let edge_style = Style::default().fg(app.palette.muted);
-    // 状态栏直接覆盖外框下边线。先把这一行恢复成连续的边框线，
-    // 避免宽字符跳过相邻格时把上一帧的 `·` / 键名残留在缓冲里。
-    let border_line = "━".repeat(usize::from(area.width.saturating_sub(2)));
-    frame
-        .buffer_mut()
-        .set_string(area.x.saturating_add(1), y, &border_line, edge_style);
-    frame
-        .buffer_mut()
-        .set_string(area.x.saturating_add(1), y, " ", edge_style);
-
-    let mut drew_text = false;
     let status = app.status.trim();
-    if !status.is_empty() && status != "就绪" {
-        let status = truncate_width(status, 24);
-        let width = display_width(&status) as u16;
-        if x.saturating_add(width) <= max_x {
-            frame.buffer_mut().set_string(
-                x,
-                y,
-                &status,
-                Style::default()
-                    .fg(if is_pending_status(app) {
-                        app.palette.warn
-                    } else {
-                        app.palette.accent
-                    })
-                    .add_modifier(Modifier::BOLD),
-            );
-            x = x.saturating_add(width);
-            drew_text = true;
-            let separator = " · ";
-            let sep_width = display_width(separator) as u16;
-            if x.saturating_add(sep_width) <= max_x {
-                frame.buffer_mut().set_string(
-                    x,
-                    y,
-                    separator,
-                    Style::default().fg(app.palette.faint),
-                );
-                x = x.saturating_add(sep_width);
-            }
-        }
-    }
-
-    for (index, (key, description)) in status_hints(app).iter().enumerate() {
-        let key_width = display_width(key) as u16;
-        let description_width = display_width(description) as u16;
-        let item_width = key_width + description_width;
-        let separator = " · ";
-        let separator_width = display_width(separator) as u16;
-        let reserve = if index > 0 { separator_width } else { 0 };
-        if x.saturating_add(reserve + item_width) > max_x {
-            break;
-        }
-        if index > 0 {
-            frame
-                .buffer_mut()
-                .set_string(x, y, separator, Style::default().fg(app.palette.faint));
-            x = x.saturating_add(separator_width);
-        }
-        frame.buffer_mut().set_string(
-            x,
-            y,
-            key,
-            Style::default()
-                .fg(app.palette.accent)
-                .add_modifier(Modifier::BOLD),
-        );
-        x = x.saturating_add(key_width);
-        frame
-            .buffer_mut()
-            .set_string(x, y, description, Style::default().fg(app.palette.muted));
-        x = x.saturating_add(description_width);
-        drew_text = true;
-    }
-    // 右侧留白必须紧跟最后一段文本，而不是固定在倒数第二格：
-    // 文本结束后先空一格，再让外框线继续。
-    if drew_text && x <= max_x {
-        frame.buffer_mut().set_string(x, y, " ", edge_style);
-    }
+    let status = truncate_width(status, 24);
+    let state = if !status.is_empty() && status != "就绪" {
+        Some(StatusState {
+            text: &status,
+            warn: is_pending_status(app),
+            require_space: true,
+        })
+    } else {
+        None
+    };
+    let hints = status_hints(app);
+    chrome::draw_status_bar(
+        frame,
+        area,
+        &app.palette,
+        state.as_ref(),
+        StatusHints::Keyed(&hints),
+    );
 }
 
 fn is_pending_status(app: &App) -> bool {
@@ -419,9 +332,12 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         app.view_index + 1
     };
     // 树超过 7 行时在计数前加溢出箭头；选中项始终在可见窗口内。
-    let tree_visible = usize::from(inner.height);
-    let tree_first = scroll_first(app.view_index, tree_visible);
-    let tree_overflow = match (tree_first > 0, tree_first + tree_visible < app.views.len()) {
+    let mut tree_scroll = ScrollState::new(usize::from(inner.height));
+    tree_scroll.follow(app.view_index, app.views.len());
+    let tree_overflow = match (
+        tree_scroll.has_above(),
+        tree_scroll.has_below(app.views.len()),
+    ) {
         (true, true) => "↕",
         (true, false) => "↑",
         (false, true) => "↓",
@@ -509,30 +425,18 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 }
 
-/// 滚动窗口起点：选中项始终落在 `[first, first + visible)`。
-/// `visible == 0` 时返回 0，渲染层自己处理空窗口。
-pub(crate) fn scroll_first(selected: usize, visible: usize) -> usize {
-    if visible == 0 {
-        0
-    } else {
-        selected.saturating_sub(visible - 1)
-    }
-}
-
+/// Browse 树：72×24 下内区 7 行，选中项始终落在窗口内。
 pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = area;
-    let visible = usize::from(inner.height);
-    if visible == 0 {
+    let mut scroll = ScrollState::new(usize::from(inner.height));
+    if scroll.visible == 0 {
         return;
     }
-    let first = scroll_first(app.view_index, visible);
-    let lines: Vec<Line> = app
-        .views
-        .iter()
-        .enumerate()
-        .skip(first)
-        .take(visible)
-        .map(|(index, view)| {
+    scroll.follow(app.view_index, app.views.len());
+    let lines: Vec<Line> = scroll
+        .range(app.views.len())
+        .map(|index| {
+            let view = &app.views[index];
             let selected = index == app.view_index;
             let active = selected && app.focus == Focus::Browse;
             let depth = app.view_depth.get(index).copied().unwrap_or(0) as usize;
@@ -634,9 +538,11 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             .fg(app.palette.accent)
             .add_modifier(Modifier::BOLD),
     ));
-    let visible = inner.height.saturating_sub(1) as usize;
-    let first = scroll_first(app.row_index, visible);
-    for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
+    // 列表扣掉表头：72×24 下 Settings 等列表可见 6 行。
+    let mut scroll = ScrollState::new(usize::from(inner.height.saturating_sub(1)));
+    scroll.follow(app.row_index, rows.len());
+    for index in scroll.range(rows.len()) {
+        let row = &rows[index];
         let selected = app.focus == Focus::List && index == app.row_index;
         let style = if selected {
             Style::default()
@@ -653,10 +559,10 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
     if matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Queue))
         && let Some(marker) = app.queue_marker
-        && marker >= first
-        && marker < first + visible
+        && marker >= scroll.first
+        && marker < scroll.first.saturating_add(scroll.visible)
     {
-        let y = inner.y.saturating_add(1 + (marker - first) as u16);
+        let y = inner.y.saturating_add(1 + (marker - scroll.first) as u16);
         frame.buffer_mut().set_string(
             area.x,
             y,
@@ -880,17 +786,18 @@ fn draw_list_scrollbar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     let track_len = usize::from(track_end - track_start);
     let total = app.filtered_row_count();
-    let visible = usize::from(area.height.saturating_sub(1));
+    let mut scroll = ScrollState::new(usize::from(area.height.saturating_sub(1)));
     let track_style = Style::default().fg(app.palette.line);
     for y in track_start..track_end {
         frame.buffer_mut().set_string(x, y, "│", track_style);
     }
-    if total <= visible {
+    if total <= scroll.visible {
         return;
     }
-    let thumb_len = (track_len * visible / total).max(1).min(track_len);
-    let first = scroll_first(app.row_index, visible);
-    let max_first = total - visible;
+    scroll.follow(app.row_index, total);
+    let thumb_len = (track_len * scroll.visible / total).max(1).min(track_len);
+    let first = scroll.first;
+    let max_first = total - scroll.visible;
     let offset = first * (track_len - thumb_len) / max_first.max(1);
     let thumb_start = track_start.saturating_add(offset as u16);
     let style = Style::default().fg(if app.focus == Focus::List {

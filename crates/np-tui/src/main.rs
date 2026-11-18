@@ -39,6 +39,7 @@ mod theme;
 mod transport;
 #[cfg(windows)]
 mod tray;
+mod ui;
 
 use app::*;
 use audio::TuiAudio;
