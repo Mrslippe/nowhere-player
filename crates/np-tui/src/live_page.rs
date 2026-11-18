@@ -320,7 +320,8 @@ fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player
     let filled = pitch_fill(&app.spectrum, usize::from(cells));
     let bright = Style::default().fg(app.palette.accent);
     let dark = Style::default().fg(app.palette.faint);
-    let mut x = row.x.saturating_add(1);
+    // 进度条整体左移一格；开播时长块保持原位。
+    let mut x = row.x;
     for index in 0..cells {
         frame.buffer_mut().set_string(
             x,
@@ -602,13 +603,15 @@ mod tests {
         assert!((3..patch_x).any(|x| buffer[(x, 20)].symbol() == "░"));
 
         let pitch_row = row(&terminal, 21);
-        let cells: Vec<&str> = (4..60).map(|x| buffer[(x, 21)].symbol()).collect();
+        let cells: Vec<&str> = (3..59).map(|x| buffer[(x, 21)].symbol()).collect();
         assert_eq!(cells.len(), 56);
         assert!(
             cells.iter().all(|symbol| *symbol == "▰" || *symbol == " "),
             "{pitch_row:?}"
         );
-        assert_eq!(buffer[(3, 21)].symbol(), " ");
+        assert_eq!(buffer[(3, 21)].symbol(), "▰");
+        assert_eq!(buffer[(58, 21)].symbol(), " ");
+        assert_eq!(buffer[(59, 21)].symbol(), " ");
         assert_eq!(buffer[(68, 21)].symbol(), " ");
         assert_eq!(buffer[(60, 21)].symbol(), "0");
         assert_eq!(buffer[(67, 21)].symbol(), "2");
@@ -661,7 +664,7 @@ mod tests {
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
         for index in 0..28u16 {
-            let x = 4 + index * 2;
+            let x = 3 + index * 2;
             assert_eq!(buffer[(x, 21)].symbol(), "▰");
             if index + 1 < 28 {
                 assert_eq!(buffer[(x + 1, 21)].symbol(), " ");
@@ -669,8 +672,8 @@ mod tests {
         }
         let filled = pitch_fill(&app.spectrum, 28);
         assert_eq!(filled, 14);
-        assert_eq!(buffer[(4, 21)].fg, app.palette.accent);
-        assert_eq!(buffer[(4 + 27 * 2, 21)].fg, app.palette.faint);
+        assert_eq!(buffer[(3, 21)].fg, app.palette.accent);
+        assert_eq!(buffer[(3 + 27 * 2, 21)].fg, app.palette.faint);
         assert_eq!(buffer[(60, 21)].symbol(), "0");
         assert_eq!(buffer[(67, 21)].symbol(), "2");
     }
