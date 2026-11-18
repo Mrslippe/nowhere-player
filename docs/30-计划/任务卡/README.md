@@ -4,7 +4,7 @@
 > 新增/重命名卡后运行 `python scripts/gen-task-index.py` 更新本页。
 > 检查脚本会验证“每个 T-*.md 都在本页出现”。
 
-共 100 张。
+共 101 张。
 
 | 卡号 | 标题 | 文件 |
 |---|---|---|
@@ -108,3 +108,4 @@
 | `T-0099b` | T-0099b SettingsEditor / ChatInput 浮层组件化 | [T-0099b-SettingsEditor与ChatInput组件化.md](T-0099b-SettingsEditor与ChatInput组件化.md) |
 | `T-0100a` | T-0100a B站弹幕协议层 | [T-0100a-B站弹幕协议层.md](T-0100a-B站弹幕协议层.md) |
 | `T-0100a2` | T-0100a2 B站弹幕 WebSocket 客户端 | [T-0100a2-B站弹幕WebSocket客户端.md](T-0100a2-B站弹幕WebSocket客户端.md) |
+| `T-0100a3` | T-0100a3 弹幕真实连接与重连 | [T-0100a3-弹幕真实连接与重连.md](T-0100a3-弹幕真实连接与重连.md) |
