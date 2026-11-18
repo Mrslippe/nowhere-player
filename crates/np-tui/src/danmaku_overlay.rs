@@ -14,6 +14,7 @@ use crate::app::App;
 use crate::audio::TuiAudio;
 use crate::input::{display_width, truncate_width};
 use crate::live_page::LiveLayout;
+use crate::model::Focus;
 use crate::theme::Palette;
 
 /// 浮层宽度：72×24 下覆盖视觉区右侧 30 列，左侧留 36 列频谱。
@@ -195,6 +196,15 @@ pub(crate) fn left_area(layout: &LiveLayout, overlay: Rect) -> Rect {
         width: layout.visual.width.saturating_sub(overlay.width),
         height: layout.visual.height,
     }
+}
+
+/// 浮层键只在 Live 普通态接管。
+///
+/// 命令输入（`Focus::Controller`）与歌单命名输入必须优先：否则 `f` 会被当成
+/// 跟随而不是输入字符，`↑/↓` 会滚弹幕而不是翻历史 / 补全。聊天输入框、
+/// 搜索与设置编辑在事件循环里排得更前，不在这里重复判断。
+pub(crate) fn keys_owned(app: &App) -> bool {
+    app.danmaku_overlay_visible() && app.focus != Focus::Controller && !app.playlist_input_active()
 }
 
 /// 浮层可见时的按键：↑/↓ 滚动、`f` 跟随；`d` 由 keymap 处理。
@@ -584,5 +594,31 @@ mod tests {
                 assert!(left_area(&small, overlay).width >= 8);
             }
         }
+    }
+
+    #[test]
+    fn overlay_keys_yield_to_command_and_playlist_input() {
+        let mut app = App::new();
+        app.toggle_danmaku_overlay(0);
+        assert!(keys_owned(&app), "普通态由浮层接管 ↑/↓/f");
+
+        // 命令模式：f 应作为字符输入，↑/↓ 应翻历史 / 补全。
+        app.enter_command();
+        assert!(!keys_owned(&app));
+        app.leave_command();
+        assert!(keys_owned(&app));
+
+        // 歌单命名输入同样优先。
+        app.playlist_input = Some(crate::app::PlaylistInput {
+            value: String::new(),
+            cursor: 0,
+        });
+        assert!(!keys_owned(&app));
+        app.playlist_input = None;
+        assert!(keys_owned(&app));
+
+        // 浮层隐藏时任何状态都不接管。
+        app.toggle_danmaku_overlay(0);
+        assert!(!keys_owned(&app));
     }
 }

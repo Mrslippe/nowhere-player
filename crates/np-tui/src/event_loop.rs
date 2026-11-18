@@ -336,9 +336,10 @@ where
                         continue;
                     }
                     // 弹幕浮层可见时 ↑/↓/f 优先给弹幕；输入框、设置编辑态
-                    // 和命令输入已在前面的分支拦截，状态机不变。
+                    // 和命令输入已在前面的分支拦截（命令模式 / 歌单命名在
+                    // keys_owned 里显式让出），状态机不变。
                     if player.is_live()
-                        && app.danmaku_overlay_visible()
+                        && crate::danmaku_overlay::keys_owned(app)
                         && crate::danmaku_overlay::handle_key(app, key.code)
                     {
                         draw_needed = true;

@@ -2328,11 +2328,15 @@ fn live_chat_c_is_a_plain_character_while_the_input_is_open() {
     let audio = live_chat_audio();
     let mut app = App::new();
     app.begin_live_chat();
-    crate::chat_input::handle_chat_key(KeyCode::Char('c'), &mut app, &audio);
+    for character in ['c', 'd', 'f'] {
+        crate::chat_input::handle_chat_key(KeyCode::Char(character), &mut app, &audio);
+    }
     assert_eq!(
         app.chat_input.as_ref().map(|chat| chat.text()),
-        Some("c".to_owned())
+        Some("cdf".to_owned())
     );
+    // 输入框打开时 `d` 只是字符，不会顺手打开弹幕浮层。
+    assert!(!app.danmaku_overlay_visible());
 }
 
 #[test]

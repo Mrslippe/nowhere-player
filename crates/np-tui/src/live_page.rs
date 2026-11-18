@@ -30,12 +30,12 @@ pub(crate) const DEFAULT_LIVE_BUFFER_MS: u64 = np_core::settings::LIVE_BUFFER_MS
 /// 右下角缓冲块固定 17 宽：`" - {current:>4}/{target:<4}ms - "`。
 pub(crate) const BUFFER_STATUS_WIDTH: u16 = 13;
 /// 状态栏提示；`直播` / `暂停` 与 `空格` 后的动作由当前状态单独拼。
-pub(crate) const STATUS_HINTS_PLAYING: &str = " · r 刷新 · 空格 暂停 · c 弹幕 · / 命令";
-pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · 空格 继续 · c 弹幕 · / 命令";
-
-/// 浮层可见时的状态栏提示：加入 `d 弹幕` 与滚动/跟随键。
 ///
-/// 只在浮层可见时切换，隐藏态状态栏保持原样，现有 golden 零 diff。
+/// `d 弹幕` 在隐藏态也常驻，用户不必先知道快捷键才能发现浮层（T-0100c）。
+pub(crate) const STATUS_HINTS_PLAYING: &str = " · r 刷新 · d 弹幕 · 空格 暂停 · c 弹幕 · / 命令";
+pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · d 弹幕 · 空格 继续 · c 弹幕 · / 命令";
+
+/// 浮层可见时的状态栏提示：在常驻的 `d 弹幕` 之外补滚动 / 跟随键。
 fn danmaku_status_hints(paused: bool) -> String {
     let space = if paused { "继续" } else { "暂停" };
     format!(" · d 弹幕 · ↑/↓ 滚动 · f 跟随 · 空格 {space} · c 弹幕 · / 命令")
@@ -631,7 +631,7 @@ mod tests {
         audio.set_live_paused_for_test(true);
         let terminal = draw_live(72, 24, &app, &audio);
         let status = compact(&row(&terminal, 23));
-        assert!(status.contains("暂停·r刷新·空格继续"), "{status:?}");
+        assert!(status.contains("暂停·r刷新·d弹幕·空格继续"), "{status:?}");
     }
 
     #[test]
@@ -694,7 +694,7 @@ mod tests {
 
         let status = compact(&row(&terminal, 23));
         assert!(
-            status.contains("直播·r刷新·空格暂停·c弹幕·/命令"),
+            status.contains("直播·r刷新·d弹幕·空格暂停·c弹幕·/命令"),
             "{status:?}"
         );
     }
@@ -707,7 +707,7 @@ mod tests {
         let terminal = draw_live(72, 24, &app, &audio);
         let status = compact(&row(&terminal, 23));
         assert!(
-            status.contains("直播·r刷新·空格暂停·c弹幕·/命令"),
+            status.contains("直播·r刷新·d弹幕·空格暂停·c弹幕·/命令"),
             "{status:?}"
         );
 
@@ -721,6 +721,13 @@ mod tests {
     fn live_status_shows_the_danmaku_connection_hint() {
         let app = themed_app();
         let audio = live_audio();
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Connecting);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let status = compact(&row(&terminal, 23));
+        assert!(status.contains("弹幕连接中"), "{status:?}");
+        // 连接提示放在最前面，但不能挤掉常驻的 `d 弹幕`。
+        assert!(status.contains("d弹幕"), "{status:?}");
+
         audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Connected);
         let terminal = draw_live(72, 24, &app, &audio);
         let status = compact(&row(&terminal, 23));
@@ -730,6 +737,41 @@ mod tests {
         let terminal = draw_live(72, 24, &app, &audio);
         let status = compact(&row(&terminal, 23));
         assert!(status.contains("弹幕重连2/6"), "{status:?}");
+        assert!(status.contains("d弹幕"), "{status:?}");
+
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Failed);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let status = compact(&row(&terminal, 23));
+        assert!(status.contains("弹幕未连接"), "{status:?}");
+    }
+
+    #[test]
+    fn danmaku_local_echo_appears_in_the_visible_overlay() {
+        let mut app = themed_app();
+        let audio = live_audio();
+        audio.bili_auth_for_test(Some(np_live::BiliAuth::new(
+            vec![
+                ("SESSDATA".to_owned(), "test-sessdata".to_owned()),
+                ("bili_jct".to_owned(), "test-csrf".to_owned()),
+            ],
+            None,
+        )));
+        audio.danmaku_result_for_test(Ok(()));
+        app.toggle_danmaku_overlay(audio.danmaku_received());
+        app.begin_live_chat();
+        for character in "你好".chars() {
+            app.insert_live_chat_char(character);
+        }
+        app.submit_live_chat(&audio);
+        let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
+        assert!(app.apply_live_danmaku_result(generation, result, &audio));
+        app.clear_chat_notice();
+        assert!(app.sync_danmaku(audio.danmaku_received()));
+
+        let terminal = draw_live(72, 24, &app, &audio);
+        assert!(compact(&row(&terminal, 20)).contains("我:你好"));
+        assert_eq!(audio.danmaku_received(), 1);
+        assert_eq!(app.danmaku_overlay.unread(), 0, "跟随态下回显不算未读");
     }
 
     #[test]
@@ -1030,11 +1072,12 @@ mod tests {
     }
 
     #[test]
-    fn danmaku_overlay_status_hints_only_change_while_visible() {
+    fn danmaku_overlay_status_hints_add_scroll_keys_only_while_visible() {
         let audio = live_audio();
         let hidden = draw_live(72, 24, &themed_app(), &audio);
         let hidden_status = compact(&row(&hidden, 23));
-        assert!(!hidden_status.contains("d弹幕"), "{hidden_status:?}");
+        // 隐藏态也常驻 `d 弹幕`，用户不打开浮层也能发现入口。
+        assert!(hidden_status.contains("d弹幕"), "{hidden_status:?}");
         assert!(hidden_status.contains("c弹幕"), "{hidden_status:?}");
 
         let app = overlay_app(&audio);
