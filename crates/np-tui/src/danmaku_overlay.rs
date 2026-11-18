@@ -39,6 +39,8 @@ const ONLINE_BLOCK_WIDTH: u16 = 6;
 const CHROME_ROWS: u16 = 4;
 /// 浮层最小高度：至少保留 1 行消息 + 三行 Input。
 const OVERLAY_MIN_HEIGHT: u16 = CHROME_ROWS + 1;
+/// 终端高度低于 10 行时完全不绘制弹幕栏，回退到普通 Live 页。
+pub(crate) const DANMAKU_MIN_SCREEN_HEIGHT: u16 = 10;
 
 /// 往环形缓冲追加一条；超过容量先丢最旧的一条。
 pub(crate) fn push_recent(
@@ -57,34 +59,21 @@ impl TuiAudio {
         self.danmaku_recent.borrow().iter().cloned().collect()
     }
 
-    /// 单调递增的收包计数（含本地回显）；浮层用它算未读与滚动窗口。
+    /// 单调递增的收包计数；浮层用它算未读与滚动窗口。
     pub(crate) fn danmaku_received(&self) -> u64 {
         self.danmaku_received.get()
-    }
-
-    /// 发送成功后的本地回显：写进同一个环形缓冲，不依赖服务器回包。
-    pub(crate) fn push_local_danmaku(&self, user: &str, text: &str) {
-        let message = np_live::DanmakuMessage {
-            user: user.to_owned(),
-            text: text.to_owned(),
-            color: 0x00FF_FFFF,
-            timestamp: crate::status::now_millis(),
-        };
-        push_recent(&mut self.danmaku_recent.borrow_mut(), message);
-        self.danmaku_received
-            .set(self.danmaku_received.get().saturating_add(1));
     }
 }
 
 /// 弹幕浮层的 UI 状态；不持有消息本体（消息留在 [`TuiAudio`]）。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct DanmakuOverlay {
     visible: bool,
-    /// 输入行是否聚焦；`c` 打开时自动置位，`Esc` 清除。
+    /// 输入行是否聚焦；`d` / `c` 打开时自动置位，`Esc` 清除。
     input_focused: bool,
     /// 距最新消息的偏移（单位：换行后的显示行）；0 表示跟随底部。
     offset_from_bottom: usize,
-    /// TuiAudio 的收包计数（单调递增，含本地回显）。
+    /// TuiAudio 的收包计数（单调递增）。
     total: u64,
     /// 已经看到的消息计数；`total - seen_total` 即未读。
     seen_total: u64,
@@ -92,6 +81,23 @@ pub(crate) struct DanmakuOverlay {
     body_rows: Cell<usize>,
     /// 上一次绘制时换行后的总行数。
     total_lines: Cell<usize>,
+    /// 终端高度（行）；<10 时整个弹幕栏禁用。
+    screen_height: u16,
+}
+
+impl Default for DanmakuOverlay {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            input_focused: false,
+            offset_from_bottom: 0,
+            total: 0,
+            seen_total: 0,
+            body_rows: Cell::new(0),
+            total_lines: Cell::new(0),
+            screen_height: 24,
+        }
+    }
 }
 
 impl DanmakuOverlay {
@@ -109,6 +115,14 @@ impl DanmakuOverlay {
 
     pub(crate) fn unread(&self) -> u64 {
         self.total.saturating_sub(self.seen_total)
+    }
+
+    pub(crate) fn screen_height(&self) -> u16 {
+        self.screen_height
+    }
+
+    pub(crate) fn set_screen_height(&mut self, height: u16) {
+        self.screen_height = height;
     }
 
     /// 打开浮层并清空未读，但不聚焦输入（`d`）；已打开时保持不动。
@@ -190,9 +204,11 @@ impl DanmakuOverlay {
         changed
     }
 
-    /// 停播 / 换房时清空浮层状态。
+    /// 停播 / 换房时清空浮层状态（保留终端高度）。
     pub(crate) fn reset(&mut self) {
+        let screen_height = self.screen_height;
         *self = Self::default();
+        self.screen_height = screen_height;
     }
 
     /// 记录上次绘制出的换行总行数与正文行数，供滚动上限计算。
@@ -216,6 +232,9 @@ pub(crate) fn message_window(total: usize, rows: usize, offset: usize) -> (usize
 /// 常规情况高度比视觉区少 1，避免盖住最下面的 Information 行；当视觉区只有
 /// 5 行（40×10）时用满 5 行，保证 1 行消息 + 三行 Input 仍然存在。
 pub(crate) fn area(layout: &LiveLayout) -> Option<Rect> {
+    if layout.outer.height < DANMAKU_MIN_SCREEN_HEIGHT {
+        return None;
+    }
     let visual = layout.visual;
     if visual.width < 16 || visual.height < OVERLAY_MIN_HEIGHT {
         return None;
@@ -424,9 +443,11 @@ fn title_label(offset: usize, unread: u64) -> String {
     parts.join(" ")
 }
 
-/// 一行已经换好行的弹幕；`segments` 里 `true` 表示用户名（accent）。
+/// 一行已经换好行的弹幕；`segments` 里 `true` 表示用户名（accent），
+/// `own` 表示发送者 uid 与当前登录账号一致（整行 accent + bold）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WrappedLine {
+    pub(crate) own: bool,
     pub(crate) segments: Vec<(bool, String)>,
 }
 
@@ -449,6 +470,7 @@ impl WrappedLine {
 pub(crate) fn wrap_message_lines(
     message: &np_live::DanmakuMessage,
     width: usize,
+    own_uid: Option<u64>,
 ) -> Vec<WrappedLine> {
     let width = width.max(1);
     let user = sanitize(&message.user);
@@ -459,8 +481,16 @@ pub(crate) fn wrap_message_lines(
     };
     let prefix = format!("{user}: ");
     let text = sanitize(&message.text);
+    // 只有双方都有 uid 且相等才算自己；缺失 uid 时保持普通样式。
+    let own = message
+        .uid
+        .zip(own_uid)
+        .is_some_and(|(message_uid, own_uid)| message_uid == own_uid);
 
-    let mut lines = vec![WrappedLine::default()];
+    let mut lines = vec![WrappedLine {
+        own,
+        ..WrappedLine::default()
+    }];
     let mut used = 0usize;
     for (accent, value) in [(true, prefix.as_str()), (false, text.as_str())] {
         for character in value.chars() {
@@ -469,7 +499,10 @@ pub(crate) fn wrap_message_lines(
                 continue;
             }
             if used > 0 && used + character_width > width {
-                lines.push(WrappedLine::default());
+                lines.push(WrappedLine {
+                    own,
+                    ..WrappedLine::default()
+                });
                 used = 0;
             }
             let line = lines.last_mut().expect("at least one line");
@@ -489,10 +522,11 @@ pub(crate) fn wrap_message_lines(
 pub(crate) fn wrap_messages(
     messages: &[np_live::DanmakuMessage],
     width: usize,
+    own_uid: Option<u64>,
 ) -> Vec<WrappedLine> {
     let mut lines = Vec::new();
     for message in messages {
-        lines.extend(wrap_message_lines(message, width));
+        lines.extend(wrap_message_lines(message, width, own_uid));
     }
     lines
 }
@@ -507,7 +541,7 @@ fn draw_messages(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &Tui
     let bg = palette.bg.unwrap_or(Color::Reset);
     let messages = player.danmaku_messages();
     let width = usize::from(area.width);
-    let lines = wrap_messages(&messages, width);
+    let lines = wrap_messages(&messages, width, player.own_bili_uid());
     app.danmaku_overlay.set_scroll_metrics(lines.len(), rows);
     if lines.is_empty() {
         if area.height == 0 {
@@ -545,7 +579,12 @@ fn draw_line(
 ) {
     let mut cursor = x;
     for (accent, text) in &line.segments {
-        let style = if *accent {
+        let style = if line.own {
+            Style::default()
+                .fg(palette.accent)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
+        } else if *accent {
             Style::default().fg(palette.accent).bg(bg)
         } else {
             Style::default().fg(palette.fg).bg(bg)
@@ -606,11 +645,27 @@ impl App {
         self.danmaku_overlay.sync(total)
     }
 
+    /// 同步终端高度；低于弹幕栏下限时关闭浮层与输入焦点并请求重绘。
+    pub(crate) fn set_viewport_height(&mut self, height: u16) -> bool {
+        let changed = self.danmaku_overlay.screen_height() != height;
+        self.danmaku_overlay.set_screen_height(height);
+        if height < DANMAKU_MIN_SCREEN_HEIGHT
+            && (self.danmaku_overlay_visible() || self.chat_input.is_some())
+        {
+            self.reset_danmaku_overlay();
+            return true;
+        }
+        changed
+    }
+
     /// `d`：显示 / 隐藏浮层；从隐藏打开时同步聚焦 Input（T-0100b2）。
     ///
     /// 输入焦点存在时 `d` 是普通字符（事件循环先走 chat 分支），因此关闭
     /// 路径是先 `Esc` 退出焦点，再按 `d`。
     pub(crate) fn toggle_danmaku_overlay(&mut self, total: u64) {
+        if self.danmaku_overlay.screen_height() < DANMAKU_MIN_SCREEN_HEIGHT {
+            return;
+        }
         self.danmaku_overlay.sync(total);
         if self.danmaku_overlay.visible() {
             self.danmaku_overlay.hide();
@@ -645,6 +700,7 @@ mod tests {
     fn message(user: &str, text: &str) -> np_live::DanmakuMessage {
         np_live::DanmakuMessage {
             user: user.to_owned(),
+            uid: None,
             text: text.to_owned(),
             color: 0,
             timestamp: 0,
@@ -668,7 +724,7 @@ mod tests {
     #[test]
     fn wrapping_keeps_display_width_and_never_uses_an_ellipsis() {
         let text = "这是一条很长的中文弹幕内容，用来验证按显示宽度换行时不会被省略";
-        let lines = wrap_message_lines(&message("观众", text), 30);
+        let lines = wrap_message_lines(&message("观众", text), 30, None);
         assert!(lines.len() > 1, "长消息必须换行");
         for line in &lines {
             assert!(line.width() <= 30, "{:?}", line.text());
@@ -682,9 +738,25 @@ mod tests {
     }
 
     #[test]
+    fn own_uid_marks_all_wrapped_lines_and_missing_uid_never_matches() {
+        let mut own = message("我", "这是一条自己的回显");
+        own.uid = Some(42);
+        let lines = wrap_message_lines(&own, 12, Some(42));
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| line.own));
+
+        assert!(!wrap_message_lines(&own, 12, Some(7))[0].own);
+        assert!(!wrap_message_lines(&own, 12, None)[0].own);
+
+        let no_uid = message("我", "没有 uid");
+        assert!(!wrap_message_lines(&no_uid, 12, Some(42))[0].own);
+        assert!(!wrap_message_lines(&no_uid, 12, None)[0].own);
+    }
+
+    #[test]
     fn wrapping_keeps_wide_characters_inside_the_cell_budget() {
         let text = "弹".repeat(20);
-        let lines = wrap_message_lines(&message("我", &text), 30);
+        let lines = wrap_message_lines(&message("我", &text), 30, None);
         for line in &lines {
             assert!(line.width() <= 30);
         }
@@ -694,7 +766,7 @@ mod tests {
     #[test]
     fn wrapping_a_long_username_never_drops_text() {
         let user = "很长的用户名".repeat(10);
-        let lines = wrap_message_lines(&message(&user, "正文"), 30);
+        let lines = wrap_message_lines(&message(&user, "正文"), 30, None);
         let joined: String = lines.iter().map(WrappedLine::text).collect();
         assert_eq!(joined, format!("{user}: 正文"));
         for line in &lines {
@@ -843,6 +915,31 @@ mod tests {
             let tiny = crate::live_page::layout(Rect::new(0, 0, width, height));
             assert!(area(&tiny).is_none());
         }
+    }
+
+    #[test]
+    fn overlay_is_disabled_below_ten_screen_rows() {
+        // 布局层：高度 9 永远没有浮层区域。
+        assert!(area(&crate::live_page::layout(Rect::new(0, 0, 72, 9))).is_none());
+        assert!(area(&crate::live_page::layout(Rect::new(0, 0, 72, 10))).is_some());
+
+        let mut app = App::new();
+        app.set_viewport_height(9);
+        app.toggle_danmaku_overlay(0);
+        assert!(!app.danmaku_overlay_visible());
+        assert!(!app.live_chat_active());
+        assert!(!app.begin_live_chat(), "c 在 <10 行时也不能打开");
+        assert!(!app.danmaku_overlay_visible());
+
+        app.set_viewport_height(10);
+        app.toggle_danmaku_overlay(0);
+        assert!(app.danmaku_overlay_visible());
+        assert!(app.live_chat_active());
+
+        // 运行中缩到 <10：浮层与焦点一起关闭，回退普通 Live 页。
+        assert!(app.set_viewport_height(9));
+        assert!(!app.danmaku_overlay_visible());
+        assert!(!app.live_chat_active());
     }
 
     #[test]

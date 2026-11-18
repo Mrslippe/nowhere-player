@@ -34,6 +34,9 @@ pub(crate) const BUFFER_STATUS_WIDTH: u16 = 13;
 /// `d 弹幕` 在隐藏态也常驻，用户不必先知道快捷键才能发现浮层（T-0100c）。
 pub(crate) const STATUS_HINTS_PLAYING: &str = " · r 刷新 · d 弹幕 · 空格 暂停 · c 弹幕 · / 命令";
 pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · d 弹幕 · 空格 继续 · c 弹幕 · / 命令";
+/// 终端高度 <10 时弹幕栏禁用，状态栏不再提示 d/c。
+pub(crate) const STATUS_HINTS_PLAYING_NO_DANMAKU: &str = " · r 刷新 · 空格 暂停 · / 命令";
+pub(crate) const STATUS_HINTS_PAUSED_NO_DANMAKU: &str = " · r 刷新 · 空格 继续 · / 命令";
 
 /// 浮层可见时的状态栏提示：在常驻的 `d 弹幕` 之外补滚动 / 跟随键。
 fn danmaku_status_hints(paused: bool) -> String {
@@ -451,8 +454,12 @@ fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
             None => " · Enter 发送 · Esc 退出输入".to_owned(),
         }
     } else {
+        let danmaku_disabled =
+            app.danmaku_overlay.screen_height() < danmaku_overlay::DANMAKU_MIN_SCREEN_HEIGHT;
         match app.chat_notice.as_deref() {
             Some(notice) => format!(" · {notice}"),
+            None if danmaku_disabled && paused => STATUS_HINTS_PAUSED_NO_DANMAKU.to_owned(),
+            None if danmaku_disabled => STATUS_HINTS_PLAYING_NO_DANMAKU.to_owned(),
             None if app.danmaku_overlay_visible() => danmaku_status_hints(paused),
             None if paused => STATUS_HINTS_PAUSED.to_owned(),
             None => STATUS_HINTS_PLAYING.to_owned(),
@@ -747,13 +754,14 @@ mod tests {
     }
 
     #[test]
-    fn danmaku_local_echo_appears_in_the_visible_overlay() {
+    fn own_server_echo_is_highlighted_and_no_local_echo_is_pushed() {
         let mut app = themed_app();
         let audio = live_audio();
         audio.bili_auth_for_test(Some(np_live::BiliAuth::new(
             vec![
                 ("SESSDATA".to_owned(), "test-sessdata".to_owned()),
                 ("bili_jct".to_owned(), "test-csrf".to_owned()),
+                ("DedeUserID".to_owned(), "42".to_owned()),
             ],
             None,
         )));
@@ -765,14 +773,46 @@ mod tests {
         }
         app.submit_live_chat(&audio);
         let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-        assert!(app.apply_live_danmaku_result(generation, result, &audio));
+        assert!(app.apply_live_danmaku_result(generation, result));
         app.clear_chat_notice();
+        // 不再本地回显：发送成功只清空 Input。
+        assert_eq!(audio.danmaku_received(), 0);
+        assert!(audio.danmaku_messages().is_empty());
+
+        // 服务器回显：自己的 uid=42 高亮，其它 uid / 无 uid 保持普通样式。
+        let (sender, _links) = audio.danmaku_channel_for_test();
+        sender
+            .send(danmaku_message_uid(0, "我", "你好", Some(42)))
+            .expect("own echo");
+        sender
+            .send(danmaku_message_uid(1, "路人", "普通", Some(7)))
+            .expect("other");
+        sender
+            .send(danmaku_message_uid(2, "匿名", "无uid", None))
+            .expect("no uid");
+        assert!(audio.poll_danmaku());
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
         assert!(app.sync_danmaku(audio.danmaku_received()));
 
         let terminal = draw_live(72, 24, &app, &audio);
-        // 单条回显贴在正文底部（浮层消息区 y3..y16）。
-        assert!(compact(&row(&terminal, 16)).contains("我:你好"));
-        assert_eq!(audio.danmaku_received(), 1);
+        assert!(compact(&row(&terminal, 14)).contains("我:你好"));
+        assert!(compact(&row(&terminal, 15)).contains("路人:普通"));
+        assert!(compact(&row(&terminal, 16)).contains("匿名:无uid"));
+
+        let buffer = terminal.backend().buffer();
+        // 自己的行：用户名与正文都是 accent + BOLD。
+        for x in [38, 42] {
+            assert_eq!(buffer[(x, 14)].fg, app.palette.accent, "x {x}");
+            assert!(
+                buffer[(x, 14)].modifier.contains(Modifier::BOLD),
+                "x {x} must be bold"
+            );
+        }
+        // 别人的正文保持普通 fg；无 uid 不误判。
+        for (y, x) in [(15, 44), (16, 44)] {
+            assert_eq!(buffer[(x, y)].fg, app.palette.fg, "{x},{y}");
+            assert!(!buffer[(x, y)].modifier.contains(Modifier::BOLD), "{x},{y}");
+        }
         assert_eq!(app.danmaku_overlay.unread(), 0, "跟随态下回显不算未读");
     }
 
@@ -854,6 +894,26 @@ mod tests {
     }
 
     #[test]
+    fn danmaku_overlay_is_not_drawn_below_ten_rows() {
+        let audio = live_audio();
+        let mut app = themed_app();
+        app.set_viewport_height(9);
+        app.toggle_danmaku_overlay(0);
+        app.begin_live_chat();
+        assert!(!app.danmaku_overlay_visible());
+        assert!(!app.live_chat_active());
+
+        let terminal = draw_live(72, 9, &app, &audio);
+        let buffer = terminal.backend().buffer();
+        // 视觉区左上仍是普通 Live 页的频谱，不是浮层边框。
+        assert_eq!(buffer[(37, 2)].symbol(), "░");
+        let status = compact(&row(&terminal, 8));
+        assert!(status.contains("r刷新"), "{status:?}");
+        assert!(!status.contains("d弹幕"), "{status:?}");
+        assert!(!status.contains("c弹幕"), "{status:?}");
+    }
+
+    #[test]
     fn small_termals_still_render_the_live_page() {
         for (width, height, visual_height_expected) in [(60, 20, 15u16), (40, 10, 5)] {
             let app = themed_app();
@@ -879,8 +939,18 @@ mod tests {
     // ---- 弹幕浮层（T-0100b） ----
 
     fn danmaku_message(index: usize, user: &str, text: &str) -> np_live::DanmakuMessage {
+        danmaku_message_uid(index, user, text, None)
+    }
+
+    fn danmaku_message_uid(
+        index: usize,
+        user: &str,
+        text: &str,
+        uid: Option<u64>,
+    ) -> np_live::DanmakuMessage {
         np_live::DanmakuMessage {
             user: user.to_owned(),
+            uid,
             text: text.to_owned(),
             color: 16_777_215,
             timestamp: u64::try_from(index).unwrap_or(0),

@@ -29,8 +29,6 @@ pub(crate) struct ChatInput {
     value: Vec<char>,
     cursor: usize,
     pending: Option<u64>,
-    /// 正在发送的文本；成功后用于本地回显 `我:`。
-    pending_text: Option<String>,
     error: Option<String>,
 }
 
@@ -48,7 +46,6 @@ impl ChatInput {
             value: Vec::new(),
             cursor: 0,
             pending: None,
-            pending_text: None,
             error: None,
         }
     }
@@ -65,23 +62,17 @@ impl ChatInput {
         self.pending
     }
 
-    pub(crate) fn pending_text(&self) -> Option<&str> {
-        self.pending_text.as_deref()
-    }
-
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
 
-    pub(crate) fn set_pending(&mut self, generation: u64, message: String) {
+    pub(crate) fn set_pending(&mut self, generation: u64) {
         self.pending = Some(generation);
-        self.pending_text = Some(message);
         self.error = None;
     }
 
     pub(crate) fn set_error(&mut self, error: impl Into<String>) {
         self.pending = None;
-        self.pending_text = None;
         self.error = Some(error.into());
     }
 
@@ -251,7 +242,13 @@ impl App {
     }
 
     /// `c`：打开浮层并聚焦 Input（T-0100b2）；已打开时只重新聚焦。
+    ///
+    /// 终端高度 <10 时不打开、不占位，回退到普通 Live 页。
     pub(crate) fn begin_live_chat(&mut self) -> bool {
+        if self.danmaku_overlay.screen_height() < crate::danmaku_overlay::DANMAKU_MIN_SCREEN_HEIGHT
+        {
+            return false;
+        }
         self.danmaku_overlay.show();
         self.danmaku_overlay.focus_input();
         if self.chat_input.is_none() {
@@ -309,7 +306,7 @@ impl App {
         match player.send_live_danmaku(&message) {
             Ok(generation) => {
                 if let Some(chat) = self.chat_input.as_mut() {
-                    chat.set_pending(generation, message);
+                    chat.set_pending(generation);
                 }
                 self.chat_notice = None;
             }
@@ -319,13 +316,12 @@ impl App {
 
     /// 收下后台发送结果；只有当前 pending 的 generation 才能改变输入框状态。
     ///
-    /// 发送成功时把文本回显进 TuiAudio 的同一个环形缓冲（`我:`），
-    /// 不等待服务器把这条弹幕再推回来。
+    /// 发送成功不写本地回显：等服务器把这条弹幕推回来，浮层再按 uid 高亮，
+    /// 避免同一句话出现两次（T-0100b2）。
     pub(crate) fn apply_live_danmaku_result(
         &mut self,
         generation: u64,
         result: Result<(), String>,
-        player: &TuiAudio,
     ) -> bool {
         let Some(chat) = self.chat_input.as_mut() else {
             return false;
@@ -335,15 +331,11 @@ impl App {
         }
         match result {
             Ok(()) => {
-                let echoed = chat.pending_text().map(str::to_owned);
                 // 浮层内联 Input：发送成功后清空文本但保持焦点，方便连发。
                 if self.danmaku_overlay.input_focused() {
                     self.chat_input = Some(ChatInput::new());
                 } else {
                     self.chat_input = None;
-                }
-                if let Some(echoed) = echoed.filter(|text| !text.trim().is_empty()) {
-                    player.push_local_danmaku("我", &echoed);
                 }
                 self.show_chat_notice("弹幕已发送");
             }

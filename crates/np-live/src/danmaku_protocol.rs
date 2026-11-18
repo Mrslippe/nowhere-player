@@ -203,6 +203,8 @@ pub fn heartbeat_body() -> &'static [u8] {
 pub struct DanmakuMessage {
     /// 发送者昵称。
     pub user: String,
+    /// 发送者 uid（`info[2][0]`）；字段缺失或非法时为 `None`。
+    pub uid: Option<u64>,
     /// 弹幕文本。
     pub text: String,
     /// 十进制 RGB，例如 `16777215` 为白色。
@@ -257,6 +259,8 @@ pub fn parse_danmu_msg(json: &[u8]) -> Result<Option<DanmakuMessage>, DanmakuPro
     let user = user
         .as_array()
         .ok_or(DanmakuProtocolError::InvalidField("info[2]"))?;
+    // info[2][0] = 发送者 uid；缺失时不报错，浮层据此避免误判自己的回显。
+    let uid = user.first().and_then(Value::as_u64);
     let user = user
         .get(1)
         .ok_or(DanmakuProtocolError::MissingField("info[2][1]"))?;
@@ -282,6 +286,7 @@ pub fn parse_danmu_msg(json: &[u8]) -> Result<Option<DanmakuMessage>, DanmakuPro
 
     Ok(Some(DanmakuMessage {
         user: user.to_owned(),
+        uid,
         text: text.to_owned(),
         color,
         timestamp,
@@ -545,9 +550,22 @@ mod tests {
             .expect("合法弹幕不应报错")
             .expect("DANMU_MSG 应返回 Some");
         assert_eq!(message.user, "用户A");
+        assert_eq!(message.uid, Some(123456));
         assert_eq!(message.text, "晚上好");
         assert_eq!(message.color, 16_777_215);
         assert_eq!(message.timestamp, 1_726_799_123_456);
+    }
+
+    #[test]
+    fn parse_danmu_msg_without_uid_is_none_instead_of_an_error() {
+        let mut value = danmu_value();
+        value["info"][2] = serde_json::json!([null, "用户A"]);
+        let bytes = serde_json::to_vec(&value).expect("应可序列化");
+        let message = parse_danmu_msg(&bytes)
+            .expect("缺 uid 不应报错")
+            .expect("DANMU_MSG 应返回 Some");
+        assert_eq!(message.uid, None);
+        assert_eq!(message.user, "用户A");
     }
 
     #[test]

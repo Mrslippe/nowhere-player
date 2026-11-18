@@ -2270,6 +2270,7 @@ fn bili_auth_stub() -> np_live::BiliAuth {
         vec![
             ("SESSDATA".to_owned(), "test-sessdata".to_owned()),
             ("bili_jct".to_owned(), "test-csrf".to_owned()),
+            ("DedeUserID".to_owned(), "42".to_owned()),
         ],
         None,
     )
@@ -2433,7 +2434,7 @@ fn live_chat_pending_enter_is_idempotent_and_success_clears_the_inline_input() {
 
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
     assert!(result.is_ok());
-    assert!(app.apply_live_danmaku_result(generation, result, &audio));
+    assert!(app.apply_live_danmaku_result(generation, result));
     assert!(app.live_chat_active(), "内联 Input 发送成功后保持焦点");
     assert_eq!(
         app.chat_input.as_ref().map(|chat| chat.text()),
@@ -2441,12 +2442,9 @@ fn live_chat_pending_enter_is_idempotent_and_success_clears_the_inline_input() {
         "发送成功后清空输入"
     );
     assert_eq!(app.chat_notice.as_deref(), Some("弹幕已发送"));
-    // 发送成功后立刻本地回显 `我:`，不等待服务器回包。
-    assert_eq!(audio.danmaku_received(), 1);
-    let recent = audio.danmaku_messages();
-    assert_eq!(recent.len(), 1);
-    assert_eq!(recent[0].user, "我");
-    assert_eq!(recent[0].text, "你好");
+    // 不写本地回显：等服务器把这条弹幕推回来。
+    assert_eq!(audio.danmaku_received(), 0);
+    assert!(audio.danmaku_messages().is_empty());
 }
 
 #[test]
@@ -2460,7 +2458,7 @@ fn live_chat_failure_keeps_content_and_passes_the_error_through() {
     app.submit_live_chat(&audio);
 
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result, &audio));
+    assert!(app.apply_live_danmaku_result(generation, result));
     assert!(app.live_chat_active(), "failure keeps the input open");
     let chat = app.chat_input.as_ref().expect("chat");
     assert_eq!(chat.text(), "你");
@@ -2491,7 +2489,7 @@ fn live_chat_ignores_stale_generations() {
     assert_eq!(audio.poll_live_danmaku(), None);
 
     // 即使结果被送到 UI，generation 不匹配也不能改变输入框。
-    assert!(!app.apply_live_danmaku_result(stale_generation.wrapping_add(1), Ok(()), &audio));
+    assert!(!app.apply_live_danmaku_result(stale_generation.wrapping_add(1), Ok(())));
     assert!(app.live_chat_active());
     assert_eq!(
         audio.danmaku_received(),

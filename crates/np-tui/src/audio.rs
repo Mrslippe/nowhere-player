@@ -411,6 +411,16 @@ impl TuiAudio {
         })
     }
 
+    /// 当前登录账号的 uid；未登录或凭证缺 `DedeUserID` 时为 `None`。
+    ///
+    /// 只读已经加载的登录态，不在绘制路径上读文件；未加载时不会误判自己的回显。
+    pub(crate) fn own_bili_uid(&self) -> Option<u64> {
+        self.bili_auth
+            .borrow()
+            .as_ref()
+            .and_then(np_live::BiliAuth::uid)
+    }
+
     /// 后台线程发送一条弹幕；返回本次请求的 generation。
     ///
     /// 不阻塞 UI，也不打印 cookie / csrf / 请求体；结果由

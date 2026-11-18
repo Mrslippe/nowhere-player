@@ -159,6 +159,12 @@ where
     let mut draw_needed = true;
     loop {
         let now = std::time::Instant::now();
+        // 终端尺寸用于 d/c 的可用性判断（高度 <10 时禁用弹幕栏）。
+        if let Ok(size) = terminal.size()
+            && app.set_viewport_height(size.height)
+        {
+            draw_needed = true;
+        }
         // 成功 / 取消类状态 3 秒后回默认；错误与进行中状态没有到期时间。
         let default_status = if player.is_live() {
             player.live_state_text()
@@ -238,7 +244,7 @@ where
             app.reset_danmaku_overlay();
         }
         if let Some((generation, result)) = player.poll_live_danmaku()
-            && app.apply_live_danmaku_result(generation, result, player)
+            && app.apply_live_danmaku_result(generation, result)
         {
             draw_needed = true;
         }
@@ -472,6 +478,7 @@ mod tests {
     fn danmaku_message(index: usize) -> np_live::DanmakuMessage {
         np_live::DanmakuMessage {
             user: format!("用户{index}"),
+            uid: None,
             text: format!("弹幕-{index}"),
             color: 16_777_215,
             timestamp: index as u64,

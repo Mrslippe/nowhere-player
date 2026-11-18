@@ -288,6 +288,7 @@ fn chat_auth() -> np_live::BiliAuth {
         vec![
             ("SESSDATA".to_owned(), "test-sessdata".to_owned()),
             ("bili_jct".to_owned(), "test-csrf".to_owned()),
+            ("DedeUserID".to_owned(), "42".to_owned()),
         ],
         None,
     )
@@ -335,7 +336,7 @@ fn golden_live_chat_error_72x24() {
     audio.danmaku_result_for_test(Err("发送弹幕过于频繁，请稍后再试".to_owned()));
     app.submit_live_chat(&audio);
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result, &audio));
+    assert!(app.apply_live_danmaku_result(generation, result));
     snapshot_app("live_chat_error_72x24.txt", 72, 24, &mut app, &audio);
 }
 
@@ -344,15 +345,25 @@ fn golden_live_chat_sent_72x24() {
     let audio = live_audio();
     let mut app = chat_pending_app(&audio);
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result, &audio));
+    assert!(app.apply_live_danmaku_result(generation, result));
     snapshot_app("live_chat_sent_72x24.txt", 72, 24, &mut app, &audio);
 }
 
 // ---- 弹幕浮层（T-0100b） ----
 
 fn danmaku_message(index: usize, user: &str, text: &str) -> np_live::DanmakuMessage {
+    danmaku_message_uid(index, user, text, None)
+}
+
+fn danmaku_message_uid(
+    index: usize,
+    user: &str,
+    text: &str,
+    uid: Option<u64>,
+) -> np_live::DanmakuMessage {
     np_live::DanmakuMessage {
         user: user.to_owned(),
+        uid,
         text: text.to_owned(),
         color: 16_777_215,
         timestamp: u64::try_from(index).unwrap_or(0),
@@ -502,8 +513,15 @@ fn golden_live_danmaku_echo_72x24() {
     }
     app.submit_live_chat(&audio);
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result, &audio));
+    assert!(app.apply_live_danmaku_result(generation, result));
     app.clear_chat_notice();
+    // 服务器回显（uid=42）才进入浮层；本地不再 push。
+    let (sender, _links) = audio.danmaku_channel_for_test();
+    sender
+        .send(danmaku_message_uid(0, "我", "晚上好", Some(42)))
+        .expect("server echo");
+    assert!(audio.poll_danmaku());
+    audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
     app.sync_danmaku(audio.danmaku_received());
     snapshot_app("live_danmaku_echo_72x24.txt", 72, 24, &mut app, &audio);
 }
