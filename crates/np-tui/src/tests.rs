@@ -2335,8 +2335,9 @@ fn live_chat_c_is_a_plain_character_while_the_input_is_open() {
         app.chat_input.as_ref().map(|chat| chat.text()),
         Some("cdf".to_owned())
     );
-    // 输入框打开时 `d` 只是字符，不会顺手打开弹幕浮层。
-    assert!(!app.danmaku_overlay_visible());
+    // c 打开浮层并聚焦 Input；输入时 `d` 只是字符，不会关闭浮层。
+    assert!(app.danmaku_overlay_visible());
+    assert!(app.live_chat_active());
 }
 
 #[test]
@@ -2413,7 +2414,7 @@ fn live_chat_caps_at_twenty_characters_and_counts_cjk_width() {
 }
 
 #[test]
-fn live_chat_pending_enter_is_idempotent_and_success_closes_the_box() {
+fn live_chat_pending_enter_is_idempotent_and_success_clears_the_inline_input() {
     let audio = live_chat_audio();
     audio.bili_auth_for_test(Some(bili_auth_stub()));
     audio.danmaku_result_for_test(Ok(()));
@@ -2433,7 +2434,12 @@ fn live_chat_pending_enter_is_idempotent_and_success_closes_the_box() {
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
     assert!(result.is_ok());
     assert!(app.apply_live_danmaku_result(generation, result, &audio));
-    assert!(!app.live_chat_active(), "success closes the input");
+    assert!(app.live_chat_active(), "内联 Input 发送成功后保持焦点");
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.text()),
+        Some(String::new()),
+        "发送成功后清空输入"
+    );
     assert_eq!(app.chat_notice.as_deref(), Some("弹幕已发送"));
     // 发送成功后立刻本地回显 `我:`，不等待服务器回包。
     assert_eq!(audio.danmaku_received(), 1);

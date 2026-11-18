@@ -7,14 +7,13 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
-use ratatui::widgets::{Block as TuiBlock, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 #[cfg(test)]
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::audio::TuiAudio;
 use crate::input::{display_width, input_window, truncate_width};
-use crate::live_page::LiveLayout;
 
 /// 弹幕输入上限：B 站单条弹幕最多 20 个字符（CJK 按 1 个字符计）。
 pub(crate) const CHAT_MAX_CHARS: usize = 20;
@@ -155,20 +154,6 @@ impl ChatInput {
     }
 }
 
-/// 输入框区域：与 Controller 浮层同宽，贴在外框内底部，共 3 行。
-pub(crate) fn chat_area(layout: &LiveLayout) -> Option<Rect> {
-    let area = layout.player;
-    if area.width < 12 || area.height < 3 {
-        return None;
-    }
-    Some(Rect {
-        x: area.x,
-        y: area.bottom().saturating_sub(3),
-        width: area.width,
-        height: 3,
-    })
-}
-
 /// 处理输入框打开时的按键；返回前不会进入全局 / Live 键位解析。
 pub(crate) fn handle_chat_key(code: KeyCode, app: &mut App, player: &TuiAudio) {
     let outcome = match app.chat_input.as_mut() {
@@ -184,32 +169,35 @@ pub(crate) fn handle_chat_key(code: KeyCode, app: &mut App, player: &TuiAudio) {
     }
 }
 
-/// 底部 3 行弹幕输入框：68 宽 = 边框 2 + 提示符 2 + 输入 64。
-pub(crate) fn draw_chat(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
-    let Some(chat) = app.chat_input.as_ref() else {
-        return;
-    };
-    let Some(area) = chat_area(layout) else {
-        return;
-    };
-    frame.render_widget(Clear, area);
-    let bg = app.palette.bg.unwrap_or(Color::Reset);
-    let block = TuiBlock::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(app.palette.accent))
-        .title(TuiSpan::styled(
-            " 弹幕 ",
-            Style::default().fg(app.palette.accent),
-        ))
-        .style(Style::default().bg(bg).fg(app.palette.fg));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 || inner.width < 4 {
+/// 弹幕浮层内嵌的 Input 行（T-0100b2）：宽 30，高 1，位于分隔线与底边之间。
+///
+/// 有焦点时绘制光标；未聚焦或无输入状态时显示 `c` 提示，不再弹出底部
+/// 3 行输入框。`area` 已经是边框内的可用内容区。
+pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    if area.width < 4 || area.height == 0 {
         return;
     }
+    let bg = app.palette.bg.unwrap_or(Color::Reset);
+    let Some(chat) = app.chat_input.as_ref() else {
+        frame.buffer_mut().set_string(
+            area.x,
+            area.y,
+            CHAT_PROMPT,
+            Style::default().fg(app.palette.accent).bg(bg),
+        );
+        let hint_width = usize::from(area.width.saturating_sub(2));
+        let hint = truncate_width("按 c 输入弹幕", hint_width);
+        frame.buffer_mut().set_string(
+            area.x.saturating_add(2),
+            area.y,
+            &hint,
+            Style::default().fg(app.palette.faint).bg(bg),
+        );
+        return;
+    };
 
-    let input_width = usize::from(inner.width.saturating_sub(2));
+    let focused = app.danmaku_overlay.input_focused();
+    let input_width = usize::from(area.width.saturating_sub(2));
     let (start, end) = input_window(&chat.value, chat.cursor, input_width);
     let cursor_style = Style::default()
         .bg(app.palette.fg)
@@ -217,32 +205,32 @@ pub(crate) fn draw_chat(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &A
         .add_modifier(Modifier::BOLD);
     let mut spans = vec![TuiSpan::styled(
         CHAT_PROMPT,
-        Style::default().fg(app.palette.accent),
+        Style::default().fg(app.palette.accent).bg(bg),
     )];
     for (index, character) in chat.value.iter().enumerate().take(end).skip(start) {
-        let style = if index == chat.cursor {
+        let style = if focused && index == chat.cursor {
             cursor_style
         } else {
-            Style::default().fg(app.palette.fg)
+            Style::default().fg(app.palette.fg).bg(bg)
         };
         spans.push(TuiSpan::styled(character.to_string(), style));
     }
-    if chat.cursor == chat.value.len() {
+    if focused && chat.cursor == chat.value.len() {
         spans.push(TuiSpan::styled(" ", cursor_style));
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(bg).fg(app.palette.fg)),
-        inner,
+        area,
     );
 
     if chat.pending().is_some() {
         let label = " 发送中… ";
         let label_width = display_width(label) as u16;
-        let x = inner.right().saturating_sub(label_width);
-        if x > inner.x + 2 {
+        let x = area.right().saturating_sub(label_width);
+        if x > area.x.saturating_add(2) {
             frame.buffer_mut().set_string(
                 x,
-                inner.y,
+                area.y,
                 label,
                 Style::default()
                     .bg(bg)
@@ -251,39 +239,34 @@ pub(crate) fn draw_chat(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &A
             );
         }
     }
-
-    if let Some(error) = chat.error() {
-        let max = usize::from(area.width.saturating_sub(2));
-        let text = truncate_width(&format!(" {error} "), max);
-        frame.buffer_mut().set_string(
-            area.x.saturating_add(1),
-            area.y.saturating_add(area.height.saturating_sub(1)),
-            &text,
-            Style::default().bg(bg).fg(app.palette.danger),
-        );
-    }
 }
 
-/// Live 页弹幕输入的状态操作（T-0097）；发送结果回填留在 App。
+/// Live 页弹幕输入的状态操作（T-0097 / T-0100b2）；发送结果回填留在 App。
 impl App {
     // ---- Live 页弹幕输入（T-0097） ----
 
+    /// 输入焦点是否在浮层内嵌 Input 上；事件循环据此优先路由字符键。
     pub(crate) fn live_chat_active(&self) -> bool {
-        self.chat_input.is_some()
+        self.chat_input.is_some() && self.danmaku_overlay.input_focused()
     }
 
+    /// `c`：打开浮层并聚焦 Input（T-0100b2）；已打开时只重新聚焦。
     pub(crate) fn begin_live_chat(&mut self) -> bool {
-        if self.chat_input.is_some() {
-            return false;
+        self.danmaku_overlay.show();
+        self.danmaku_overlay.focus_input();
+        if self.chat_input.is_none() {
+            self.chat_input = Some(ChatInput::new());
         }
-        self.chat_input = Some(ChatInput::new());
         self.chat_notice = None;
         self.chat_notice_expires_at = None;
         true
     }
 
+    /// `Esc`：退出输入焦点，浮层保持打开；草稿一并丢弃。
     pub(crate) fn cancel_live_chat(&mut self) -> bool {
-        self.chat_input.take().is_some()
+        let had = self.chat_input.take().is_some();
+        self.danmaku_overlay.blur_input();
+        had
     }
 
     pub(crate) fn insert_live_chat_char(&mut self, character: char) {
@@ -353,7 +336,12 @@ impl App {
         match result {
             Ok(()) => {
                 let echoed = chat.pending_text().map(str::to_owned);
-                self.chat_input = None;
+                // 浮层内联 Input：发送成功后清空文本但保持焦点，方便连发。
+                if self.danmaku_overlay.input_focused() {
+                    self.chat_input = Some(ChatInput::new());
+                } else {
+                    self.chat_input = None;
+                }
                 if let Some(echoed) = echoed.filter(|text| !text.trim().is_empty()) {
                     player.push_local_danmaku("我", &echoed);
                 }

@@ -136,6 +136,7 @@ pub(crate) fn execute(
         Action::OpenCommand => app.enter_command(),
         Action::LiveChat => {
             if player.is_live() {
+                app.sync_danmaku(player.danmaku_received());
                 app.begin_live_chat();
             } else {
                 app.set_status("当前没有直播".to_owned());

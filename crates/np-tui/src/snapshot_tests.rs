@@ -396,6 +396,20 @@ fn golden_live_danmaku_empty_72x24() {
 }
 
 #[test]
+fn golden_live_danmaku_empty_60x20() {
+    let audio = live_audio();
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_empty_60x20.txt", 60, 20, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_empty_40x10() {
+    let audio = live_audio();
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_empty_40x10.txt", 40, 10, &mut app, &audio);
+}
+
+#[test]
 fn golden_live_danmaku_messages_72x24() {
     let audio = overlay_audio(&[
         ("小明", "晚上好"),
@@ -405,6 +419,26 @@ fn golden_live_danmaku_messages_72x24() {
     ]);
     let mut app = overlay_app(&audio);
     snapshot_app("live_danmaku_messages_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_messages_60x20() {
+    let audio = overlay_audio(&[
+        ("小明", "晚上好"),
+        ("主播", "欢迎来到直播间"),
+        ("观众A", "这首歌唱得真好听！"),
+        ("观众B", "打卡"),
+    ]);
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_messages_60x20.txt", 60, 20, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_messages_40x10() {
+    // 40×10 只有 1 行消息：底部对齐后只显示最新一条。
+    let audio = overlay_audio(&[("小明", "晚上好"), ("观众B", "打卡")]);
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_messages_40x10.txt", 40, 10, &mut app, &audio);
 }
 
 #[test]
@@ -420,6 +454,13 @@ fn golden_live_danmaku_scrolled_72x24() {
     audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
     let mut app = overlay_app(&audio);
     app.sync_danmaku(audio.danmaku_received());
+    // d 打开时聚焦 Input；Esc 退出焦点后才滚动历史。
+    app.cancel_live_chat();
+    // 先绘制一次，让浮层记录换行后的总行数，再滚动。
+    let mut warmup = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).expect("terminal");
+    warmup
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .expect("warmup draw");
     // 读历史时又到两条：右上角显示 `↑/↓ 2`。
     for index in 40..42 {
         sender

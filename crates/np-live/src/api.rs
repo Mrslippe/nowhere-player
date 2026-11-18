@@ -92,6 +92,8 @@ pub struct RoomInfo {
     pub parent_area_name: String,
     /// B站开播时间（UTC+8 解析成 Unix 秒）；解析失败为 `None`。
     pub live_started_at: Option<u64>,
+    /// 当前同接人数（`data.online`）；接口缺失时为 `None`。
+    pub online: Option<u64>,
 }
 
 /// 取 playurl。调用方负责把 [`PlayInfo::live_status`] / `flv_url` 映射成
@@ -179,6 +181,7 @@ pub fn parse_room_info(body: &[u8]) -> Result<RoomInfo, LiveError> {
         area_name: data.area_name,
         parent_area_name: data.parent_area_name,
         live_started_at: parse_live_time(&data.live_time),
+        online: data.online,
     })
 }
 
@@ -335,6 +338,8 @@ struct RoomData {
     parent_area_name: String,
     #[serde(default)]
     live_time: String,
+    #[serde(default)]
+    online: Option<u64>,
 }
 
 fn parse_live_time(value: &str) -> Option<u64> {
@@ -472,6 +477,17 @@ mod tests {
         let room = parse_room_info(ROOM.as_bytes()).unwrap();
         assert_eq!(room.area_name, "游戏赛事");
         assert_eq!(room.parent_area_name, "赛事");
+    }
+
+    #[test]
+    fn room_fixture_yields_online_and_missing_online_is_none() {
+        let room = parse_room_info(ROOM.as_bytes()).unwrap();
+        assert_eq!(room.online, Some(8400));
+
+        let room =
+            parse_room_info(br#"{"code":0,"data":{"room_id":1,"title":"x","live_status":1}}"#)
+                .unwrap();
+        assert_eq!(room.online, None);
     }
 
     #[test]
