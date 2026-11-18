@@ -282,3 +282,68 @@ fn splash_threshold_is_computed_from_art_width() {
     assert_eq!(splash_art(60), "NOWHERE");
     assert!(splash_art(80).contains('█'));
 }
+
+fn chat_auth() -> np_live::BiliAuth {
+    np_live::BiliAuth::new(
+        vec![
+            ("SESSDATA".to_owned(), "test-sessdata".to_owned()),
+            ("bili_jct".to_owned(), "test-csrf".to_owned()),
+        ],
+        None,
+    )
+}
+
+fn chat_pending_app(audio: &TuiAudio) -> App {
+    let mut app = themed_app();
+    app.begin_live_chat();
+    for character in "晚上好，测试弹幕".chars() {
+        app.insert_live_chat_char(character);
+    }
+    audio.bili_auth_for_test(Some(chat_auth()));
+    audio.danmaku_result_for_test(Ok(()));
+    app.submit_live_chat(audio);
+    app
+}
+
+#[test]
+fn golden_live_chat_input_72x24() {
+    let mut app = themed_app();
+    app.begin_live_chat();
+    for character in "晚上好，测试弹幕".chars() {
+        app.insert_live_chat_char(character);
+    }
+    let audio = live_audio();
+    snapshot_app("live_chat_input_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_chat_pending_72x24() {
+    let audio = live_audio();
+    let mut app = chat_pending_app(&audio);
+    snapshot_app("live_chat_pending_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_chat_error_72x24() {
+    let audio = live_audio();
+    let mut app = themed_app();
+    app.begin_live_chat();
+    for character in "晚上好，测试弹幕".chars() {
+        app.insert_live_chat_char(character);
+    }
+    audio.bili_auth_for_test(Some(chat_auth()));
+    audio.danmaku_result_for_test(Err("发送弹幕过于频繁，请稍后再试".to_owned()));
+    app.submit_live_chat(&audio);
+    let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
+    assert!(app.apply_live_danmaku_result(generation, result));
+    snapshot_app("live_chat_error_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_chat_sent_72x24() {
+    let audio = live_audio();
+    let mut app = chat_pending_app(&audio);
+    let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
+    assert!(app.apply_live_danmaku_result(generation, result));
+    snapshot_app("live_chat_sent_72x24.txt", 72, 24, &mut app, &audio);
+}

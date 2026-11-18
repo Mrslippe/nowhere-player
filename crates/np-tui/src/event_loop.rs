@@ -107,6 +107,18 @@ where
         if player.poll_live() {
             draw_needed = true;
         }
+        if !player.is_live() {
+            if app.live_chat_active() {
+                app.cancel_live_chat();
+                draw_needed = true;
+            }
+            app.clear_chat_notice();
+        }
+        if let Some((generation, result)) = player.poll_live_danmaku()
+            && app.apply_live_danmaku_result(generation, result)
+        {
+            draw_needed = true;
+        }
         if player.poll_login() {
             draw_needed = true;
         }
@@ -157,6 +169,12 @@ where
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if player.login_active() {
                         player.handle_login_key(key.code);
+                        draw_needed = true;
+                        continue;
+                    }
+                    // Live 弹幕输入框优先于 live / 全局键：`c` 在这里只是普通字符。
+                    if app.live_chat_active() {
+                        crate::live_page::handle_chat_key(key.code, app, player);
                         draw_needed = true;
                         continue;
                     }
@@ -231,6 +249,7 @@ where
                         draw_needed = true;
                         continue;
                     } else {
+                        app.clear_chat_notice();
                         if key.code == KeyCode::Enter {
                             if app.pending_add.is_some() {
                                 if let Err(error) = app.confirm_add_to_playlist(&**library) {
@@ -280,8 +299,14 @@ where
                     draw_needed = true;
                 }
                 Event::Paste(text) => {
-                    for character in text.chars() {
-                        app.insert(character);
+                    if app.live_chat_active() {
+                        for character in text.chars() {
+                            app.insert_live_chat_char(character);
+                        }
+                    } else {
+                        for character in text.chars() {
+                            app.insert(character);
+                        }
                     }
                     draw_needed = true;
                 }

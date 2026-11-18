@@ -34,6 +34,8 @@ struct LiveFailure {
 }
 
 type LivePreparation = (u64, Result<np_live::PreparedLive, LiveFailure>);
+/// 后台弹幕线程回传：请求 generation + 发送结果（错误文本不含凭证）。
+type DanmakuReply = (u64, Result<(), String>);
 
 /// Live 页展示用的房间资料：主播名 + 分区。
 ///
@@ -83,6 +85,12 @@ pub struct TuiAudio {
     login: RefCell<crate::login::LoginUi>,
     bili_auth: RefCell<Option<np_live::BiliAuth>>,
     auth_loaded: Cell<bool>,
+    chat_generation: Cell<u64>,
+    chat_rx: RefCell<Option<std::sync::mpsc::Receiver<DanmakuReply>>>,
+    #[cfg(test)]
+    chat_test_result: RefCell<Option<Result<(), String>>>,
+    #[cfg(test)]
+    chat_test_calls: Cell<u32>,
 }
 
 impl TuiAudio {
@@ -131,6 +139,12 @@ impl TuiAudio {
             login: RefCell::new(crate::login::LoginUi::new()),
             bili_auth: RefCell::new(None),
             auth_loaded: Cell::new(false),
+            chat_generation: Cell::new(0),
+            chat_rx: RefCell::new(None),
+            #[cfg(test)]
+            chat_test_result: RefCell::new(None),
+            #[cfg(test)]
+            chat_test_calls: Cell::new(0),
         }
     }
 
@@ -369,6 +383,93 @@ impl TuiAudio {
             }
         }
         self.bili_auth.borrow().clone()
+    }
+
+    /// 登录态是否具备发弹幕所需的两块凭证；不向调用方暴露 cookie 内容。
+    pub(crate) fn has_bili_auth(&self) -> bool {
+        self.auth_for_live().is_some_and(|auth| {
+            auth.cookie("SESSDATA").is_some() && auth.cookie("bili_jct").is_some()
+        })
+    }
+
+    /// 后台线程发送一条弹幕；返回本次请求的 generation。
+    ///
+    /// 不阻塞 UI，也不打印 cookie / csrf / 请求体；结果由
+    /// [`poll_live_danmaku`](Self::poll_live_danmaku) 在主线程收取。
+    pub(crate) fn send_live_danmaku(&self, message: &str) -> Result<u64, String> {
+        if !self.is_live() {
+            return Err("当前没有直播".to_owned());
+        }
+        let room_id = self.live_room.get();
+        if room_id == 0 {
+            return Err("房间号无效".to_owned());
+        }
+        if self.chat_rx.borrow().is_some() {
+            return Err("弹幕正在发送中".to_owned());
+        }
+        let Some(auth) = self.auth_for_live() else {
+            return Err("未登录，请先 /login bili".to_owned());
+        };
+        let generation = self.chat_generation.get().wrapping_add(1);
+        self.chat_generation.set(generation);
+        let (tx, rx) = std::sync::mpsc::channel();
+        *self.chat_rx.borrow_mut() = Some(rx);
+        #[cfg(test)]
+        {
+            self.chat_test_calls
+                .set(self.chat_test_calls.get().saturating_add(1));
+            if self.chat_test_result.borrow().is_some() {
+                let result = self
+                    .chat_test_result
+                    .borrow_mut()
+                    .take()
+                    .expect("test danmaku result");
+                let _ = tx.send((generation, result));
+                return Ok(generation);
+            }
+        }
+        let message = message.to_owned();
+        let spawn = std::thread::Builder::new()
+            .name("np-live-danmaku".to_owned())
+            .spawn(move || {
+                let result = match np_sources::ReqwestTransport::new() {
+                    Ok(transport) => {
+                        np_live::danmaku::send_danmaku(&transport, &auth, room_id, &message)
+                            .map_err(|error| error.to_string())
+                    }
+                    Err(_) => Err("发送弹幕网络请求失败".to_owned()),
+                };
+                let _ = tx.send((generation, result));
+            });
+        if let Err(error) = spawn {
+            *self.chat_rx.borrow_mut() = None;
+            return Err(format!("弹幕发送线程启动失败：{error}"));
+        }
+        Ok(generation)
+    }
+
+    /// 主线程每 tick 调用：收取后台发送结果；旧 generation（换直播间 / 停播）丢弃。
+    pub(crate) fn poll_live_danmaku(&self) -> Option<DanmakuReply> {
+        let received = {
+            let receiver = self.chat_rx.borrow();
+            match receiver.as_ref() {
+                Some(receiver) => match receiver.try_recv() {
+                    Ok(value) => Some(value),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((
+                        self.chat_generation.get(),
+                        Err("弹幕发送线程意外结束".to_owned()),
+                    )),
+                },
+                None => None,
+            }
+        };
+        let (generation, result) = received?;
+        *self.chat_rx.borrow_mut() = None;
+        if generation != self.chat_generation.get() {
+            return None;
+        }
+        Some((generation, result))
     }
 
     /// 开始一路直播：停止当前播放、保留队列，后台准备网络与首帧。
@@ -626,6 +727,10 @@ impl TuiAudio {
         *self.live_metrics.borrow_mut() = None;
         *self.live_control.borrow_mut() = None;
         self.reconnect_at.set(None);
+        // 换直播间 / 停播后，旧房间的弹幕结果不再生效。
+        self.chat_generation
+            .set(self.chat_generation.get().wrapping_add(1));
+        *self.chat_rx.borrow_mut() = None;
         self.live_state.set(LiveState::Idle);
     }
 
@@ -1255,6 +1360,22 @@ impl TuiAudio {
             area: area.to_owned(),
             live_started_at: None,
         });
+    }
+
+    /// 测试用：直接设置登录态，避免读写真实 auth 文件。
+    pub(crate) fn bili_auth_for_test(&self, auth: Option<np_live::BiliAuth>) {
+        *self.bili_auth.borrow_mut() = auth;
+        self.auth_loaded.set(true);
+    }
+
+    /// 测试用：下一条弹幕发送直接回传固定结果，不创建网络线程。
+    pub(crate) fn danmaku_result_for_test(&self, result: Result<(), String>) {
+        *self.chat_test_result.borrow_mut() = Some(result);
+    }
+
+    /// 测试用：到目前为止真正进入发送路径的次数。
+    pub(crate) fn danmaku_calls_for_test(&self) -> u32 {
+        self.chat_test_calls.get()
     }
 }
 

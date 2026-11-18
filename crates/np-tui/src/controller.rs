@@ -141,11 +141,11 @@ pub(crate) fn execute(
         }
         Action::OpenCommand => app.enter_command(),
         Action::LiveChat => {
-            app.status = if player.is_live() {
-                "弹幕输入待接入".to_owned()
+            if player.is_live() {
+                app.begin_live_chat();
             } else {
-                "当前没有直播".to_owned()
-            };
+                app.status = "当前没有直播".to_owned();
+            }
         }
         Action::RefreshLive => {
             if player.refresh_live() {

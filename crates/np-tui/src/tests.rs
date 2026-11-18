@@ -6,6 +6,7 @@ use crate::live_command::parse_live_command;
 use crate::render::*;
 use crate::theme::Palette;
 use crate::transport::TransportAvailability;
+use crossterm::event::KeyCode;
 use np_app::{PlaybackTarget, SourceId};
 use np_core::{Block, BlockStatus, Output};
 use ratatui::backend::TestBackend;
@@ -1954,4 +1955,218 @@ fn escape_and_transport_actions_respect_live_mode() {
     assert!(!audio.is_live());
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+fn bili_auth_stub() -> np_live::BiliAuth {
+    np_live::BiliAuth::new(
+        vec![
+            ("SESSDATA".to_owned(), "test-sessdata".to_owned()),
+            ("bili_jct".to_owned(), "test-csrf".to_owned()),
+        ],
+        None,
+    )
+}
+
+fn live_chat_audio() -> TuiAudio {
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST");
+    audio
+}
+
+#[test]
+fn live_chat_opens_from_c_and_escape_only_closes_input() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-chat-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = live_chat_audio();
+    let mut app = App::new();
+    app.load_views(&audio, &*library, &settings);
+
+    // `c` 打开输入框，不写占位状态。
+    crate::controller::execute(
+        Action::LiveChat,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(app.live_chat_active());
+    assert_ne!(app.status, "弹幕输入待接入");
+
+    // Esc 只关闭输入框，不停止直播。
+    crate::live_page::handle_chat_key(KeyCode::Esc, &mut app, &audio);
+    assert!(!app.live_chat_active());
+    assert!(audio.is_live(), "Esc in chat must not stop live");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_chat_c_is_a_plain_character_while_the_input_is_open() {
+    let audio = live_chat_audio();
+    let mut app = App::new();
+    app.begin_live_chat();
+    crate::live_page::handle_chat_key(KeyCode::Char('c'), &mut app, &audio);
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.text()),
+        Some("c".to_owned())
+    );
+}
+
+#[test]
+fn live_chat_rejects_empty_and_unauthenticated_requests() {
+    let audio = live_chat_audio();
+    audio.bili_auth_for_test(None);
+    let mut app = App::new();
+    app.begin_live_chat();
+
+    // 空内容不请求。
+    app.submit_live_chat(&audio);
+    assert_eq!(audio.danmaku_calls_for_test(), 0);
+    assert_eq!(
+        app.chat_input.as_ref().and_then(|chat| chat.error()),
+        Some("弹幕内容不能为空")
+    );
+
+    // 未登录不请求，提示 /login bili。
+    app.insert_live_chat_char('你');
+    app.submit_live_chat(&audio);
+    assert_eq!(audio.danmaku_calls_for_test(), 0);
+    assert_eq!(
+        app.chat_input.as_ref().and_then(|chat| chat.pending()),
+        None
+    );
+    let error = app
+        .chat_input
+        .as_ref()
+        .and_then(|chat| chat.error())
+        .expect("login error");
+    assert!(error.contains("/login bili"), "{error}");
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.text()),
+        Some("你".to_owned())
+    );
+}
+
+#[test]
+fn live_chat_caps_at_twenty_characters_and_counts_cjk_width() {
+    let audio = live_chat_audio();
+    audio.bili_auth_for_test(Some(bili_auth_stub()));
+    audio.danmaku_result_for_test(Ok(()));
+    let mut app = App::new();
+    app.begin_live_chat();
+
+    for index in 0..25 {
+        app.insert_live_chat_char(char::from(b'a' + u8::try_from(index).unwrap()));
+    }
+    let chat = app.chat_input.as_ref().expect("chat");
+    assert_eq!(
+        chat.text().chars().count(),
+        crate::live_page::CHAT_MAX_CHARS
+    );
+    assert_eq!(chat.text(), "abcdefghijklmnopqrst");
+
+    // CJK 按字符数计入上限，光标列按显示宽度计。
+    let mut cjk = App::new();
+    cjk.begin_live_chat();
+    for _ in 0..21 {
+        cjk.insert_live_chat_char('弹');
+    }
+    let chat = cjk.chat_input.as_ref().expect("chat");
+    assert_eq!(
+        chat.text().chars().count(),
+        crate::live_page::CHAT_MAX_CHARS
+    );
+    assert_eq!(chat.cursor_column(), 40);
+    cjk.move_live_chat_cursor(false);
+    cjk.move_live_chat_cursor(false);
+    assert_eq!(
+        cjk.chat_input.as_ref().map(|chat| chat.cursor_column()),
+        Some(36)
+    );
+}
+
+#[test]
+fn live_chat_pending_enter_is_idempotent_and_success_closes_the_box() {
+    let audio = live_chat_audio();
+    audio.bili_auth_for_test(Some(bili_auth_stub()));
+    audio.danmaku_result_for_test(Ok(()));
+    let mut app = App::new();
+    app.begin_live_chat();
+    app.insert_live_chat_char('你');
+    app.insert_live_chat_char('好');
+
+    app.submit_live_chat(&audio);
+    assert_eq!(audio.danmaku_calls_for_test(), 1);
+    assert!(app.chat_input.as_ref().expect("chat").pending().is_some());
+
+    // pending 期间重复 Enter 不重复发送。
+    app.submit_live_chat(&audio);
+    assert_eq!(audio.danmaku_calls_for_test(), 1);
+
+    let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
+    assert!(result.is_ok());
+    assert!(app.apply_live_danmaku_result(generation, result));
+    assert!(!app.live_chat_active(), "success closes the input");
+    assert_eq!(app.chat_notice.as_deref(), Some("弹幕已发送"));
+}
+
+#[test]
+fn live_chat_failure_keeps_content_and_passes_the_error_through() {
+    let audio = live_chat_audio();
+    audio.bili_auth_for_test(Some(bili_auth_stub()));
+    audio.danmaku_result_for_test(Err(np_live::DanmakuError::RateLimited.to_string()));
+    let mut app = App::new();
+    app.begin_live_chat();
+    app.insert_live_chat_char('你');
+    app.submit_live_chat(&audio);
+
+    let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
+    assert!(app.apply_live_danmaku_result(generation, result));
+    assert!(app.live_chat_active(), "failure keeps the input open");
+    let chat = app.chat_input.as_ref().expect("chat");
+    assert_eq!(chat.text(), "你");
+    assert_eq!(chat.pending(), None);
+    let error = chat.error().expect("error");
+    assert!(error.contains("过于频繁"), "{error}");
+    assert!(error.contains("发送失败"), "{error}");
+    assert_eq!(audio.danmaku_calls_for_test(), 1, "no automatic retry");
+}
+
+#[test]
+fn live_chat_ignores_stale_generations() {
+    let audio = live_chat_audio();
+    audio.bili_auth_for_test(Some(bili_auth_stub()));
+    audio.danmaku_result_for_test(Ok(()));
+    let mut app = App::new();
+    app.begin_live_chat();
+    app.insert_live_chat_char('你');
+    app.submit_live_chat(&audio);
+    let stale_generation = app
+        .chat_input
+        .as_ref()
+        .and_then(|chat| chat.pending())
+        .expect("pending generation");
+
+    // 停播会推进 generation：旧房间结果不再回传。
+    assert!(audio.stop_live());
+    assert_eq!(audio.poll_live_danmaku(), None);
+
+    // 即使结果被送到 UI，generation 不匹配也不能改变输入框。
+    assert!(!app.apply_live_danmaku_result(stale_generation.wrapping_add(1), Ok(())));
+    assert!(app.live_chat_active());
 }

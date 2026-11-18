@@ -86,6 +86,8 @@ pub(crate) struct App {
     pub(crate) pending_remove: Option<(usize, usize)>,
     pub(crate) pending_playlist_delete: Option<String>,
     pub(crate) playlist_input: Option<PlaylistInput>,
+    pub(crate) chat_input: Option<crate::live_page::ChatInput>,
+    pub(crate) chat_notice: Option<String>,
 }
 
 impl App {
@@ -143,17 +145,16 @@ impl App {
             pending_remove: None,
             pending_playlist_delete: None,
             playlist_input: None,
+            chat_input: None,
+            chat_notice: None,
         }
     }
-
     pub(crate) fn input_text(&self) -> String {
         self.input.iter().collect()
     }
-
     pub(crate) fn flash_transport(&mut self, button: Action) {
         self.transport_feedback = Some((button, Instant::now()));
     }
-
     pub(crate) fn insert(&mut self, character: char) {
         self.input.insert(self.cursor, character);
         self.cursor += 1;
@@ -162,7 +163,6 @@ impl App {
         self.last_edit = std::time::Instant::now();
         self.completion = None;
     }
-
     pub(crate) fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
@@ -173,7 +173,6 @@ impl App {
             self.completion = None;
         }
     }
-
     pub(crate) fn left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
