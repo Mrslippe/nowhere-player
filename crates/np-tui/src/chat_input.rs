@@ -30,6 +30,8 @@ pub(crate) struct ChatInput {
     value: Vec<char>,
     cursor: usize,
     pending: Option<u64>,
+    /// 正在发送的文本；成功后用于本地回显 `我:`。
+    pending_text: Option<String>,
     error: Option<String>,
 }
 
@@ -47,6 +49,7 @@ impl ChatInput {
             value: Vec::new(),
             cursor: 0,
             pending: None,
+            pending_text: None,
             error: None,
         }
     }
@@ -63,17 +66,23 @@ impl ChatInput {
         self.pending
     }
 
+    pub(crate) fn pending_text(&self) -> Option<&str> {
+        self.pending_text.as_deref()
+    }
+
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
 
-    pub(crate) fn set_pending(&mut self, generation: u64) {
+    pub(crate) fn set_pending(&mut self, generation: u64, message: String) {
         self.pending = Some(generation);
+        self.pending_text = Some(message);
         self.error = None;
     }
 
     pub(crate) fn set_error(&mut self, error: impl Into<String>) {
         self.pending = None;
+        self.pending_text = None;
         self.error = Some(error.into());
     }
 
@@ -317,7 +326,7 @@ impl App {
         match player.send_live_danmaku(&message) {
             Ok(generation) => {
                 if let Some(chat) = self.chat_input.as_mut() {
-                    chat.set_pending(generation);
+                    chat.set_pending(generation, message);
                 }
                 self.chat_notice = None;
             }
@@ -326,10 +335,14 @@ impl App {
     }
 
     /// 收下后台发送结果；只有当前 pending 的 generation 才能改变输入框状态。
+    ///
+    /// 发送成功时把文本回显进 TuiAudio 的同一个环形缓冲（`我:`），
+    /// 不等待服务器把这条弹幕再推回来。
     pub(crate) fn apply_live_danmaku_result(
         &mut self,
         generation: u64,
         result: Result<(), String>,
+        player: &TuiAudio,
     ) -> bool {
         let Some(chat) = self.chat_input.as_mut() else {
             return false;
@@ -339,7 +352,11 @@ impl App {
         }
         match result {
             Ok(()) => {
+                let echoed = chat.pending_text().map(str::to_owned);
                 self.chat_input = None;
+                if let Some(echoed) = echoed.filter(|text| !text.trim().is_empty()) {
+                    player.push_local_danmaku("我", &echoed);
+                }
                 self.show_chat_notice("弹幕已发送");
             }
             Err(error) => chat.set_error(format!("发送失败：{error}")),

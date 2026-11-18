@@ -141,6 +141,11 @@ pub(crate) fn execute(
                 app.set_status("当前没有直播".to_owned());
             }
         }
+        Action::ToggleDanmaku => {
+            if player.is_live() {
+                app.toggle_danmaku_overlay(player.danmaku_received());
+            }
+        }
         Action::RefreshLive => {
             if player.refresh_live() {
                 app.set_transient_status("直播已刷新到最新");

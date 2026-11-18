@@ -335,7 +335,7 @@ fn golden_live_chat_error_72x24() {
     audio.danmaku_result_for_test(Err("发送弹幕过于频繁，请稍后再试".to_owned()));
     app.submit_live_chat(&audio);
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result));
+    assert!(app.apply_live_danmaku_result(generation, result, &audio));
     snapshot_app("live_chat_error_72x24.txt", 72, 24, &mut app, &audio);
 }
 
@@ -344,6 +344,125 @@ fn golden_live_chat_sent_72x24() {
     let audio = live_audio();
     let mut app = chat_pending_app(&audio);
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result));
+    assert!(app.apply_live_danmaku_result(generation, result, &audio));
     snapshot_app("live_chat_sent_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+// ---- 弹幕浮层（T-0100b） ----
+
+fn danmaku_message(index: usize, user: &str, text: &str) -> np_live::DanmakuMessage {
+    np_live::DanmakuMessage {
+        user: user.to_owned(),
+        text: text.to_owned(),
+        color: 16_777_215,
+        timestamp: u64::try_from(index).unwrap_or(0),
+    }
+}
+
+fn overlay_audio(messages: &[(&str, &str)]) -> TuiAudio {
+    let audio = live_audio();
+    let (sender, _links) = audio.danmaku_channel_for_test();
+    for (index, (user, text)) in messages.iter().enumerate() {
+        sender
+            .send(danmaku_message(index, user, text))
+            .expect("fake danmaku channel");
+    }
+    assert!(audio.poll_danmaku());
+    audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+    audio
+}
+
+fn overlay_app(audio: &TuiAudio) -> App {
+    let mut app = themed_app();
+    app.toggle_danmaku_overlay(audio.danmaku_received());
+    app
+}
+
+/// 隐藏态必须与 T-0098 的 72×24 基线逐字节一致：打开再关闭也不能留痕。
+#[test]
+fn golden_live_danmaku_hidden_is_the_baseline() {
+    let mut app = themed_app();
+    let audio = live_audio();
+    app.toggle_danmaku_overlay(audio.danmaku_received());
+    app.toggle_danmaku_overlay(audio.danmaku_received());
+    snapshot_app("live_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_empty_72x24() {
+    let audio = live_audio();
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_empty_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_messages_72x24() {
+    let audio = overlay_audio(&[
+        ("小明", "晚上好"),
+        ("主播", "欢迎来到直播间"),
+        ("观众A", "这首歌唱得真好听！"),
+        ("观众B", "打卡"),
+    ]);
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_messages_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_scrolled_72x24() {
+    let audio = live_audio();
+    let (sender, _links) = audio.danmaku_channel_for_test();
+    for index in 0..40 {
+        sender
+            .send(danmaku_message(index, "观众", &format!("第{index}条弹幕")))
+            .expect("send");
+    }
+    assert!(audio.poll_danmaku());
+    audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+    let mut app = overlay_app(&audio);
+    app.sync_danmaku(audio.danmaku_received());
+    // 读历史时又到两条：右上角显示 `↑/↓ 2`。
+    for index in 40..42 {
+        sender
+            .send(danmaku_message(index, "观众", &format!("第{index}条弹幕")))
+            .expect("send");
+    }
+    assert!(audio.poll_danmaku());
+    audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+    for _ in 0..5 {
+        assert!(app.scroll_danmaku(true));
+    }
+    assert!(app.sync_danmaku(audio.danmaku_received()));
+    snapshot_app("live_danmaku_scrolled_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_control_72x24() {
+    let audio = overlay_audio(&[
+        ("坏\n用户", "\u{1b}[31m红色\n第二行\t制表"),
+        (
+            "宽字符",
+            "这是一条非常非常非常长的中文弹幕用来测试按显示宽度截断不会破坏布局",
+        ),
+        ("\u{202E}反向", "ab\u{202E}cd\u{200B}\u{FEFF}ef"),
+    ]);
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_control_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_echo_72x24() {
+    let audio = live_audio();
+    audio.bili_auth_for_test(Some(chat_auth()));
+    audio.danmaku_result_for_test(Ok(()));
+    let mut app = overlay_app(&audio);
+    app.begin_live_chat();
+    for character in "晚上好".chars() {
+        app.insert_live_chat_char(character);
+    }
+    app.submit_live_chat(&audio);
+    let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
+    assert!(app.apply_live_danmaku_result(generation, result, &audio));
+    app.clear_chat_notice();
+    app.sync_danmaku(audio.danmaku_received());
+    snapshot_app("live_danmaku_echo_72x24.txt", 72, 24, &mut app, &audio);
 }

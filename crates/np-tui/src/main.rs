@@ -12,6 +12,7 @@ mod audio;
 mod chat_input;
 mod controller;
 mod ctrl_hint;
+mod danmaku_overlay;
 mod fft;
 mod glyphs;
 mod input;

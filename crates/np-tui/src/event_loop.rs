@@ -225,15 +225,20 @@ where
         if player.poll_danmaku() {
             draw_needed = true;
         }
+        // 浮层未读/跟随跟随收包计数；本地回显也走同一个计数。
+        if app.sync_danmaku(player.danmaku_received()) {
+            draw_needed = true;
+        }
         if !player.is_live() {
             if app.live_chat_active() {
                 app.cancel_live_chat();
                 draw_needed = true;
             }
             app.clear_chat_notice();
+            app.reset_danmaku_overlay();
         }
         if let Some((generation, result)) = player.poll_live_danmaku()
-            && app.apply_live_danmaku_result(generation, result)
+            && app.apply_live_danmaku_result(generation, result, player)
         {
             draw_needed = true;
         }
@@ -327,6 +332,15 @@ where
                             theme_ctx.api,
                             theme_ctx.settings,
                         );
+                        draw_needed = true;
+                        continue;
+                    }
+                    // 弹幕浮层可见时 ↑/↓/f 优先给弹幕；输入框、设置编辑态
+                    // 和命令输入已在前面的分支拦截，状态机不变。
+                    if player.is_live()
+                        && app.danmaku_overlay_visible()
+                        && crate::danmaku_overlay::handle_key(app, key.code)
+                    {
                         draw_needed = true;
                         continue;
                     }

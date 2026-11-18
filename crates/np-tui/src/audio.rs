@@ -11,13 +11,14 @@ use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
 use np_core::{PlaybackMode, PlaybackState, PlaybackStatus, QueueView};
 
+use crate::danmaku_overlay::push_recent;
 use crate::event_loop::{DanmakuLink, run_danmaku_with_retry, sleep_cancellable};
 use crate::model::TrackRef;
 use crate::playback::{PlaybackQueue, QueueItem, TrackKey};
 
 /// 直播的 ring 窗口：比本地文件的 300 ms 更短，启动更快、更贴近 live edge。
 pub(crate) const LIVE_RING_MS: u32 = 150;
-/// 弹幕环形缓冲容量：只保留最近 500 条，供后续浮层读取。
+/// 弹幕环形缓冲容量：只保留最近 500 条，供 Live 浮层读取。
 pub(crate) const DANMAKU_BUFFER_CAPACITY: usize = 500;
 pub(crate) const MAX_RECONNECT_ATTEMPTS: u32 = 6;
 const RECONNECT_DELAYS_SECS: [u64; 6] = [1, 2, 5, 10, 20, 30];
@@ -102,7 +103,8 @@ pub struct TuiAudio {
     danmaku_cancel: RefCell<Option<Arc<AtomicBool>>>,
     danmaku_generation: Cell<u64>,
     danmaku_link: Cell<DanmakuLink>,
-    danmaku_recent: RefCell<VecDeque<np_live::DanmakuMessage>>,
+    pub(crate) danmaku_recent: RefCell<VecDeque<np_live::DanmakuMessage>>,
+    pub(crate) danmaku_received: Cell<u64>,
     #[cfg(test)]
     chat_test_result: RefCell<Option<Result<(), String>>>,
     #[cfg(test)]
@@ -162,6 +164,7 @@ impl TuiAudio {
             danmaku_generation: Cell::new(0),
             danmaku_link: Cell::new(DanmakuLink::Idle),
             danmaku_recent: RefCell::new(VecDeque::new()),
+            danmaku_received: Cell::new(0),
             #[cfg(test)]
             chat_test_result: RefCell::new(None),
             #[cfg(test)]
@@ -498,12 +501,6 @@ impl TuiAudio {
         self.danmaku_link.get()
     }
 
-    /// 最近收到的弹幕（旧 → 新，最多 500 条）；供下一步浮层读取。
-    #[cfg(test)]
-    pub(crate) fn danmaku_messages(&self) -> Vec<np_live::DanmakuMessage> {
-        self.danmaku_recent.borrow().iter().cloned().collect()
-    }
-
     /// 主线程每 tick 调用：把弹幕消息收进环形缓冲，并更新连接状态。
     ///
     /// 返回 `true` 表示缓冲区或状态栏有变化，需要重绘。单条解析失败在
@@ -546,13 +543,13 @@ impl TuiAudio {
 
         if !received.is_empty() {
             changed = true;
+            let added = u64::try_from(received.len()).unwrap_or(u64::MAX);
             let mut recent = self.danmaku_recent.borrow_mut();
             for message in received {
-                if recent.len() >= DANMAKU_BUFFER_CAPACITY {
-                    recent.pop_front();
-                }
-                recent.push_back(message);
+                push_recent(&mut recent, message);
             }
+            self.danmaku_received
+                .set(self.danmaku_received.get().saturating_add(added));
             // 连接成功后不一定马上有弹幕；收到第一条就足以确认链路可用。
             if self.danmaku_link.get() != DanmakuLink::Failed
                 && self.danmaku_link.get() != DanmakuLink::Connected

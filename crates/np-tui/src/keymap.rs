@@ -32,6 +32,7 @@ pub(crate) enum Action {
     OpenCommand,
     RefreshLive,
     LiveChat,
+    ToggleDanmaku,
     CycleMode,
     VolumeUp,
     VolumeDown,
@@ -81,6 +82,14 @@ const BINDINGS: &[Binding] = &[
         scope: Scope::Live,
         action: Action::LiveChat,
         label: "c",
+    },
+    // 右侧弹幕浮层开关；隐藏态不改变任何既有键位。
+    Binding {
+        key: KeyCode::Char('d'),
+        shift: false,
+        scope: Scope::Live,
+        action: Action::ToggleDanmaku,
+        label: "d",
     },
     // F5 手动刷新直播到 live edge；非直播时只给提示。
     Binding {
@@ -437,6 +446,10 @@ mod tests {
         assert_eq!(
             resolve(&live, KeyCode::Char('c'), KeyModifiers::NONE),
             Some(Action::LiveChat)
+        );
+        assert_eq!(
+            resolve(&live, KeyCode::Char('d'), KeyModifiers::NONE),
+            Some(Action::ToggleDanmaku)
         );
         assert_eq!(
             resolve(&live, KeyCode::Char(' '), KeyModifiers::NONE),

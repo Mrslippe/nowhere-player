@@ -2428,9 +2428,15 @@ fn live_chat_pending_enter_is_idempotent_and_success_closes_the_box() {
 
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
     assert!(result.is_ok());
-    assert!(app.apply_live_danmaku_result(generation, result));
+    assert!(app.apply_live_danmaku_result(generation, result, &audio));
     assert!(!app.live_chat_active(), "success closes the input");
     assert_eq!(app.chat_notice.as_deref(), Some("弹幕已发送"));
+    // 发送成功后立刻本地回显 `我:`，不等待服务器回包。
+    assert_eq!(audio.danmaku_received(), 1);
+    let recent = audio.danmaku_messages();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].user, "我");
+    assert_eq!(recent[0].text, "你好");
 }
 
 #[test]
@@ -2444,7 +2450,7 @@ fn live_chat_failure_keeps_content_and_passes_the_error_through() {
     app.submit_live_chat(&audio);
 
     let (generation, result) = audio.poll_live_danmaku().expect("danmaku result");
-    assert!(app.apply_live_danmaku_result(generation, result));
+    assert!(app.apply_live_danmaku_result(generation, result, &audio));
     assert!(app.live_chat_active(), "failure keeps the input open");
     let chat = app.chat_input.as_ref().expect("chat");
     assert_eq!(chat.text(), "你");
@@ -2475,6 +2481,11 @@ fn live_chat_ignores_stale_generations() {
     assert_eq!(audio.poll_live_danmaku(), None);
 
     // 即使结果被送到 UI，generation 不匹配也不能改变输入框。
-    assert!(!app.apply_live_danmaku_result(stale_generation.wrapping_add(1), Ok(())));
+    assert!(!app.apply_live_danmaku_result(stale_generation.wrapping_add(1), Ok(()), &audio));
     assert!(app.live_chat_active());
+    assert_eq!(
+        audio.danmaku_received(),
+        0,
+        "no local echo for stale result"
+    );
 }

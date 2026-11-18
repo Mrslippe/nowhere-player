@@ -69,6 +69,13 @@ crates/np-tui/tests/golden/**
 - [ ] clippy/fmt/check.ps1 全绿 `[数字]`
 - [ ] 真机 72×24 人眼验收 `[人工]`
 
-## 5. 回报
+## 5. 结果（2026-11-19）
+
+- 右侧 30×19 弹幕浮层、d 切换、滚动/跟随/未读、清理、本地回显完成。
+- 隐藏态现有 golden 零 diff；新增 5 个弹幕浮层 golden。
+- np-tui 224 tests；全量门禁通过。
+- 真机键盘自动化无法稳定注入 Windows Terminal（c/d 均未触发），T3 人眼待人工。
+
+## 6. 回报
 
 STATUS/FILES/TESTS/UI/RISKS。不提交，不触网。

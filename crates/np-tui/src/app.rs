@@ -96,6 +96,7 @@ pub(crate) struct App {
     pub(crate) chat_input: Option<crate::chat_input::ChatInput>,
     pub(crate) chat_notice: Option<String>,
     pub(crate) chat_notice_expires_at: Option<Instant>,
+    pub(crate) danmaku_overlay: crate::danmaku_overlay::DanmakuOverlay,
 }
 
 impl App {
@@ -158,6 +159,7 @@ impl App {
             chat_input: None,
             chat_notice: None,
             chat_notice_expires_at: None,
+            danmaku_overlay: crate::danmaku_overlay::DanmakuOverlay::default(),
         }
     }
 

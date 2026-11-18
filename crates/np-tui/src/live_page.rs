@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::audio::TuiAudio;
+use crate::danmaku_overlay;
 use crate::input::{display_width, truncate_width};
 use crate::player_bar::draw_visual;
 use crate::ui::bars;
@@ -31,6 +32,14 @@ pub(crate) const BUFFER_STATUS_WIDTH: u16 = 13;
 /// 状态栏提示；`直播` / `暂停` 与 `空格` 后的动作由当前状态单独拼。
 pub(crate) const STATUS_HINTS_PLAYING: &str = " · r 刷新 · 空格 暂停 · c 弹幕 · / 命令";
 pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · 空格 继续 · c 弹幕 · / 命令";
+
+/// 浮层可见时的状态栏提示：加入 `d 弹幕` 与滚动/跟随键。
+///
+/// 只在浮层可见时切换，隐藏态状态栏保持原样，现有 golden 零 diff。
+fn danmaku_status_hints(paused: bool) -> String {
+    let space = if paused { "继续" } else { "暂停" };
+    format!(" · d 弹幕 · ↑/↓ 滚动 · f 跟随 · 空格 {space} · c 弹幕 · / 命令")
+}
 
 /// Live 页各区域坐标；72×24 下即卡 §5 的数值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,18 +168,33 @@ pub(crate) fn pitch_fill(spectrum: &[f32], cells: usize) -> usize {
 }
 
 /// 绘制 Live 页：独占屏幕，不渲染 Browse/List。
+///
+/// 弹幕浮层可见时，视觉区右侧 30 列让给浮层，左侧保留频谱与信息行；
+/// 隐藏态完全沿用原布局，现有 golden 不变。
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &App, player: &TuiAudio) {
     let layout = layout(frame.area());
     if layout.outer.width < 8 || layout.outer.height < 4 {
         return;
     }
+    let overlay = if app.danmaku_overlay_visible() {
+        danmaku_overlay::area(&layout)
+    } else {
+        None
+    };
+    let visual = match overlay {
+        Some(overlay) => danmaku_overlay::left_area(&layout, overlay),
+        None => layout.visual,
+    };
     draw_outer(frame, &layout, app);
     draw_player_top(frame, &layout, app, player);
-    draw_visual_area(frame, &layout, app);
-    draw_info(frame, &layout, app, player);
+    draw_visual_area(frame, visual, app);
+    draw_info(frame, visual, app, player);
     draw_pitch(frame, &layout, app, player);
     draw_control(frame, &layout, app, player);
     draw_status(frame, &layout, app, player);
+    if let Some(overlay) = overlay {
+        danmaku_overlay::draw(frame, overlay, app, player);
+    }
     crate::chat_input::draw_chat(frame, &layout, app);
 }
 
@@ -262,8 +286,7 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
     );
 }
 
-fn draw_visual_area(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
-    let visual = layout.visual;
+fn draw_visual_area(frame: &mut ratatui::Frame, visual: Rect, app: &App) {
     if visual.width == 0 || visual.height == 0 {
         return;
     }
@@ -279,8 +302,7 @@ fn draw_visual_area(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) 
     draw_visual(frame, visual, app, app.palette.accent, app.palette.bg);
 }
 
-fn draw_info(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player: &TuiAudio) {
-    let visual = layout.visual;
+fn draw_info(frame: &mut ratatui::Frame, visual: Rect, app: &App, player: &TuiAudio) {
     if visual.width < 3 {
         return;
     }
@@ -293,9 +315,10 @@ fn draw_info(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player:
     let patch_width = text_width.saturating_add(2).min(visual.width);
     let patch_x = visual.right().saturating_sub(patch_width);
     let bg = app.palette.bg.unwrap_or(Color::Reset);
+    let info_y = visual.bottom().saturating_sub(1);
     frame.buffer_mut().set_string(
         patch_x,
-        layout.info_y,
+        info_y,
         " ".repeat(usize::from(patch_width)),
         Style::default().bg(bg),
     );
@@ -307,7 +330,7 @@ fn draw_info(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player:
         .alignment(ratatui::layout::Alignment::Right),
         Rect {
             x: patch_x,
-            y: layout.info_y,
+            y: info_y,
             width: patch_width,
             height: 1,
         },
@@ -429,6 +452,7 @@ fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
     } else {
         match app.chat_notice.as_deref() {
             Some(notice) => format!(" · {notice}"),
+            None if app.danmaku_overlay_visible() => danmaku_status_hints(paused),
             None if paused => STATUS_HINTS_PAUSED.to_owned(),
             None => STATUS_HINTS_PLAYING.to_owned(),
         }
@@ -443,6 +467,7 @@ fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
 mod tests {
     use super::*;
     use crate::theme::TuiThemeApi;
+    use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -799,5 +824,238 @@ mod tests {
             );
             assert!(!status.contains("▱"));
         }
+    }
+
+    // ---- 弹幕浮层（T-0100b） ----
+
+    fn danmaku_message(index: usize, user: &str, text: &str) -> np_live::DanmakuMessage {
+        np_live::DanmakuMessage {
+            user: user.to_owned(),
+            text: text.to_owned(),
+            color: 16_777_215,
+            timestamp: u64::try_from(index).unwrap_or(0),
+        }
+    }
+
+    fn danmaku_audio(messages: &[(&str, &str)]) -> TuiAudio {
+        let audio = live_audio();
+        let (sender, _links) = audio.danmaku_channel_for_test();
+        for (index, (user, text)) in messages.iter().enumerate() {
+            sender
+                .send(danmaku_message(index, user, text))
+                .expect("fake danmaku channel");
+        }
+        assert!(audio.poll_danmaku());
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+        audio
+    }
+
+    fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        let area = terminal.backend().buffer().area;
+        (0..area.height)
+            .map(|y| row(terminal, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn overlay_app(audio: &TuiAudio) -> App {
+        let mut app = themed_app();
+        app.toggle_danmaku_overlay(audio.danmaku_received());
+        app
+    }
+
+    #[test]
+    fn danmaku_overlay_puts_the_panel_at_39_2_and_keeps_36_columns() {
+        let layout = layout(Rect::new(0, 0, 72, 24));
+        let overlay = danmaku_overlay::area(&layout).expect("overlay area");
+        assert_eq!(overlay, Rect::new(39, 2, 30, 19));
+        assert_eq!(
+            danmaku_overlay::left_area(&layout, overlay),
+            Rect::new(3, 2, 36, 19)
+        );
+
+        let audio = live_audio();
+        let app = overlay_app(&audio);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let buffer = terminal.backend().buffer();
+        // 左边框 19 行完整，左侧仍是视觉区。
+        for y in 2..21 {
+            assert_eq!(buffer[(39, y)].symbol(), "│", "y {y}");
+        }
+        assert_eq!(buffer[(3, 2)].symbol(), "░");
+        assert_eq!(buffer[(38, 2)].symbol(), "░");
+        // 音高行在浮层之下，不被覆盖。
+        assert_ne!(buffer[(39, 21)].symbol(), "│");
+        assert_eq!(buffer[(68, 21)].symbol(), "2");
+        assert_eq!(buffer[(2, 22)].symbol(), "┗");
+        assert_eq!(buffer[(69, 22)].symbol(), "┛");
+    }
+
+    #[test]
+    fn danmaku_overlay_hidden_rendering_is_byte_identical() {
+        let app = themed_app();
+        let audio = live_audio();
+        let hidden = buffer_text(&draw_live(72, 24, &app, &audio));
+
+        let mut visible = themed_app();
+        visible.toggle_danmaku_overlay(0);
+        let _ = buffer_text(&draw_live(72, 24, &visible, &audio));
+        visible.toggle_danmaku_overlay(0);
+        let hidden_again = buffer_text(&draw_live(72, 24, &visible, &audio));
+        assert_eq!(hidden, hidden_again, "d 关掉后必须回到隐藏态");
+
+        // 左侧 36 列频谱与信息行不因浮层出现而移动。
+        visible.toggle_danmaku_overlay(0);
+        let with_overlay = draw_live(72, 24, &visible, &audio);
+        let hidden_terminal = draw_live(72, 24, &app, &audio);
+        // y20 是信息行：右侧对齐点随可用宽度移动，不属于频谱区。
+        for y in 2..20 {
+            for x in 3..39 {
+                assert_eq!(
+                    hidden_terminal.backend().buffer()[(x, y)].symbol(),
+                    with_overlay.backend().buffer()[(x, y)].symbol(),
+                    "left column {x},{y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn danmaku_overlay_empty_state_shows_the_placeholder() {
+        let audio = live_audio();
+        let app = overlay_app(&audio);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let placeholder = danmaku_overlay::EMPTY_TEXT;
+        let mut found = false;
+        for y in 2..21 {
+            if compact(&row(&terminal, y)).contains(placeholder) {
+                found = true;
+                assert!(y > 2, "占位文案在正文区而不是标题行");
+            }
+        }
+        assert!(found, "空态必须显示 {placeholder}");
+        // 标题行只有标题与可选未读。
+        let title = row(&terminal, 2);
+        assert!(compact(&title).contains("弹幕"), "{title:?}");
+        assert!(!title.contains(placeholder));
+        assert_eq!(terminal.backend().buffer()[(39, 2)].symbol(), "│");
+    }
+
+    #[test]
+    fn danmaku_overlay_bottom_aligns_received_messages() {
+        let audio = danmaku_audio(&[("阿一", "第一条"), ("阿二", "第二条"), ("阿三", "第三条")]);
+        let app = overlay_app(&audio);
+        let terminal = draw_live(72, 24, &app, &audio);
+        // 3 条消息贴在正文底部：y18 / y19 / y20。
+        assert!(compact(&row(&terminal, 18)).contains("阿一:第一条"));
+        assert!(compact(&row(&terminal, 19)).contains("阿二:第二条"));
+        assert!(compact(&row(&terminal, 20)).contains("阿三:第三条"));
+        assert_eq!(terminal.backend().buffer()[(39, 20)].symbol(), "│");
+    }
+
+    #[test]
+    fn danmaku_overlay_scrolls_history_and_tracks_unread() {
+        let audio = live_audio();
+        let (sender, _links) = audio.danmaku_channel_for_test();
+        for index in 0..25 {
+            sender
+                .send(danmaku_message(index, "观众", &format!("第{index}条")))
+                .expect("send");
+        }
+        assert!(audio.poll_danmaku());
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+        let mut app = overlay_app(&audio);
+        app.sync_danmaku(audio.danmaku_received());
+        for _ in 0..3 {
+            assert!(crate::danmaku_overlay::handle_key(&mut app, KeyCode::Up));
+        }
+        // 读历史时又到两条：未读 +2，窗口保持在历史位置。
+        for index in 25..27 {
+            sender
+                .send(danmaku_message(index, "观众", &format!("第{index}条")))
+                .expect("send");
+        }
+        assert!(audio.poll_danmaku());
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+        assert!(app.sync_danmaku(audio.danmaku_received()));
+
+        let terminal = draw_live(72, 24, &app, &audio);
+        let title = row(&terminal, 2);
+        assert!(compact(&title).contains("↑/↓2"), "{title:?}");
+        // 22..26 是窗口之外的最新消息，不应出现在屏幕里。
+        assert!(!compact(&buffer_text(&terminal)).contains("第26条"));
+        assert!(compact(&row(&terminal, 3)).contains("第6条"));
+
+        // f 回到跟随并清零未读。
+        assert!(crate::danmaku_overlay::handle_key(
+            &mut app,
+            KeyCode::Char('f')
+        ));
+        let terminal = draw_live(72, 24, &app, &audio);
+        assert!(compact(&row(&terminal, 20)).contains("第26条"));
+        let title = row(&terminal, 2);
+        assert!(!compact(&title).contains("↑/↓"), "{title:?}");
+        assert!(!compact(&title).contains('2'), "{title:?}");
+    }
+
+    #[test]
+    fn danmaku_overlay_sanitizes_control_characters_and_wide_text() {
+        let long = "这是一条非常非常非常长的中文弹幕用来测试按显示宽度截断不会破坏布局";
+        let audio = danmaku_audio(&[
+            ("坏\n用户", "\u{1b}[31m红色\n第二行\t制表"),
+            ("宽字符", long),
+            ("\u{202E}反向", "ab\u{202E}cd\u{200B}\u{FEFF}ef"),
+        ]);
+        let app = overlay_app(&audio);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let text = buffer_text(&terminal);
+        assert!(!text.contains('\u{1b}'), "escape 字符必须被清理");
+        for y in 0..24 {
+            assert!(
+                !row(&terminal, y).chars().any(char::is_control),
+                "第 {y} 行残留控制字符"
+            );
+        }
+        // 长 CJK 截断，且不越过浮层右缘。
+        assert!(row(&terminal, 19).contains('…'), "long CJK must truncate");
+        let buffer = terminal.backend().buffer();
+        for y in 3..21 {
+            assert_eq!(buffer[(39, y)].symbol(), "│", "y {y}");
+            assert_eq!(buffer[(68, y)].symbol(), " ", "y {y} 右侧留白");
+        }
+        // 清理后的用户 / 文本按预期落在正文里。
+        assert!(compact(&row(&terminal, 18)).contains("坏用户:"));
+        assert!(compact(&row(&terminal, 18)).contains("[31m红色第二行制"));
+        assert!(compact(&row(&terminal, 20)).contains("反向:abcdef"));
+    }
+
+    #[test]
+    fn danmaku_overlay_status_hints_only_change_while_visible() {
+        let audio = live_audio();
+        let hidden = draw_live(72, 24, &themed_app(), &audio);
+        let hidden_status = compact(&row(&hidden, 23));
+        assert!(!hidden_status.contains("d弹幕"), "{hidden_status:?}");
+        assert!(hidden_status.contains("c弹幕"), "{hidden_status:?}");
+
+        let app = overlay_app(&audio);
+        let visible = draw_live(72, 24, &app, &audio);
+        let visible_status = compact(&row(&visible, 23));
+        assert!(visible_status.contains("d弹幕"), "{visible_status:?}");
+        assert!(visible_status.contains("↑/↓滚动"), "{visible_status:?}");
+        assert!(visible_status.contains("f跟随"), "{visible_status:?}");
+        assert!(visible_status.contains("直播"), "{visible_status:?}");
+    }
+
+    #[test]
+    fn danmaku_scroll_keys_are_consumed_even_at_the_top() {
+        let audio = danmaku_audio(&[("阿一", "第一条")]);
+        let mut app = overlay_app(&audio);
+        // 只有一条消息，无法向上滚动，但按键仍归浮层，不落到全局键位。
+        assert!(crate::danmaku_overlay::handle_key(&mut app, KeyCode::Up));
+        assert_eq!(app.danmaku_overlay.offset(), 0);
+        assert!(!crate::danmaku_overlay::handle_key(
+            &mut app,
+            KeyCode::Char('x')
+        ));
     }
 }
