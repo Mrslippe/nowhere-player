@@ -187,7 +187,7 @@ where
                     }
                     // Live 弹幕输入框优先于 live / 全局键：`c` 在这里只是普通字符。
                     if app.live_chat_active() {
-                        crate::live_page::handle_chat_key(key.code, app, player);
+                        crate::chat_input::handle_chat_key(key.code, app, player);
                         draw_needed = true;
                         continue;
                     }
@@ -214,8 +214,8 @@ where
                         continue;
                     }
                     // 设置编辑态优先于全局键：←/→ 只改 draft，不会切焦点。
-                    if app.settings_edit.is_some() {
-                        crate::settings_page::handle_settings_edit_key(
+                    if app.settings_editor.is_editing() {
+                        crate::settings_editor::handle_settings_edit_key(
                             key.code,
                             app,
                             player,

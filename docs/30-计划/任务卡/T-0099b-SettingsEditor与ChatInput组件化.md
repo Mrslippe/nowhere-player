@@ -77,6 +77,12 @@ pub(crate) struct SettingsEditor {
 - [ ] `scripts/check.ps1` 全绿 `[数字]`
 - [ ] 72×24 真机截图不变 `[人工]`
 
-## 5. 回报
+## 5. 结果（2026-11-18）
+
+- 新增 `settings_editor.rs` / `chat_input.rs`，App/controller/event_loop 只接线。
+- Settings 与 Chat 行为/键位/TTL/文案不变；用户 buffer 尾部空格和 `BUFFER_STATUS_WIDTH=13` 保留。
+- np-tui 192 tests，golden 零 diff；clippy/fmt/全量门禁通过。
+
+## 6. 回报
 
 STATUS/FILES/TESTS/UNCHANGED/RISKS。不提交。

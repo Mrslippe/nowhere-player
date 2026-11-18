@@ -129,7 +129,7 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             (esc, "返回"),
         ];
     }
-    if app.settings_edit.is_some() {
+    if app.settings_editor.is_editing() {
         return vec![("←→", "调整"), (enter, "保存"), (esc, "取消")];
     }
     if app.playlist_input.is_some() {

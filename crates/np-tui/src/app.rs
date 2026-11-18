@@ -6,7 +6,8 @@ use std::time::Instant;
 use crate::audio::TuiAudio;
 use crate::keymap::Action;
 use crate::playback::{QueueItem, TrackKey};
-use crate::settings_page::{SettingsEdit, SettingsField, settings_page};
+use crate::settings_editor::SettingsEditor;
+use crate::settings_page::{SettingsField, settings_page};
 use crate::status::BlockStatusExt;
 pub(crate) use crate::status::now_millis;
 use crate::theme::Palette;
@@ -67,7 +68,7 @@ pub(crate) struct App {
     pub(crate) show_key_hints: bool,
     pub(crate) transport_feedback: Option<(Action, Instant)>,
     pub(crate) settings_fields: Vec<SettingsField>,
-    pub(crate) settings_edit: Option<SettingsEdit>,
+    pub(crate) settings_editor: SettingsEditor,
     pub(crate) no_color_ignored: bool,
     playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
     playlist_prepare_rx: std::sync::mpsc::Receiver<PlaylistReady>,
@@ -92,7 +93,7 @@ pub(crate) struct App {
     pub(crate) pending_remove: Option<(usize, usize)>,
     pub(crate) pending_playlist_delete: Option<String>,
     pub(crate) playlist_input: Option<PlaylistInput>,
-    pub(crate) chat_input: Option<crate::live_page::ChatInput>,
+    pub(crate) chat_input: Option<crate::chat_input::ChatInput>,
     pub(crate) chat_notice: Option<String>,
     pub(crate) chat_notice_expires_at: Option<Instant>,
 }
@@ -129,7 +130,7 @@ impl App {
             show_key_hints: false,
             transport_feedback: None,
             settings_fields: Vec::new(),
-            settings_edit: None,
+            settings_editor: SettingsEditor::new(),
             no_color_ignored: false,
             playlist_prepare_tx,
             playlist_prepare_rx,
@@ -310,7 +311,7 @@ impl App {
         };
         let settings_page = settings_page(settings);
         self.settings_fields = settings_page.fields;
-        self.settings_edit = None;
+        self.settings_editor = SettingsEditor::new();
         let settings_view = settings_page.view;
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
@@ -366,6 +367,7 @@ impl App {
                 self.row_index = self
                     .row_index
                     .min(self.settings_fields.len().saturating_sub(1));
+                self.settings_editor.select(self.row_index);
             }
         }
     }

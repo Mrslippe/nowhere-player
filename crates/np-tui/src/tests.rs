@@ -1425,7 +1425,7 @@ fn settings_editing_updates_audio_and_saves() {
     app.focus = Focus::List;
 
     app.row_index = 0;
-    crate::settings_page::adjust_setting(&mut app, -1, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_setting(&mut app, -1, &audio, &settings, &theme).unwrap();
     assert!((audio.volume() - 0.49).abs() < 0.001);
     assert!(matches!(
         settings.get("playback.volume"),
@@ -1433,13 +1433,13 @@ fn settings_editing_updates_audio_and_saves() {
     ));
 
     app.row_index = 1;
-    crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
     assert_eq!(audio.mode_id(), "list");
     assert_eq!(settings.get_str("playback.mode").as_deref(), Some("list"));
     assert_eq!(app.status, "播放模式 ↻");
 
     app.row_index = 3;
-    crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
     assert_eq!(settings.get_bool("ui.splash"), Some(false));
     assert_eq!(app.status, "启动页 关");
     let _ = std::fs::remove_dir_all(root);
@@ -1467,7 +1467,7 @@ fn live_buffer_setting_is_editable_and_reaches_the_player() {
         .position(|field| field.key == "live.buffer_ms")
         .expect("live.buffer_ms field");
 
-    crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
     assert!(matches!(
         settings.get("live.buffer_ms"),
         Some(np_core::SettingValue::Num(value)) if (value - 1000.0).abs() < 0.001
@@ -1537,28 +1537,28 @@ fn settings_edit_waits_for_enter_and_esc_restores() {
     let (mut app, settings, audio, theme, root) = settings_fixture();
     app.row_index = 0;
 
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    assert!(app.settings_edit.is_some());
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(app.settings_editor.is_editing());
     assert_eq!(app.views[0].rows[0][2], "‹ 50% ›");
     assert_eq!(audio.volume(), 0.5);
     assert!(settings.get("playback.volume").is_none());
 
-    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
     assert_eq!(app.views[0].rows[0][2], "‹ 51% ›");
     assert_eq!(audio.volume(), 0.5, "编辑态不能直接改播放器");
     assert!(settings.get("playback.volume").is_none());
 
-    assert!(crate::settings_page::cancel_settings_edit(
+    assert!(crate::settings_editor::cancel_settings_edit(
         &mut app, &settings
     ));
-    assert!(app.settings_edit.is_none());
+    assert!(!app.settings_editor.is_editing());
     assert_eq!(app.views[0].rows[0][2], "100%");
     assert_eq!(audio.volume(), 0.5);
 
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
-    crate::settings_page::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    assert!(app.settings_edit.is_none());
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    crate::settings_editor::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(!app.settings_editor.is_editing());
     assert!((audio.volume() - 0.51).abs() < 0.001);
     assert!(matches!(
         settings.get("playback.volume"),
@@ -1573,9 +1573,9 @@ fn settings_edit_waits_for_enter_and_esc_restores() {
 fn settings_edit_blocks_global_focus_keys() {
     let (mut app, settings, audio, theme, root) = settings_fixture();
     app.row_index = 0;
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
 
-    assert!(crate::settings_page::handle_settings_edit_key(
+    assert!(crate::settings_editor::handle_settings_edit_key(
         KeyCode::Left,
         &mut app,
         &audio,
@@ -1583,9 +1583,9 @@ fn settings_edit_blocks_global_focus_keys() {
         &settings
     ));
     assert_eq!(app.focus, Focus::List, "编辑态 ← 不得切焦点");
-    assert!(app.settings_edit.is_some());
+    assert!(app.settings_editor.is_editing());
 
-    assert!(crate::settings_page::handle_settings_edit_key(
+    assert!(crate::settings_editor::handle_settings_edit_key(
         KeyCode::Right,
         &mut app,
         &audio,
@@ -1594,14 +1594,14 @@ fn settings_edit_blocks_global_focus_keys() {
     ));
     assert_eq!(app.focus, Focus::List, "编辑态 → 不得切焦点");
 
-    assert!(crate::settings_page::handle_settings_edit_key(
+    assert!(crate::settings_editor::handle_settings_edit_key(
         KeyCode::Esc,
         &mut app,
         &audio,
         &theme,
         &settings
     ));
-    assert!(app.settings_edit.is_none());
+    assert!(!app.settings_editor.is_editing());
     assert_eq!(app.focus, Focus::List);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1616,8 +1616,8 @@ fn settings_bool_enter_toggles_and_commits_without_edit_mode() {
         .expect("ui.splash");
     assert_eq!(settings.get_bool("ui.splash"), None);
 
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    assert!(app.settings_edit.is_none());
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(!app.settings_editor.is_editing());
     assert_eq!(settings.get_bool("ui.splash"), Some(false));
     assert!(app.status_expires_at.is_some());
     let _ = std::fs::remove_dir_all(root);
@@ -1640,8 +1640,8 @@ fn settings_read_only_enter_never_enters_edit() {
     ]);
     app.row_index = app.settings_fields.len() - 1;
 
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    assert!(app.settings_edit.is_none());
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(!app.settings_editor.is_editing());
     assert!(app.status.contains("只读"), "{}", app.status);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1656,12 +1656,12 @@ fn settings_buffer_uses_100ms_steps_and_commits_on_enter() {
         .expect("live buffer");
     assert_eq!(audio.live_buffer_target_ms(), 900);
 
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
     assert_eq!(app.views[0].rows[app.row_index][2], "‹ 1000 ms ›");
     assert_eq!(audio.live_buffer_target_ms(), 900, "提交前不改播放器");
 
-    crate::settings_page::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
     assert_eq!(audio.live_buffer_target_ms(), 1000);
     assert!(matches!(
         settings.get(np_core::settings::LIVE_BUFFER_MS_KEY),
@@ -1680,12 +1680,12 @@ fn settings_playback_mode_edits_as_an_enum() {
         .expect("playback.mode");
     assert_eq!(audio.mode_id(), "sequential");
 
-    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
-    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
     assert_eq!(app.views[0].rows[app.row_index][2], "‹ ↻ ›");
     assert_eq!(audio.mode_id(), "sequential");
 
-    crate::settings_page::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
     assert_eq!(audio.mode_id(), "list");
     assert_eq!(settings.get_str("playback.mode").as_deref(), Some("list"));
     let _ = std::fs::remove_dir_all(root);
@@ -2316,7 +2316,7 @@ fn live_chat_opens_from_c_and_escape_only_closes_input() {
     assert_ne!(app.status, "弹幕输入待接入");
 
     // Esc 只关闭输入框，不停止直播。
-    crate::live_page::handle_chat_key(KeyCode::Esc, &mut app, &audio);
+    crate::chat_input::handle_chat_key(KeyCode::Esc, &mut app, &audio);
     assert!(!app.live_chat_active());
     assert!(audio.is_live(), "Esc in chat must not stop live");
 
@@ -2328,7 +2328,7 @@ fn live_chat_c_is_a_plain_character_while_the_input_is_open() {
     let audio = live_chat_audio();
     let mut app = App::new();
     app.begin_live_chat();
-    crate::live_page::handle_chat_key(KeyCode::Char('c'), &mut app, &audio);
+    crate::chat_input::handle_chat_key(KeyCode::Char('c'), &mut app, &audio);
     assert_eq!(
         app.chat_input.as_ref().map(|chat| chat.text()),
         Some("c".to_owned())
@@ -2384,7 +2384,7 @@ fn live_chat_caps_at_twenty_characters_and_counts_cjk_width() {
     let chat = app.chat_input.as_ref().expect("chat");
     assert_eq!(
         chat.text().chars().count(),
-        crate::live_page::CHAT_MAX_CHARS
+        crate::chat_input::CHAT_MAX_CHARS
     );
     assert_eq!(chat.text(), "abcdefghijklmnopqrst");
 
@@ -2397,7 +2397,7 @@ fn live_chat_caps_at_twenty_characters_and_counts_cjk_width() {
     let chat = cjk.chat_input.as_ref().expect("chat");
     assert_eq!(
         chat.text().chars().count(),
-        crate::live_page::CHAT_MAX_CHARS
+        crate::chat_input::CHAT_MAX_CHARS
     );
     assert_eq!(chat.cursor_column(), 40);
     cjk.move_live_chat_cursor(false);

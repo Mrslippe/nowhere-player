@@ -65,7 +65,8 @@ pub(crate) fn execute(
         }
         Action::ClearSearch => app.reset_search_to_empty(),
         Action::ResetSetting => {
-            if let Err(error) = crate::settings_page::reset_setting(app, player, settings, theme) {
+            if let Err(error) = crate::settings_editor::reset_setting(app, player, settings, theme)
+            {
                 app.set_status(error);
             }
         }
@@ -279,7 +280,7 @@ fn enter(
         Some(BrowseKind::Search) if app.filtered_rows().is_empty() => {}
         Some(BrowseKind::Settings) => {
             if let Err(error) =
-                crate::settings_page::begin_settings_edit(app, player, settings, theme)
+                crate::settings_editor::begin_settings_edit(app, player, settings, theme)
             {
                 app.set_status(error);
             }
