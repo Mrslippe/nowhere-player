@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
@@ -43,6 +43,7 @@ type LivePreparation = (u64, Result<np_live::PreparedLive, LiveFailure>);
 pub(crate) struct LiveMeta {
     pub(crate) anchor: String,
     pub(crate) area: String,
+    pub(crate) live_started_at: Option<u64>,
 }
 
 type LiveMetaReply = (u64, LiveMeta);
@@ -74,6 +75,7 @@ pub struct TuiAudio {
     live_meta: RefCell<Option<LiveMeta>>,
     live_meta_rx: RefCell<Option<std::sync::mpsc::Receiver<LiveMetaReply>>>,
     live_buffer_target_ms: Cell<u64>,
+    live_elapsed_override: Cell<Option<u64>>,
     live_metrics: RefCell<Option<np_live::LiveMetrics>>,
     live_control: RefCell<Option<np_live::LiveControl>>,
     reconnect_attempt: Cell<u32>,
@@ -121,6 +123,7 @@ impl TuiAudio {
             live_meta: RefCell::new(None),
             live_meta_rx: RefCell::new(None),
             live_buffer_target_ms: Cell::new(crate::live_page::DEFAULT_LIVE_BUFFER_MS),
+            live_elapsed_override: Cell::new(None),
             live_metrics: RefCell::new(None),
             live_control: RefCell::new(None),
             reconnect_attempt: Cell::new(0),
@@ -276,6 +279,35 @@ impl TuiAudio {
             .as_ref()
             .map(|meta| meta.area.trim().to_owned())
             .unwrap_or_default()
+    }
+
+    /// 状态行最左：暂停显示 PAUSE，其余直播状态显示 LIVE。
+    pub(crate) fn live_short_state(&self) -> &'static str {
+        if self.live_state.get() == LiveState::Paused {
+            "PAUSE"
+        } else {
+            "LIVE"
+        }
+    }
+
+    /// 开播时长；优先房间 live_time，测试可固定。
+    pub(crate) fn live_elapsed_label(&self) -> String {
+        let seconds = self.live_elapsed_override.get().or_else(|| {
+            let started = self
+                .live_meta
+                .borrow()
+                .as_ref()
+                .and_then(|meta| meta.live_started_at)?;
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+            Some(now.saturating_sub(started))
+        });
+        let Some(seconds) = seconds else {
+            return "--:--:--".to_owned();
+        };
+        let hours = seconds / 3600;
+        let minutes = (seconds % 3600) / 60;
+        let seconds = seconds % 60;
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
     }
 
     /// 直播缓冲目标（`live.buffer_ms`，设置 UI 写入）。
@@ -1185,17 +1217,22 @@ fn prepare_live(
 
 /// 拉主播名与分区；两条请求都 best-effort。
 fn fetch_live_meta(transport: &dyn np_sources::Transport, room_id: u64) -> LiveMeta {
-    let area = np_live::api::fetch_room_info(transport, room_id)
+    let (area, live_started_at) = np_live::api::fetch_room_info(transport, room_id)
         .map(|room| {
-            if room.area_name.trim().is_empty() {
+            let area = if room.area_name.trim().is_empty() {
                 room.parent_area_name
             } else {
                 room.area_name
-            }
+            };
+            (area, room.live_started_at)
         })
         .unwrap_or_default();
     let anchor = np_live::api::fetch_anchor_name(transport, room_id).unwrap_or_default();
-    LiveMeta { anchor, area }
+    LiveMeta {
+        anchor,
+        area,
+        live_started_at,
+    }
 }
 
 #[cfg(test)]
@@ -1204,6 +1241,7 @@ impl TuiAudio {
     pub(crate) fn live_for_test(&self, room_id: u64, title: &str) {
         self.live_state.set(LiveState::Playing);
         self.live_room.set(room_id);
+        self.live_elapsed_override.set(Some(4402));
         self.duration_ms.set(None);
         *self.title.borrow_mut() = title.to_owned();
         *self.artist.borrow_mut() = "B站直播".to_owned();
@@ -1215,6 +1253,7 @@ impl TuiAudio {
         *self.live_meta.borrow_mut() = Some(LiveMeta {
             anchor: anchor.to_owned(),
             area: area.to_owned(),
+            live_started_at: None,
         });
     }
 }
@@ -1348,6 +1387,15 @@ mod tests {
         );
         assert!(audio.stop_live());
         assert_eq!(audio.live_state(), LiveState::Idle);
+    }
+
+    #[test]
+    fn live_short_state_is_pause_when_paused() {
+        let audio = TuiAudio::empty();
+        audio.live_for_test(21622811, "BLAST");
+        assert_eq!(audio.live_short_state(), "LIVE");
+        audio.live_state.set(LiveState::Paused);
+        assert_eq!(audio.live_short_state(), "PAUSE");
     }
 
     #[test]

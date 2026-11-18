@@ -18,13 +18,15 @@ use crate::input::{display_width, truncate_width};
 use crate::player_bar::draw_visual;
 
 /// 音高条格数（72×24 基线）；更窄时按内容宽收缩。
-pub(crate) const PITCH_CELLS: u16 = 64;
+pub(crate) const PITCH_CELLS: u16 = 28;
+/// 开播时长固定宽度 `HH:MM:SS`。
+pub(crate) const ELAPSED_WIDTH: u16 = 8;
 /// 音量条格数，与 Player 顶边一致。
 pub(crate) const VOLUME_CELLS: u16 = 20;
 /// `live.buffer_ms` 默认值；与 T-0093 在 `np-core::settings` 定义的默认保持一致。
 pub(crate) const DEFAULT_LIVE_BUFFER_MS: u64 = np_core::settings::LIVE_BUFFER_MS_DEFAULT;
-/// 状态栏文案（卡 §4.7）。
-pub(crate) const STATUS_HINTS: &str = "LIVE · r refresh · space pause · c chat · / command";
+/// 状态栏快捷键；`LIVE`/`PAUSE` 由当前状态单独绘制。
+pub(crate) const STATUS_HINTS: &str = " · r refresh · space pause · c chat · / command";
 
 /// Live 页各区域坐标；72×24 下即卡 §5 的数值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,9 +152,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &App, player: &TuiAudio) {
     draw_player_top(frame, &layout, app, player);
     draw_visual_area(frame, &layout, app);
     draw_info(frame, &layout, app, player);
-    draw_pitch(frame, &layout, app);
+    draw_pitch(frame, &layout, app, player);
     draw_control(frame, &layout, app, player);
-    draw_status(frame, &layout, app);
+    draw_status(frame, &layout, app, player);
 }
 
 fn draw_outer(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
@@ -194,7 +196,7 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
         .buffer_mut()
         .set_string(right.saturating_sub(1), y, "┓", line_style);
 
-    let anchor_x = area.x.saturating_add(1);
+    let anchor_x = area.x.saturating_add(2);
     // 右侧结构：末空 1 + Vol 20 格 + ` Vol ` 标签（5 格）。
     let volume = area.width >= VOLUME_CELLS + 16;
     let label_x = if volume {
@@ -202,7 +204,8 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
     } else {
         right.saturating_sub(1)
     };
-    let anchor_room = label_x.saturating_sub(anchor_x).saturating_sub(1) as usize;
+    // 主播名左右各 1 格空白。
+    let anchor_room = label_x.saturating_sub(anchor_x).saturating_sub(2) as usize;
     let anchor = if anchor_room == 0 {
         String::new()
     } else {
@@ -218,9 +221,11 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
                 .add_modifier(Modifier::BOLD),
         );
     }
-    let fill_start = anchor_x.saturating_add(display_width(&anchor) as u16);
+    let fill_start = anchor_x
+        .saturating_add(display_width(&anchor) as u16)
+        .saturating_add(1);
     if label_x > fill_start {
-        let fill = "─".repeat(usize::from(label_x - fill_start));
+        let fill = "━".repeat(usize::from(label_x - fill_start));
         frame
             .buffer_mut()
             .set_string(fill_start, y, &fill, line_style);
@@ -305,12 +310,13 @@ fn draw_info(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player:
     );
 }
 
-fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
+fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player: &TuiAudio) {
     let row = layout.pitch;
-    if row.width < 3 {
+    if row.width < 12 {
         return;
     }
-    let cells = PITCH_CELLS.min(row.width.saturating_sub(2));
+    let available_blocks = row.width.saturating_sub(2 + ELAPSED_WIDTH) / 2;
+    let cells = PITCH_CELLS.min(available_blocks).max(1);
     let filled = pitch_fill(&app.spectrum, usize::from(cells));
     let bright = Style::default().fg(app.palette.accent);
     let dark = Style::default().fg(app.palette.faint);
@@ -326,8 +332,15 @@ fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
                 dark
             },
         );
-        x = x.saturating_add(1);
+        x = x.saturating_add(2);
     }
+    let time_x = row.right().saturating_sub(1 + ELAPSED_WIDTH);
+    frame.buffer_mut().set_string(
+        time_x,
+        row.y,
+        player.live_elapsed_label(),
+        Style::default().fg(app.palette.muted),
+    );
 }
 
 fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player: &TuiAudio) {
@@ -368,6 +381,9 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
             .add_modifier(Modifier::BOLD),
     );
     x = x.saturating_add(display_width(glyph) as u16);
+    // 控制钮右侧留 1 格空白再接填充线。
+    frame.buffer_mut().set_string(x, y, " ", bg);
+    x = x.saturating_add(1);
 
     let target = player.live_buffer_target_ms();
     let actual = player.live_buffer_ms().unwrap_or(0);
@@ -392,7 +408,7 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
     }
 }
 
-fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
+fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player: &TuiAudio) {
     let area = layout.outer;
     if area.width < 8 {
         return;
@@ -406,42 +422,22 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
         "━".repeat(usize::from(area.width.saturating_sub(2))),
         edge,
     );
-    // 状态栏左右各空 1 格。
+    // 状态栏左右各空 1 格；最左只显示 LIVE / PAUSE。
     frame
         .buffer_mut()
         .set_string(area.x.saturating_add(1), y, " ", edge);
     let mut x = area.x.saturating_add(2);
     let max_x = area.right().saturating_sub(2);
-    let hints_width = display_width(STATUS_HINTS) as u16;
-    // 快捷键行优先：给固定的 LIVE 提示留位，状态消息只占剩余列。
-    let reserve = hints_width.saturating_add(4).min(max_x.saturating_sub(x));
-    let status = app.status.trim();
-    if !status.is_empty() && status != "就绪" {
-        let limit = max_x.saturating_sub(x).saturating_sub(reserve);
-        if limit >= 6 {
-            let status = truncate_width(status, usize::from(limit));
-            let width = display_width(&status) as u16;
-            frame.buffer_mut().set_string(
-                x,
-                y,
-                &status,
-                Style::default()
-                    .fg(app.palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            );
-            x = x.saturating_add(width);
-            let separator = " · ";
-            if x.saturating_add(3) <= max_x {
-                frame.buffer_mut().set_string(
-                    x,
-                    y,
-                    separator,
-                    Style::default().fg(app.palette.faint),
-                );
-                x = x.saturating_add(3);
-            }
-        }
-    }
+    let state = player.live_short_state();
+    frame.buffer_mut().set_string(
+        x,
+        y,
+        state,
+        Style::default()
+            .fg(app.palette.accent)
+            .add_modifier(Modifier::BOLD),
+    );
+    x = x.saturating_add(display_width(state) as u16);
     let available = usize::from(max_x.saturating_sub(x));
     let hints = truncate_width(STATUS_HINTS, available);
     if hints.is_empty() {
@@ -450,16 +446,6 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App) {
     frame
         .buffer_mut()
         .set_string(x, y, &hints, Style::default().fg(app.palette.muted));
-    if hints.starts_with("LIVE") && available >= 4 {
-        frame.buffer_mut().set_string(
-            x,
-            y,
-            "LIVE",
-            Style::default()
-                .fg(app.palette.accent)
-                .add_modifier(Modifier::BOLD),
-        );
-    }
     x = x.saturating_add(display_width(&hints) as u16);
     frame.buffer_mut().set_string(x, y, " ", edge);
 }
@@ -594,10 +580,15 @@ mod tests {
         assert!(top.contains("MilkGreen"), "{top:?}");
 
         assert_eq!(buffer[(2, 1)].symbol(), "┏");
+        assert_eq!(buffer[(3, 1)].symbol(), " ");
         assert_eq!(buffer[(69, 1)].symbol(), "┓");
         let player_top = compact(&row(&terminal, 1));
         assert!(player_top.contains("测试主播"), "{player_top:?}");
         assert!(player_top.contains("Vol"), "{player_top:?}");
+        assert!(
+            row(&terminal, 1).contains('━'),
+            "player top must use thick fill"
+        );
 
         let info_row = compact(&row(&terminal, 20));
         assert!(
@@ -611,11 +602,16 @@ mod tests {
         assert!((3..patch_x).any(|x| buffer[(x, 20)].symbol() == "░"));
 
         let pitch_row = row(&terminal, 21);
-        let cells: Vec<&str> = (4..68).map(|x| buffer[(x, 21)].symbol()).collect();
-        assert_eq!(cells.len(), 64);
-        assert!(cells.iter().all(|symbol| *symbol == "▰"), "{pitch_row:?}");
+        let cells: Vec<&str> = (4..60).map(|x| buffer[(x, 21)].symbol()).collect();
+        assert_eq!(cells.len(), 56);
+        assert!(
+            cells.iter().all(|symbol| *symbol == "▰" || *symbol == " "),
+            "{pitch_row:?}"
+        );
         assert_eq!(buffer[(3, 21)].symbol(), " ");
         assert_eq!(buffer[(68, 21)].symbol(), " ");
+        assert_eq!(buffer[(60, 21)].symbol(), "0");
+        assert_eq!(buffer[(67, 21)].symbol(), "2");
         assert!(!pitch_row.contains('▱'));
 
         assert_eq!(buffer[(2, 22)].symbol(), "┗");
@@ -623,12 +619,17 @@ mod tests {
         let control = compact(&row(&terminal, 22));
         assert!(control.contains('↻'), "{control:?}");
         assert!(control.contains("900/0ms"), "{control:?}");
+        assert_eq!(buffer[(4, 22)].symbol(), "↻");
+        assert_eq!(buffer[(5, 22)].symbol(), " ");
+        assert_eq!(buffer[(8, 22)].symbol(), " ");
+        assert_eq!(buffer[(9, 22)].symbol(), "━");
 
         let status = compact(&row(&terminal, 23));
         assert!(
             status.contains("LIVE·rrefresh·spacepause·cchat·/command"),
             "{status:?}"
         );
+        assert!(!status.contains("直播"), "{status:?}");
     }
 
     #[test]
@@ -638,11 +639,11 @@ mod tests {
         let audio = live_audio();
         let terminal = draw_live(72, 24, &app, &audio);
         let status = compact(&row(&terminal, 23));
-        assert!(status.contains("直播"), "{status:?}");
         assert!(
             status.contains("LIVE·rrefresh·spacepause·cchat·/command"),
             "{status:?}"
         );
+        assert!(!status.contains("直播"), "{status:?}");
 
         let terminal = draw_live(40, 10, &app, &audio);
         let status = compact(&row(&terminal, 9));
@@ -652,21 +653,26 @@ mod tests {
     }
 
     #[test]
-    fn pitch_bar_is_64_filled_glyphs_with_two_colors() {
+    fn pitch_bar_is_28_spaced_glyphs_with_two_colors_and_elapsed_time() {
         let mut app = themed_app();
         app.spectrum = vec![0.0; 16];
         app.spectrum[7] = 1.0;
         let audio = live_audio();
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
-        let cells: Vec<&str> = (4..68).map(|x| buffer[(x, 21)].symbol()).collect();
-        assert_eq!(cells.len(), 64);
-        assert!(cells.iter().all(|symbol| *symbol == "▰"), "{cells:?}");
-        let filled = pitch_fill(&app.spectrum, 64);
-        assert_eq!(filled, 32);
+        for index in 0..28u16 {
+            let x = 4 + index * 2;
+            assert_eq!(buffer[(x, 21)].symbol(), "▰");
+            if index + 1 < 28 {
+                assert_eq!(buffer[(x + 1, 21)].symbol(), " ");
+            }
+        }
+        let filled = pitch_fill(&app.spectrum, 28);
+        assert_eq!(filled, 14);
         assert_eq!(buffer[(4, 21)].fg, app.palette.accent);
-        assert_eq!(buffer[(67, 21)].fg, app.palette.faint);
-        assert_ne!(buffer[(4, 21)].fg, buffer[(67, 21)].fg);
+        assert_eq!(buffer[(4 + 27 * 2, 21)].fg, app.palette.faint);
+        assert_eq!(buffer[(60, 21)].symbol(), "0");
+        assert_eq!(buffer[(67, 21)].symbol(), "2");
     }
 
     #[test]

@@ -90,6 +90,8 @@ pub struct RoomInfo {
     pub area_name: String,
     /// 一级分区名，例如「赛事」；`area_name` 缺失时用它兜底。
     pub parent_area_name: String,
+    /// B站开播时间（UTC+8 解析成 Unix 秒）；解析失败为 `None`。
+    pub live_started_at: Option<u64>,
 }
 
 /// 取 playurl。调用方负责把 [`PlayInfo::live_status`] / `flv_url` 映射成
@@ -176,6 +178,7 @@ pub fn parse_room_info(body: &[u8]) -> Result<RoomInfo, LiveError> {
         title: data.title,
         area_name: data.area_name,
         parent_area_name: data.parent_area_name,
+        live_started_at: parse_live_time(&data.live_time),
     })
 }
 
@@ -330,6 +333,38 @@ struct RoomData {
     area_name: String,
     #[serde(default)]
     parent_area_name: String,
+    #[serde(default)]
+    live_time: String,
+}
+
+fn parse_live_time(value: &str) -> Option<u64> {
+    let (date, clock) = value.trim().split_once(' ')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    let mut clock_parts = clock.split(':');
+    let hour: i64 = clock_parts.next()?.parse().ok()?;
+    let minute: i64 = clock_parts.next()?.parse().ok()?;
+    let second: i64 = clock_parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    let unix = days * 86_400 + hour * 3_600 + minute * 60 + second - 8 * 3_600;
+    u64::try_from(unix).ok()
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 #[derive(Debug, Deserialize)]
