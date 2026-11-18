@@ -40,6 +40,7 @@
 - T-0097：Live 页 c 弹幕输入、后台发送、20 字符/CJK、未登录提示；真实发送留 T3
 - T-0098：Browse/Settings 滚动、音高响应式、状态 3s TTL、固定 current/target、中文 Live 状态、Settings Enter 编辑态
 - T-0099：抽 ui/scroll、ui/chrome、ui/bars 接缝；golden 零 diff；浮层组件留 T-0099b
+- T3：真实弹幕发送用户实测通过（2026-11-18）
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本

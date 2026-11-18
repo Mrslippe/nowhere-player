@@ -81,15 +81,15 @@ Live 页 c
 - [ ] 未登录提示 `/login bili`，不请求 `[数字]`
 - [ ] pending 期间重复 Enter 不重复发送 `[数字]`
 - [ ] 成功/失败状态可测；失败保留输入 `[数字]`
-- [ ] 真实弹幕人工 T3 `[人工]`
-- [ ] `scripts/check.ps1` 全绿 `[数字]`
+- [x] 真实弹幕人工 T3 `[人工]`：2026-11-18 用户实测发送成功
+- [x] `scripts/check.ps1` 全绿 `[数字]`
 
 ## 7. 结果（2026-11-18）
 
 - Live 页 `c` 打开底部 3 行输入框；Enter/Esc、20 字符、CJK 光标、未登录提示、pending 防重复、成功/失败状态完成。
 - `TuiAudio::send_live_danmaku` 后台线程 + generation；不暴露 cookie。
 - 15 个单测 + 4 个 chat golden；np-tui 171 tests；全量门禁通过。
-- 真实发送 T3 未做，需人工 `/login bili` 后发送。
+- 真实发送 T3 已由用户实测通过（2026-11-18）。
 
 ## 8. 回报
 
