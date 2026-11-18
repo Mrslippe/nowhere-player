@@ -16,6 +16,15 @@ pub const SETTINGS_FILE: &str = "settings.json";
 /// 设置坏文件的备份名。
 pub const SETTINGS_BACKUP_FILE: &str = "settings.bad.json";
 
+/// 直播目标缓冲的设置键（整数毫秒，T-0093）。
+pub const LIVE_BUFFER_MS_KEY: &str = "live.buffer_ms";
+/// 直播目标缓冲默认值（毫秒）。
+pub const LIVE_BUFFER_MS_DEFAULT: u64 = 900;
+/// 直播目标缓冲下限（毫秒）。
+pub const LIVE_BUFFER_MS_MIN: u64 = 500;
+/// 直播目标缓冲上限（毫秒）。
+pub const LIVE_BUFFER_MS_MAX: u64 = 2000;
+
 /// 一个设置值：只允许字符串 / 数字 / 布尔（不允许嵌套对象，见 ADR-0005 §2）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -54,6 +63,14 @@ impl SettingValue {
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// 数字取值。
+    pub fn as_num(&self) -> Option<f64> {
+        match self {
+            Self::Num(value) => Some(*value),
             _ => None,
         }
     }
@@ -212,11 +229,38 @@ impl Settings {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+
+    /// 直播目标缓冲（毫秒）：键不存在或类型不对时用默认 900，
+    /// 越界值夹到 [`LIVE_BUFFER_MS_MIN`]–[`LIVE_BUFFER_MS_MAX`]。
+    ///
+    /// 用 [`validate_setting`] 在写入时拒绝非法值；这里只做防御性回落，
+    /// 保证一份手改过的 settings.json 不会让直播启动失败。
+    pub fn live_buffer_ms(&self) -> u64 {
+        resolve_live_buffer_ms(self.get(LIVE_BUFFER_MS_KEY))
+    }
+}
+
+fn resolve_live_buffer_ms(value: Option<&SettingValue>) -> u64 {
+    let Some(number) = value.and_then(SettingValue::as_num) else {
+        return LIVE_BUFFER_MS_DEFAULT;
+    };
+    if !number.is_finite() {
+        return LIVE_BUFFER_MS_DEFAULT;
+    }
+    let rounded = number.round();
+    if rounded < LIVE_BUFFER_MS_MIN as f64 {
+        LIVE_BUFFER_MS_MIN
+    } else if rounded > LIVE_BUFFER_MS_MAX as f64 {
+        LIVE_BUFFER_MS_MAX
+    } else {
+        rounded as u64
+    }
 }
 
 /// 受控 key 的取值校验；未知 key 允许写入（ADR-0005 §2）。
 ///
 /// - `theme.id`：必须是字符串，且存在于 `known_themes`；
+/// - `live.buffer_ms`：必须是 500–2000 的整数；
 /// - `source.<id>.enabled`：`<id>` 必须存在于 `known_sources`，值必须是布尔。
 pub fn validate_setting(
     key: &str,
@@ -232,6 +276,21 @@ pub fn validate_setting(
             return Err(format!(
                 "主题不存在：{id}（可用：{}）",
                 known_themes.join(" / ")
+            ));
+        }
+        return Ok(());
+    }
+
+    if key == LIVE_BUFFER_MS_KEY {
+        let Some(number) = value.as_num() else {
+            return Err(format!("{LIVE_BUFFER_MS_KEY} 必须是整数毫秒"));
+        };
+        if !number.is_finite() || number.fract() != 0.0 {
+            return Err(format!("{LIVE_BUFFER_MS_KEY} 必须是整数毫秒"));
+        }
+        if !(LIVE_BUFFER_MS_MIN as f64..=LIVE_BUFFER_MS_MAX as f64).contains(&number) {
+            return Err(format!(
+                "{LIVE_BUFFER_MS_KEY} 必须在 {LIVE_BUFFER_MS_MIN}–{LIVE_BUFFER_MS_MAX} 之间"
             ));
         }
         return Ok(());
@@ -423,6 +482,61 @@ mod tests {
         assert!(
             validate_setting("anything.goes", &SettingValue::Str("x".into()), &[], &[]).is_ok()
         );
+    }
+
+    #[test]
+    fn live_buffer_validation_requires_integer_in_range() {
+        for value in [500.0, 900.0, 2000.0] {
+            assert!(
+                validate_setting(LIVE_BUFFER_MS_KEY, &SettingValue::Num(value), &[], &[]).is_ok(),
+                "{value} should be accepted"
+            );
+        }
+        for value in [499.0, 2001.0, 900.5, -1.0] {
+            assert!(
+                validate_setting(LIVE_BUFFER_MS_KEY, &SettingValue::Num(value), &[], &[]).is_err(),
+                "{value} should be rejected"
+            );
+        }
+        assert!(
+            validate_setting(
+                LIVE_BUFFER_MS_KEY,
+                &SettingValue::Str("900".into()),
+                &[],
+                &[]
+            )
+            .is_err(),
+            "a string is not an integer millisecond value"
+        );
+    }
+
+    #[test]
+    fn live_buffer_defaults_and_clamps() {
+        let mut settings = Settings::new();
+        assert_eq!(settings.live_buffer_ms(), LIVE_BUFFER_MS_DEFAULT);
+        assert_eq!(settings.live_buffer_ms(), 900);
+
+        settings.set(LIVE_BUFFER_MS_KEY, SettingValue::Num(1000.0));
+        assert_eq!(settings.live_buffer_ms(), 1000);
+
+        settings.set(LIVE_BUFFER_MS_KEY, SettingValue::Num(100.0));
+        assert_eq!(settings.live_buffer_ms(), LIVE_BUFFER_MS_MIN);
+        settings.set(LIVE_BUFFER_MS_KEY, SettingValue::Num(5_000.0));
+        assert_eq!(settings.live_buffer_ms(), LIVE_BUFFER_MS_MAX);
+        settings.set(LIVE_BUFFER_MS_KEY, SettingValue::Str("1000".into()));
+        assert_eq!(settings.live_buffer_ms(), LIVE_BUFFER_MS_DEFAULT);
+    }
+
+    #[test]
+    fn live_buffer_round_trips_through_settings_file() {
+        let dir = TempDir::new("live-buffer");
+        let mut settings = Settings::new();
+        settings.set(LIVE_BUFFER_MS_KEY, SettingValue::Num(1_000.0));
+        settings.save(dir.path()).expect("save");
+
+        let (loaded, warnings) = Settings::load(dir.path());
+        assert!(warnings.is_empty());
+        assert_eq!(loaded.live_buffer_ms(), 1_000);
     }
 
     #[test]

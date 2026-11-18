@@ -31,6 +31,7 @@ pub(crate) enum Action {
     NextSearchPlatform,
     OpenCommand,
     RefreshLive,
+    LiveChat,
     CycleMode,
     VolumeUp,
     VolumeDown,
@@ -49,6 +50,7 @@ pub(crate) const TRANSPORT_ACTIONS: [Action; 5] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scope {
     Global,
+    Live,
     Browse,
     List,
     PlaylistRoot,
@@ -66,6 +68,21 @@ struct Binding {
 }
 
 const BINDINGS: &[Binding] = &[
+    // Live 页：r 刷新到最新、c 弹幕入口（T-0094 占位）。
+    Binding {
+        key: KeyCode::Char('r'),
+        shift: false,
+        scope: Scope::Live,
+        action: Action::RefreshLive,
+        label: "r",
+    },
+    Binding {
+        key: KeyCode::Char('c'),
+        shift: false,
+        scope: Scope::Live,
+        action: Action::LiveChat,
+        label: "c",
+    },
     // F5 手动刷新直播到 live edge；非直播时只给提示。
     Binding {
         key: KeyCode::F(5),
@@ -345,11 +362,16 @@ const BINDINGS: &[Binding] = &[
 pub(crate) struct InputContext {
     pub(crate) focus: Focus,
     pub(crate) kind: Option<BrowseKind>,
+    pub(crate) live: bool,
 }
 
 impl InputContext {
     fn scopes(&self) -> Vec<Scope> {
-        let mut scopes = Vec::with_capacity(5);
+        let mut scopes = Vec::with_capacity(6);
+        // Live 页独占整屏，r/c 必须先于列表 / 全局作用域解析。
+        if self.live {
+            scopes.push(Scope::Live);
+        }
         if self.focus == Focus::List {
             if matches!(self.kind, Some(BrowseKind::Settings)) {
                 scopes.push(Scope::SettingsList);
@@ -411,7 +433,42 @@ mod tests {
         InputContext {
             focus,
             kind: Some(kind),
+            live: false,
         }
+    }
+
+    #[test]
+    fn live_scope_overrides_list_and_global_keys() {
+        let live = InputContext {
+            focus: Focus::List,
+            kind: Some(BrowseKind::Library),
+            live: true,
+        };
+        assert_eq!(
+            resolve(&live, KeyCode::Char('r'), KeyModifiers::NONE),
+            Some(Action::RefreshLive)
+        );
+        assert_eq!(
+            resolve(&live, KeyCode::Char('c'), KeyModifiers::NONE),
+            Some(Action::LiveChat)
+        );
+        assert_eq!(
+            resolve(&live, KeyCode::Char(' '), KeyModifiers::NONE),
+            Some(Action::TogglePlay)
+        );
+        assert_eq!(
+            resolve(&live, KeyCode::F(5), KeyModifiers::NONE),
+            Some(Action::RefreshLive)
+        );
+        assert_eq!(
+            resolve(&live, KeyCode::Char('/'), KeyModifiers::NONE),
+            Some(Action::OpenCommand)
+        );
+        let library = ctx(Focus::List, BrowseKind::Library);
+        assert_eq!(
+            resolve(&library, KeyCode::Char('c'), KeyModifiers::NONE),
+            None
+        );
     }
 
     #[test]

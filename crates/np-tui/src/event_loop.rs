@@ -57,6 +57,12 @@ where
 {
     let mut draw_needed = true;
     loop {
+        // `live.buffer_ms` 由设置页 / config set 修改，主循环每 tick 同步一次。
+        let target = crate::settings_page::live_buffer_ms(theme_ctx.settings);
+        if target != player.live_buffer_target_ms() {
+            player.set_live_buffer_target(target);
+            draw_needed = true;
+        }
         let ctrl_down = crate::ctrl_hint::control_down();
         if ctrl_down != app.show_key_hints {
             app.show_key_hints = ctrl_down;
@@ -255,6 +261,7 @@ where
                             let context = crate::keymap::InputContext {
                                 focus: app.focus,
                                 kind: app.view_kind.get(app.view_index).cloned(),
+                                live: player.is_live(),
                             };
                             crate::keymap::resolve(&context, key.code, key.modifiers)
                         };

@@ -1,4 +1,4 @@
-//! 有界 `AacFrame` 队列 + 1500ms 缓冲控制器。
+//! 有界 `AacFrame` 队列 + 自适应缓冲控制器。
 //!
 //! 队列是网络线程（producer）和解码线程（consumer）之间唯一的中转：
 //!
@@ -6,36 +6,95 @@
 //! - 解码线程按 AAC 帧 pop，落后太多时由控制器从队头丢旧帧；
 //! - `buffer_ms = 最新帧 pts - 已播放媒体时间`。
 //!
-//! 目标 1500ms / 上限 2000ms / 下限 1200ms 是 B1.2g 稳定降延迟值：
-//! 低 buffer 只用于诊断，不再阻塞 decode 线程；队列空才补静音。
+//! 目标默认 900ms（`NP_LIVE_TARGET_MS` 仅供调试覆盖）；缓冲超过 target+100ms
+//! 时启动 1.05x WSOLA，超过 target+300ms 到 1.10x，回到 target 恢复 1.00x，
+//! 只加速不减速。target+500ms 的硬丢帧仍保留作为兜底。
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::flv::AacFrame;
 
-/// 缓冲目标（毫秒）：超过上限后追到这个值。
+use np_audio::MIN_TEMPO_SPEED;
+
+/// 直播目标缓冲默认值（毫秒），与 `live.buffer_ms` 默认值一致。
+pub const DEFAULT_TARGET_BUFFER_MS: u64 = 900;
+/// `live.buffer_ms` 下限（毫秒）。
+pub const MIN_TARGET_BUFFER_MS: u64 = 500;
+/// `live.buffer_ms` 上限（毫秒）。
+pub const MAX_TARGET_BUFFER_MS: u64 = 2000;
+/// `NP_LIVE_TARGET_MS` 调试覆盖的下限，比设置宽松，方便对比测试。
+const ENV_TARGET_MIN_MS: u64 = 300;
+/// `NP_LIVE_TARGET_MS` 调试覆盖的上限。
+const ENV_TARGET_MAX_MS: u64 = 3000;
+
+/// 进程级目标覆盖；0 表示未设置（合法目标都 ≥ 500）。
+static TARGET_OVERRIDE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 设置进程级直播目标缓冲（毫秒），夹到 `500–2000`；下一次 `/live` 生效。
+///
+/// 由宿主在开始直播前用 `live.buffer_ms` 的当前值调用；`NP_LIVE_TARGET_MS`
+/// 仍然优先，只用于调试。
+pub fn set_target_buffer_ms(milliseconds: u64) {
+    let clamped = milliseconds.clamp(MIN_TARGET_BUFFER_MS, MAX_TARGET_BUFFER_MS);
+    TARGET_OVERRIDE_MS.store(clamped, Ordering::Relaxed);
+}
+
+/// 清除进程级覆盖，回到默认 900ms。
+pub fn clear_target_buffer_ms() {
+    TARGET_OVERRIDE_MS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+static TARGET_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// 缓冲目标（毫秒）：调试 env > 进程级设置 > 默认 900。
+///
+/// `NP_LIVE_TARGET_MS` 仅供低延迟对比测试；设置值由
+/// [`set_target_buffer_ms`] 在每次 `/live` 前写入。
+pub(crate) fn target_buffer_ms() -> u64 {
+    #[cfg(test)]
+    let _guard = TARGET_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    target_buffer_ms_unlocked()
+}
+
+fn target_buffer_ms_unlocked() -> u64 {
+    let env = std::env::var("NP_LIVE_TARGET_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let override_ms = match TARGET_OVERRIDE_MS.load(Ordering::Relaxed) {
+        0 => None,
+        value => Some(value),
+    };
+    resolve_target_buffer_ms(env, override_ms, default_target_buffer_ms())
+}
+
+fn default_target_buffer_ms() -> u64 {
+    #[cfg(test)]
+    {
+        TARGET_BUFFER_MS
+    }
+    #[cfg(not(test))]
+    {
+        DEFAULT_TARGET_BUFFER_MS
+    }
+}
+
+/// 纯解析：`NP_LIVE_TARGET_MS`（夹 300–3000）> 进程级设置 > 默认。
+fn resolve_target_buffer_ms(env: Option<u64>, override_ms: Option<u64>, default_ms: u64) -> u64 {
+    if let Some(value) = env {
+        return value.clamp(ENV_TARGET_MIN_MS, ENV_TARGET_MAX_MS);
+    }
+    override_ms.unwrap_or(default_ms)
+}
+/// 测试夹具目标（毫秒）；运行时默认 900。
 #[cfg(test)]
 pub(crate) const TARGET_BUFFER_MS: u64 = 1500;
 
-/// 运行期目标缓冲；`NP_LIVE_TARGET_MS` 仅供低延迟对比测试。
-pub(crate) fn target_buffer_ms() -> u64 {
-    std::env::var("NP_LIVE_TARGET_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|value| value.clamp(300, 3000))
-        .unwrap_or_else(|| {
-            #[cfg(test)]
-            {
-                TARGET_BUFFER_MS
-            }
-            #[cfg(not(test))]
-            {
-                900
-            }
-        })
-}
 /// 缓冲上限：超过才丢旧帧（测试夹具）。
 #[cfg(test)]
 pub(crate) const MAX_BUFFER_MS: u64 = 2000;
@@ -46,6 +105,14 @@ pub(crate) const MIN_BUFFER_MS: u64 = 1200;
 pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
 /// 一次丢帧后的冷却时间，避免连续跳变。
 pub(crate) const DROP_COOLDOWN_MS: u64 = 500;
+/// 缓冲超过 target + 100ms 时开始轻微加速追帧。
+pub(crate) const TEMPO_SOFT_MS: u64 = 100;
+/// 缓冲超过 target + 300ms 时加速到上限。
+pub(crate) const TEMPO_HARD_MS: u64 = 300;
+/// 轻加速：5%。
+pub(crate) const TEMPO_SOFT_SPEED: f32 = 1.05;
+/// 重加速：10%。
+pub(crate) const TEMPO_HARD_SPEED: f32 = 1.10;
 /// 帧队列硬上限：约 87s 音频。暂停缓存 cap 30s，恢复后还要容纳
 /// 生成中的 live 数据，所以不能只按 30s 配。
 pub(crate) const QUEUE_CAPACITY_FRAMES: usize = 4096;
@@ -254,6 +321,8 @@ pub(crate) struct BufferController {
     target_ms: u64,
     max_ms: u64,
     min_ms: u64,
+    /// 当前 WSOLA 速度；只增不减（回到 target 才回 1.00）。
+    speed: f32,
 }
 
 impl BufferController {
@@ -266,7 +335,13 @@ impl BufferController {
             target_ms,
             max_ms: target_ms.saturating_add(500),
             min_ms: target_ms.saturating_sub(300),
+            speed: MIN_TEMPO_SPEED,
         }
+    }
+
+    /// 当前 WSOLA 速度，直接交给解码线程的变速器。
+    pub(crate) fn speed(&self) -> f32 {
+        self.speed
     }
 
     /// 距上次控制周期是否已满 250ms。
@@ -276,8 +351,9 @@ impl BufferController {
         })
     }
 
-    /// 推进一次控制周期。只有 `buffer > 2000ms` 且冷却已过才丢帧；
-    /// `buffer < 1200ms` 不再阻塞解码；调用方只在队列空时补静音。
+    /// 推进一次控制周期。只有 `buffer > target+500ms` 且冷却已过才丢帧；
+    /// 其余时间只调整 WSOLA 速度；`buffer < target-300ms` 不再阻塞解码，
+    /// 调用方只在队列空时补静音。
     pub(crate) fn tick(&mut self, now: Instant, buffer_ms: u64) -> Control {
         self.last_tick = Some(now);
 
@@ -286,8 +362,12 @@ impl BufferController {
         });
         if buffer_ms > self.max_ms && cooldown_ok {
             self.last_drop = Some(now);
+            // 丢帧后缓冲回到目标附近，追帧速度同步回 1.00，避免继续压缩。
+            self.speed = MIN_TEMPO_SPEED;
             return Control::DropTo(self.target_ms);
         }
+
+        self.speed = tempo_speed(self.speed, buffer_ms, self.target_ms);
 
         if self.starving && buffer_ms >= self.min_ms {
             self.starving = false;
@@ -304,6 +384,24 @@ impl BufferController {
             self.starving = true;
             true
         }
+    }
+}
+
+/// 由缓冲量决定 WSOLA 速度（只加速，不降速）。
+///
+/// - `buffer > target + 300ms` → 1.10x；
+/// - `buffer > target + 100ms` → 1.05x；
+/// - `buffer <= target` → 1.00x；
+/// - `(target, target + 100ms]` 保持当前速度，避免在阈值上反复跳变。
+fn tempo_speed(current: f32, buffer_ms: u64, target_ms: u64) -> f32 {
+    if buffer_ms > target_ms.saturating_add(TEMPO_HARD_MS) {
+        TEMPO_HARD_SPEED
+    } else if buffer_ms > target_ms.saturating_add(TEMPO_SOFT_MS) {
+        TEMPO_SOFT_SPEED
+    } else if buffer_ms <= target_ms {
+        MIN_TEMPO_SPEED
+    } else {
+        current.clamp(MIN_TEMPO_SPEED, TEMPO_HARD_SPEED)
     }
 }
 
@@ -445,5 +543,127 @@ mod tests {
             Control::Recovered
         );
         assert!(controller.note_starved(), "a new episode counts again");
+    }
+
+    #[test]
+    fn controller_ramps_tempo_above_the_soft_and_hard_thresholds() {
+        let base = Instant::now();
+        let mut controller = BufferController::new();
+        assert_eq!(controller.speed(), 1.0);
+
+        // (target, target+100] 保持当前速度，不因为噪声跳变。
+        assert_eq!(controller.tick(base, TARGET_BUFFER_MS + 50), Control::Idle);
+        assert_eq!(controller.speed(), 1.0);
+
+        assert_eq!(
+            controller.tick(base + Duration::from_millis(250), TARGET_BUFFER_MS + 150),
+            Control::Idle,
+            "tempo chases the buffer instead of dropping frames"
+        );
+        assert_eq!(controller.speed(), 1.05);
+
+        assert_eq!(
+            controller.tick(base + Duration::from_millis(500), TARGET_BUFFER_MS + 350),
+            Control::Idle
+        );
+        assert_eq!(controller.speed(), 1.10);
+    }
+
+    #[test]
+    fn controller_returns_to_one_x_only_at_target() {
+        let base = Instant::now();
+        let mut controller = BufferController::new();
+        let step = Duration::from_millis(250);
+
+        assert_eq!(controller.tick(base, TARGET_BUFFER_MS + 350), Control::Idle);
+        assert_eq!(controller.speed(), 1.10);
+        assert_eq!(
+            controller.tick(base + step, TARGET_BUFFER_MS + 150),
+            Control::Idle
+        );
+        assert_eq!(controller.speed(), 1.05);
+        // 回到 target 上方的保持带：不急着回 1.00。
+        assert_eq!(
+            controller.tick(base + step * 2, TARGET_BUFFER_MS + 50),
+            Control::Idle
+        );
+        assert_eq!(controller.speed(), 1.05);
+        assert_eq!(
+            controller.tick(base + step * 3, TARGET_BUFFER_MS),
+            Control::Idle
+        );
+        assert_eq!(controller.speed(), 1.0);
+    }
+
+    #[test]
+    fn controller_never_slows_down() {
+        let base = Instant::now();
+        let mut controller = BufferController::new();
+        for (index, buffer) in [0u64, 200, TARGET_BUFFER_MS - 1, TARGET_BUFFER_MS]
+            .into_iter()
+            .enumerate()
+        {
+            let now = base + Duration::from_millis(250 * index as u64);
+            let _ = controller.tick(now, buffer);
+            assert!(
+                controller.speed() >= 1.0,
+                "speed must never drop below 1.0, got {} at {buffer}ms",
+                controller.speed()
+            );
+        }
+    }
+
+    #[test]
+    fn hard_drop_still_wins_and_resets_tempo() {
+        let base = Instant::now();
+        let mut controller = BufferController::new();
+        assert_eq!(controller.tick(base, TARGET_BUFFER_MS + 350), Control::Idle);
+        assert_eq!(controller.speed(), 1.10);
+        assert_eq!(
+            controller.tick(base + Duration::from_millis(250), MAX_BUFFER_MS + 1),
+            Control::DropTo(TARGET_BUFFER_MS)
+        );
+        assert_eq!(controller.speed(), 1.0, "a hard drop returns to 1.00x");
+    }
+
+    #[test]
+    fn target_priority_is_env_then_setter_then_default() {
+        assert_eq!(resolve_target_buffer_ms(None, None, 900), 900);
+        assert_eq!(resolve_target_buffer_ms(None, Some(1_000), 900), 1_000);
+        assert_eq!(
+            resolve_target_buffer_ms(Some(700), Some(1_000), 900),
+            700,
+            "NP_LIVE_TARGET_MS must win as the debug override"
+        );
+        assert_eq!(
+            resolve_target_buffer_ms(Some(50), None, 900),
+            ENV_TARGET_MIN_MS
+        );
+        assert_eq!(
+            resolve_target_buffer_ms(Some(10_000), None, 900),
+            ENV_TARGET_MAX_MS
+        );
+    }
+
+    #[test]
+    fn target_setter_takes_effect_and_clear_restores_the_default() {
+        let _guard = TARGET_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_target_buffer_ms();
+        assert_eq!(target_buffer_ms_unlocked(), TARGET_BUFFER_MS);
+
+        // 与 `BufferController::new()` 走同一个解析函数。
+        set_target_buffer_ms(1_000);
+        assert_eq!(target_buffer_ms_unlocked(), 1_000);
+
+        set_target_buffer_ms(100);
+        assert_eq!(target_buffer_ms_unlocked(), MIN_TARGET_BUFFER_MS);
+        set_target_buffer_ms(10_000);
+        assert_eq!(target_buffer_ms_unlocked(), MAX_TARGET_BUFFER_MS);
+
+        clear_target_buffer_ms();
+        assert_eq!(target_buffer_ms_unlocked(), TARGET_BUFFER_MS);
     }
 }

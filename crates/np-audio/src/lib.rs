@@ -13,6 +13,7 @@ pub mod ring;
 pub mod sink;
 pub mod source;
 pub mod volume;
+pub mod wsola;
 
 pub use error::AudioError;
 pub use format::{
@@ -25,6 +26,7 @@ pub use sink::{
 pub use source::{AudioSource, FileSource};
 pub use tap::{SampleTapHandle, TAP_CAPACITY};
 pub use volume::{clamp_volume, gain_for_volume};
+pub use wsola::{MAX_SPEED as MAX_TEMPO_SPEED, MIN_SPEED as MIN_TEMPO_SPEED, WsolaTempo};
 
 use std::path::Path;
 

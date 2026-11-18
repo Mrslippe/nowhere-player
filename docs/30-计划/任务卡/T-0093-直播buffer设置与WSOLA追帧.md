@@ -76,6 +76,13 @@ crates/np-live/src/source.rs
 
 Fake source/unit，不访问真实平台；音高测试用合成正弦；真机只由人工 T3。
 
-## 8. 回报
+## 8. 结果（2026-11-18）
+
+- `live.buffer_ms` 500–2000/默认900；`set_target_buffer_ms` 优先级 env > setter > 900；下一次 `/live` 生效。
+- WSOLA 1.05/1.10 实测基频约 1000Hz，时长比 0.953/0.912；1.00x 逐样本还原。
+- 测试：np-live 81、np-core 225；clippy/fmt/全量门禁通过。
+- 真机 >10 分钟人工验收待补。
+
+## 9. 回报
 
 STATUS/FILES/TESTS/SETTING/WSOLA/RISKS。不提交，不跑真实登录。

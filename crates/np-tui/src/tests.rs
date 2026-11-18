@@ -1368,6 +1368,7 @@ fn settings_page_lists_editable_fields_by_category() {
         "开机自启",
         "B站",
         "网易云",
+        "直播缓冲",
     ] {
         assert!(labels.contains(&label), "missing {label}");
     }
@@ -1438,6 +1439,62 @@ fn settings_editing_updates_audio_and_saves() {
     crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
     assert_eq!(settings.get_bool("ui.splash"), Some(false));
     assert_eq!(app.status, "启动页 关");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_buffer_setting_is_editable_and_reaches_the_player() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-live-buffer-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let settings = SettingsHandle::load(root.clone());
+    let page = crate::settings_page::settings_page(&settings);
+    let audio = TuiAudio::empty();
+    assert_eq!(audio.live_buffer_target_ms(), 900);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let mut app = App::new();
+    app.settings_fields = page.fields.clone();
+    app.focus = Focus::List;
+    app.row_index = page
+        .fields
+        .iter()
+        .position(|field| field.key == "live.buffer_ms")
+        .expect("live.buffer_ms field");
+
+    crate::settings_page::adjust_setting(&mut app, 1, &audio, &settings, &theme).unwrap();
+    assert!(matches!(
+        settings.get("live.buffer_ms"),
+        Some(np_core::SettingValue::Num(value)) if (value - 1000.0).abs() < 0.001
+    ));
+    assert_eq!(audio.live_buffer_target_ms(), 1000);
+    assert_eq!(app.status, "直播缓冲 1000ms");
+
+    let page = crate::settings_page::settings_page(&settings);
+    let row = page
+        .view
+        .rows
+        .iter()
+        .find(|row| row.get(1).map(String::as_str) == Some("直播缓冲"))
+        .expect("live buffer row");
+    assert_eq!(row[2], "1000 ms");
+
+    // Live 页控制条直接显示 target/actual。
+    audio.live_for_test(21622811, "BLAST");
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("1000/0ms"), "target/actual missing: {text}");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1749,6 +1806,34 @@ fn live_player_bar_shows_live_instead_of_zero_time() {
     assert!(
         !text.contains("00:00 / 00:00"),
         "live must not render a zero position/duration"
+    );
+}
+
+#[test]
+fn live_page_renders_room_and_anchor_fixtures() {
+    let room =
+        np_live::api::parse_room_info(include_bytes!("../../np-live/fixtures/room_info.json"))
+            .expect("room fixture");
+    let anchor = np_live::api::parse_anchor_name(
+        br#"{"code":0,"data":{"info":{"uname":"\u76f4\u64ad\u4e3b"}}}"#,
+    )
+    .expect("anchor fixture");
+    assert_eq!(room.area_name, "游戏赛事");
+
+    let audio = TuiAudio::empty();
+    audio.live_for_test(room.room_id, &room.title);
+    audio.live_meta_for_test(&anchor, &room.area_name);
+    let mut app = App::new();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    let compact = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
+    let text = compact(&draw_text(&mut app, &mut terminal, &audio));
+    assert!(text.contains("NOWHEREPLAYER"), "{text}");
+    assert!(text.contains(&compact(&anchor)), "{text}");
+    assert!(text.contains(&compact(&room.title)), "{text}");
+    assert!(text.contains(&compact(&room.area_name)), "{text}");
+    assert!(
+        text.contains(&compact(&format!("{} - {}", room.title, room.area_name))),
+        "info line should join title and area: {text}"
     );
 }
 

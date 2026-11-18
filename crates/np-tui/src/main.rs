@@ -19,6 +19,7 @@ mod keymap;
 mod launcher;
 mod layout;
 mod live_command;
+mod live_page;
 mod login;
 mod login_command;
 mod logo;
@@ -123,6 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mode) = settings.get_str("playback.mode") {
         player.set_mode_id(&mode);
     }
+    player.set_live_buffer_target(crate::settings_page::live_buffer_ms(&settings));
     if let Some(script) = selftest {
         return run_selftest(&script, &player, &library, &settings, &theme_api);
     }

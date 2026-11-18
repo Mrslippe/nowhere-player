@@ -64,6 +64,24 @@ pub trait Transport: Send + Sync {
         })
     }
 
+    /// 以 `application/x-www-form-urlencoded` 发送 POST，返回状态、响应头与响应体。
+    ///
+    /// 与 [`Transport::get_with_headers`] 一样，这个窄接口**不**把非 2xx
+    /// 映射成错误，调用方需要自己检查 [`HttpResponse::status`]。POST 不保证
+    /// 幂等，实现不应自动重试。
+    ///
+    /// 默认实现返回 [`SourceError::NotImplemented`]，旧测试假实现无需修改。
+    fn post_form(
+        &self,
+        _url: &str,
+        _headers: &[(&str, &str)],
+        _form: &[(&str, &str)],
+    ) -> Result<HttpResponse> {
+        Err(SourceError::NotImplemented(
+            "当前传输层不支持表单 POST".to_owned(),
+        ))
+    }
+
     /// 带额外请求头把响应体写入 `sink`，返回写入的字节数。
     ///
     /// 默认实现调用 [`Transport::get`] 后整块写入（忽略 `headers`），
@@ -160,26 +178,22 @@ impl Transport for ReqwestTransport {
             request = request.header(*name, *value);
         }
         let response = request.send().map_err(map_reqwest_error)?;
-        let status = response.status().as_u16();
-        let response_headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_owned(),
-                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                )
-            })
-            .collect();
-        let body = response
-            .bytes()
-            .map(|bytes| bytes.to_vec())
-            .map_err(map_reqwest_error)?;
-        Ok(HttpResponse {
-            status,
-            headers: response_headers,
-            body,
-        })
+        into_http_response(response)
+    }
+
+    fn post_form(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        form: &[(&str, &str)],
+    ) -> Result<HttpResponse> {
+        self.throttle();
+        let mut request = self.client.post(url).form(form);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request.send().map_err(map_reqwest_error)?;
+        into_http_response(response)
     }
 
     fn get_to(&self, url: &str, headers: &[(&str, &str)], sink: &mut dyn Write) -> Result<u64> {
@@ -221,6 +235,30 @@ impl Transport for ReqwestTransport {
         classify_status(response.status().as_u16())?;
         Ok(Box::new(response))
     }
+}
+
+/// 把 reqwest 响应收敛成窄视图，保留状态、响应头与完整响应体。
+fn into_http_response(response: reqwest::blocking::Response) -> Result<HttpResponse> {
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let body = response
+        .bytes()
+        .map(|bytes| bytes.to_vec())
+        .map_err(map_reqwest_error)?;
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 /// 把 HTTP 状态码分成"成功 / 源不可用 / HTTP 错误"。
@@ -292,6 +330,19 @@ mod tests {
         assert_eq!(response.status, 200);
         assert!(response.headers.is_empty());
         assert_eq!(response.body, b"body");
+    }
+
+    #[test]
+    fn post_form_defaults_to_not_implemented() {
+        let transport = BodyOnlyTransport;
+        assert!(matches!(
+            transport.post_form(
+                "https://example.invalid/form",
+                &[("Cookie", "redacted")],
+                &[("msg", "hello")],
+            ),
+            Err(SourceError::NotImplemented(_))
+        ));
     }
 
     #[test]

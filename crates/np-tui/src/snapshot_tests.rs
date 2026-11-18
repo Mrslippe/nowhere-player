@@ -190,6 +190,35 @@ fn golden_layout_72x24() {
     snapshot_app("layout_72x24.txt", 72, 24, &mut app, &audio);
 }
 
+fn live_audio() -> TuiAudio {
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST香港对抗赛2026");
+    audio.live_meta_for_test("测试主播", "游戏赛事");
+    audio.set_live_buffer_target(900);
+    audio
+}
+
+#[test]
+fn golden_live_72x24() {
+    let mut app = themed_app();
+    let audio = live_audio();
+    snapshot_app("live_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_60x20() {
+    let mut app = themed_app();
+    let audio = live_audio();
+    snapshot_app("live_60x20.txt", 60, 20, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_40x10() {
+    let mut app = themed_app();
+    let audio = live_audio();
+    snapshot_app("live_40x10.txt", 40, 10, &mut app, &audio);
+}
+
 #[test]
 fn golden_player_bar() {
     let mut app = library_app();

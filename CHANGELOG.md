@@ -33,6 +33,9 @@
 - qn 对齐：直播默认改为 qn=10000 + only_audio=1；同源 A/B 约 0.22s，匿名仍只能拿 qn250
 - B站扫码登录：`/login bili` 终端 QR、DPAPI 加密凭证、登录后 qn10000（T-0092，ADR-0009）
 - 直播默认改为 qn25000 HEVC only_audio + 900ms 目标；真机 LIVE 725ms（619/725 波动）；普通 FLV 需 NP_LIVE_NORMAL=1
+- T-0093：live.buffer_ms 设置 + WSOLA 1.0–1.1x 保音高追帧
+- T-0094：Transport form POST + 弹幕发送基础设施（未接 UI）
+- T-0095：72×24 Live 页、标题-分区叠加、64 格颜色音高条、小尺寸压缩
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本

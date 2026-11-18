@@ -11,6 +11,8 @@ pub(crate) enum SettingsKind {
     PlaybackMode,
     Theme,
     Bool,
+    /// 直播缓冲目标：`live.buffer_ms`，100ms 一档。
+    BufferMs,
     ReadOnly,
 }
 
@@ -27,7 +29,7 @@ pub(crate) struct SettingsPage {
     pub(crate) fields: Vec<SettingsField>,
 }
 
-const FIELDS: [(&str, &str, &str, SettingsKind); 8] = [
+const FIELDS: [(&str, &str, &str, SettingsKind); 9] = [
     ("播放", "playback.volume", "音量", SettingsKind::Volume),
     (
         "播放",
@@ -45,6 +47,12 @@ const FIELDS: [(&str, &str, &str, SettingsKind); 8] = [
         "source.netease.enabled",
         "网易云",
         SettingsKind::Bool,
+    ),
+    (
+        "直播",
+        np_core::settings::LIVE_BUFFER_MS_KEY,
+        "直播缓冲",
+        SettingsKind::BufferMs,
     ),
 ];
 
@@ -97,7 +105,22 @@ fn default_value(key: &str) -> SettingValue {
         "ui.splash" => SettingValue::Bool(true),
         "tui.focusMode" | "startup.enabled" => SettingValue::Bool(false),
         "source.bilibili.enabled" | "source.netease.enabled" => SettingValue::Bool(true),
+        "live.buffer_ms" => SettingValue::Num(np_core::settings::LIVE_BUFFER_MS_DEFAULT as f64),
         _ => SettingValue::Bool(false),
+    }
+}
+
+/// `live.buffer_ms` 的当前值（毫秒）；未设置时用默认 900ms（T-0093 目标）。
+///
+/// 键由 T-0093 在 `np-core::settings` 提供；这里只做动态读写，不依赖它先落地。
+pub(crate) fn live_buffer_ms(settings: &SettingsHandle) -> u64 {
+    let default = np_core::settings::LIVE_BUFFER_MS_DEFAULT;
+    match settings.get(np_core::settings::LIVE_BUFFER_MS_KEY) {
+        Some(SettingValue::Num(value)) if value.is_finite() => (value.round() as i64).clamp(
+            np_core::settings::LIVE_BUFFER_MS_MIN as i64,
+            np_core::settings::LIVE_BUFFER_MS_MAX as i64,
+        ) as u64,
+        _ => default,
     }
 }
 
@@ -135,6 +158,7 @@ fn settings_value_text(settings: &SettingsHandle, key: &str, kind: SettingsKind)
                 _ => false,
             },
         )),
+        SettingsKind::BufferMs => format!("{} ms", live_buffer_ms(settings)),
         SettingsKind::ReadOnly => settings
             .get(key)
             .map(|value| value.display())
@@ -229,6 +253,14 @@ fn next_value(
                 .unwrap_or_else(|| default_bool(&field.key));
             Ok(SettingValue::Bool(!current))
         }
+        SettingsKind::BufferMs => {
+            let step = live_buffer_ms(settings) as i64 + i64::from(direction.signum()) * 100;
+            let next = step.clamp(
+                np_core::settings::LIVE_BUFFER_MS_MIN as i64,
+                np_core::settings::LIVE_BUFFER_MS_MAX as i64,
+            );
+            Ok(SettingValue::Num(next as f64))
+        }
         SettingsKind::ReadOnly => Err("只读配置不能修改".to_owned()),
     }
 }
@@ -296,6 +328,18 @@ fn set_setting_value(
                 return Ok(());
             }
             app.status = format!("{} {}", field.label, bool_text(enabled));
+        }
+        SettingsKind::BufferMs => {
+            let SettingValue::Num(number) = value else {
+                return Err("直播缓冲设置类型错误".to_owned());
+            };
+            let milliseconds = (number.round() as i64).clamp(
+                np_core::settings::LIVE_BUFFER_MS_MIN as i64,
+                np_core::settings::LIVE_BUFFER_MS_MAX as i64,
+            );
+            save(settings, &field.key, SettingValue::Num(milliseconds as f64))?;
+            player.set_live_buffer_target(milliseconds as u64);
+            app.status = format!("直播缓冲 {milliseconds}ms");
         }
         SettingsKind::ReadOnly => return Err("只读配置不能修改".to_owned()),
     }

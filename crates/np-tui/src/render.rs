@@ -21,6 +21,13 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     if full.width < 4 || full.height < 6 {
         return;
     }
+    // 直播独占整屏：不再画 Browse/List/Player 三区。
+    if player.is_live() {
+        crate::live_page::draw(frame, app, player);
+        draw_controller_overlay(frame, full, app);
+        player.draw_login(frame, &app.palette);
+        return;
+    }
     let outer = TuiBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
@@ -51,32 +58,41 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
 
     draw_browse_list(frame, top, app);
     draw_player_strip(frame, player_area, app, player);
-    if app.focus == Focus::Controller {
-        let inner = layout_inner(full);
-        let height = 3.min(inner.height);
-        let overlay = Rect {
-            x: inner.x,
-            y: inner.y + inner.height.saturating_sub(height),
-            width: inner.width,
-            height,
-        };
-        frame.render_widget(Clear, overlay);
-        draw_controller(frame, overlay, app);
-        if app.completion.is_some() && overlay.y > top.y + 3 {
-            let popup_height = 7.min(overlay.y.saturating_sub(top.y).saturating_sub(1));
-            let width = 58.min(overlay.width.saturating_sub(4));
-            let popup = Rect {
-                x: overlay.x + 2,
-                y: overlay.y.saturating_sub(popup_height),
-                width,
-                height: popup_height,
-            };
-            frame.render_widget(Clear, popup);
-            draw_completion(frame, popup, app);
-        }
-    }
+    draw_controller_overlay(frame, full, app);
     draw_status_border(frame, full, app);
     player.draw_login(frame, &app.palette);
+}
+
+/// `/` 命令浮层：主界面和 Live 页共用。
+fn draw_controller_overlay(frame: &mut ratatui::Frame, full: Rect, app: &App) {
+    if app.focus != Focus::Controller {
+        return;
+    }
+    let inner = layout_inner(full);
+    let height = 3.min(inner.height);
+    if height == 0 {
+        return;
+    }
+    let overlay = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(height),
+        width: inner.width,
+        height,
+    };
+    frame.render_widget(Clear, overlay);
+    draw_controller(frame, overlay, app);
+    if app.completion.is_some() && overlay.y > inner.y + 3 {
+        let popup_height = 7.min(overlay.y.saturating_sub(inner.y).saturating_sub(1));
+        let width = 58.min(overlay.width.saturating_sub(4));
+        let popup = Rect {
+            x: overlay.x + 2,
+            y: overlay.y.saturating_sub(popup_height),
+            width,
+            height: popup_height,
+        };
+        frame.render_widget(Clear, popup);
+        draw_completion(frame, popup, app);
+    }
 }
 
 fn draw_status_border(frame: &mut ratatui::Frame, area: Rect, app: &App) {

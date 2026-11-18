@@ -13,8 +13,11 @@ use crate::error::LiveError;
 
 /// 直播 playurl 接口。
 const PLAY_INFO_URL: &str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
-/// 房间信息接口（标题 / 开播状态）。
+/// 房间信息接口（标题 / 开播状态 / 分区）。
 const ROOM_INFO_URL: &str = "https://api.live.bilibili.com/room/v1/Room/get_info";
+/// 主播资料接口（主播名）。
+const ANCHOR_INFO_URL: &str =
+    "https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room";
 
 /// 打开 CDN 长连接时必须带的请求头（B 站缺 `Referer` 会 403）。
 const STREAM_HEADERS: [(&str, &str); 3] = [
@@ -45,6 +48,11 @@ pub fn room_info_url(room_id: u64) -> String {
     format!("{ROOM_INFO_URL}?room_id={room_id}")
 }
 
+/// 主播资料 URL（`get_anchor_in_room`，参数名是 `roomid`）。
+pub fn anchor_info_url(room_id: u64) -> String {
+    format!("{ANCHOR_INFO_URL}?roomid={room_id}")
+}
+
 /// CDN 长连接请求头。
 pub fn stream_headers() -> &'static [(&'static str, &'static str)] {
     &STREAM_HEADERS
@@ -72,12 +80,16 @@ impl PlayInfo {
     }
 }
 
-/// 房间信息（标题）。
+/// 房间信息（标题 / 分区）。主播名走 [`fetch_anchor_name`]。
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
     pub room_id: u64,
     pub live_status: i64,
     pub title: String,
+    /// 二级分区名，例如「游戏赛事」。
+    pub area_name: String,
+    /// 一级分区名，例如「赛事」；`area_name` 缺失时用它兜底。
+    pub parent_area_name: String,
 }
 
 /// 取 playurl。调用方负责把 [`PlayInfo::live_status`] / `flv_url` 映射成
@@ -121,6 +133,13 @@ pub fn fetch_room_info(transport: &dyn Transport, room_id: u64) -> Result<RoomIn
     parse_room_info(&body)
 }
 
+/// 取主播名。best-effort：失败只影响 Player 顶边展示，不影响播放。
+pub fn fetch_anchor_name(transport: &dyn Transport, room_id: u64) -> Result<String, LiveError> {
+    validate_room(room_id)?;
+    let body = transport.get(&anchor_info_url(room_id))?;
+    parse_anchor_name(&body)
+}
+
 /// 解析 `getRoomPlayInfo` 响应。
 pub fn parse_play_info(body: &[u8], requested_room: u64) -> Result<PlayInfo, LiveError> {
     let envelope: Envelope<PlayData> = serde_json::from_slice(body)
@@ -155,7 +174,22 @@ pub fn parse_room_info(body: &[u8]) -> Result<RoomInfo, LiveError> {
         room_id: data.room_id,
         live_status: data.live_status,
         title: data.title,
+        area_name: data.area_name,
+        parent_area_name: data.parent_area_name,
     })
+}
+
+/// 解析 `get_anchor_in_room` 响应；`uname` 为空视为坏响应。
+pub fn parse_anchor_name(body: &[u8]) -> Result<String, LiveError> {
+    let envelope: Envelope<AnchorData> = serde_json::from_slice(body)
+        .map_err(|error| LiveError::BadStream(format!("主播信息 JSON 解析失败：{error}")))?;
+    envelope.ensure_ok("主播信息")?;
+    envelope
+        .data
+        .and_then(|data| data.info)
+        .map(|info| info.uname)
+        .filter(|uname| !uname.trim().is_empty())
+        .ok_or_else(|| LiveError::BadStream("主播信息响应缺少 uname".to_owned()))
 }
 
 fn validate_room(room_id: u64) -> Result<(), LiveError> {
@@ -292,6 +326,22 @@ struct RoomData {
     live_status: i64,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    area_name: String,
+    #[serde(default)]
+    parent_area_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnchorData {
+    #[serde(default)]
+    info: Option<AnchorInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnchorInfo {
+    #[serde(default)]
+    uname: String,
 }
 
 #[cfg(test)]
@@ -380,6 +430,52 @@ mod tests {
         assert_eq!(room.room_id, 21622811);
         assert_eq!(room.live_status, 1);
         assert!(!room.title.is_empty());
+    }
+
+    #[test]
+    fn room_fixture_yields_area_names() {
+        let room = parse_room_info(ROOM.as_bytes()).unwrap();
+        assert_eq!(room.area_name, "游戏赛事");
+        assert_eq!(room.parent_area_name, "赛事");
+    }
+
+    #[test]
+    fn anchor_info_url_uses_the_user_api_roomid_parameter() {
+        let url = anchor_info_url(21622811);
+        assert!(url.contains("get_anchor_in_room"));
+        assert!(url.contains("roomid=21622811"));
+    }
+
+    #[test]
+    fn anchor_fixture_yields_uname() {
+        let name = parse_anchor_name(
+            br#"{"code":0,"msg":"ok","data":{"info":{"uid":474595627,"uname":"\u76f4\u64ad\u4e3b"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(name, "直播主");
+    }
+
+    #[test]
+    fn anchor_error_maps_api_code() {
+        let error = parse_anchor_name(br#"{"code":60004,"message":"room not found"}"#).unwrap_err();
+        assert!(matches!(error, LiveError::Api { code: 60004, .. }));
+    }
+
+    #[test]
+    fn anchor_without_uname_is_a_stream_error() {
+        let error = parse_anchor_name(br#"{"code":0,"data":{"info":{"uname":"  "}}}"#).unwrap_err();
+        assert!(matches!(error, LiveError::BadStream(_)));
+    }
+
+    #[test]
+    fn fetch_anchor_name_requests_the_user_api() {
+        let transport =
+            RecordingTransport::new(r#"{"code":0,"data":{"info":{"uname":"Nowhere"}}}"#);
+        assert_eq!(fetch_anchor_name(&transport, 21622811).unwrap(), "Nowhere");
+        let urls = transport.urls.lock().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].contains("get_anchor_in_room"));
+        assert!(urls[0].contains("roomid=21622811"));
     }
 
     #[test]

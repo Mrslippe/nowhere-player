@@ -35,6 +35,18 @@ struct LiveFailure {
 
 type LivePreparation = (u64, Result<np_live::PreparedLive, LiveFailure>);
 
+/// Live 页展示用的房间资料：主播名 + 分区。
+///
+/// 由独立的 `np-live-meta` 线程 best-effort 拉取；准备线程只负责声音，
+/// 资料迟到或失败都不影响直播播放。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LiveMeta {
+    pub(crate) anchor: String,
+    pub(crate) area: String,
+}
+
+type LiveMetaReply = (u64, LiveMeta);
+
 fn reconnect_delay(attempt: u32) -> Duration {
     let index = usize::try_from(attempt.saturating_sub(1))
         .unwrap_or(usize::MAX)
@@ -59,6 +71,9 @@ pub struct TuiAudio {
     live_cancel: RefCell<Option<Arc<AtomicBool>>>,
     live_room: Cell<u64>,
     live_note: RefCell<Option<String>>,
+    live_meta: RefCell<Option<LiveMeta>>,
+    live_meta_rx: RefCell<Option<std::sync::mpsc::Receiver<LiveMetaReply>>>,
+    live_buffer_target_ms: Cell<u64>,
     live_metrics: RefCell<Option<np_live::LiveMetrics>>,
     live_control: RefCell<Option<np_live::LiveControl>>,
     reconnect_attempt: Cell<u32>,
@@ -103,6 +118,9 @@ impl TuiAudio {
             live_cancel: RefCell::new(None),
             live_room: Cell::new(0),
             live_note: RefCell::new(None),
+            live_meta: RefCell::new(None),
+            live_meta_rx: RefCell::new(None),
+            live_buffer_target_ms: Cell::new(crate::live_page::DEFAULT_LIVE_BUFFER_MS),
             live_metrics: RefCell::new(None),
             live_control: RefCell::new(None),
             reconnect_attempt: Cell::new(0),
@@ -227,6 +245,54 @@ impl TuiAudio {
         self.live_note.borrow_mut().take()
     }
 
+    /// 直播状态是否在播放：Live 页控制条用 `❚❚` / `▶` 区分。
+    pub(crate) fn live_state_is_playing(&self) -> bool {
+        self.live_state.get() == LiveState::Playing
+    }
+
+    /// Player 上边左侧的主播名；资料未到时回退到房间号。
+    pub(crate) fn live_anchor(&self) -> String {
+        let anchor = self
+            .live_meta
+            .borrow()
+            .as_ref()
+            .map(|meta| meta.anchor.trim().to_owned())
+            .unwrap_or_default();
+        if !anchor.is_empty() {
+            return anchor;
+        }
+        let room = self.live_room.get();
+        if room == 0 {
+            "直播".to_owned()
+        } else {
+            format!("房间 {room}")
+        }
+    }
+
+    /// 信息行右侧的分区；优先二级分区，缺失时用一级分区。
+    pub(crate) fn live_area(&self) -> String {
+        self.live_meta
+            .borrow()
+            .as_ref()
+            .map(|meta| meta.area.trim().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// 直播缓冲目标（`live.buffer_ms`，设置 UI 写入）。
+    pub(crate) fn live_buffer_target_ms(&self) -> u64 {
+        self.live_buffer_target_ms.get()
+    }
+
+    pub(crate) fn set_live_buffer_target(&self, milliseconds: u64) {
+        let milliseconds = milliseconds.clamp(
+            np_core::settings::LIVE_BUFFER_MS_MIN,
+            np_core::settings::LIVE_BUFFER_MS_MAX,
+        );
+        if self.live_buffer_target_ms.get() != milliseconds {
+            self.live_buffer_target_ms.set(milliseconds);
+        }
+    }
+
     pub(crate) fn start_bili_login(&self) {
         self.login.borrow_mut().start();
     }
@@ -291,12 +357,29 @@ impl TuiAudio {
         self.live_generation.set(generation);
         self.live_state.set(LiveState::Preparing);
         self.live_room.set(room_id);
+        // 每次直播（含重连）前把 `live.buffer_ms` 写进 np-live 队列目标；
+        // 设置里改值后对下一次直播生效（T-0093）。
+        np_live::set_target_buffer_ms(self.live_buffer_target_ms.get());
         let auth = self.auth_for_live();
         *self.title.borrow_mut() = format!("直播 {room_id} 准备中…");
         *self.artist.borrow_mut() = "B站直播".to_owned();
         self.duration_ms.set(None);
         self.live_note.borrow_mut().take();
         *self.live_metrics.borrow_mut() = None;
+        *self.live_meta.borrow_mut() = None;
+        *self.live_meta_rx.borrow_mut() = None;
+
+        // 主播名 / 分区与音频准备并行：多一条短请求，不拖慢起播。
+        let (meta_tx, meta_rx) = std::sync::mpsc::channel();
+        *self.live_meta_rx.borrow_mut() = Some(meta_rx);
+        let _ = std::thread::Builder::new()
+            .name("np-live-meta".to_owned())
+            .spawn(move || {
+                let Ok(transport) = np_sources::ReqwestTransport::new() else {
+                    return;
+                };
+                let _ = meta_tx.send((generation, fetch_live_meta(&transport, room_id)));
+            });
 
         let cancel = Arc::new(AtomicBool::new(false));
         *self.live_cancel.borrow_mut() = Some(Arc::clone(&cancel));
@@ -330,6 +413,7 @@ impl TuiAudio {
 
     /// 主线程每 tick 调用：接住准备结果并打开播放器。
     pub(crate) fn poll_live(&self) -> bool {
+        let meta_changed = self.drain_live_meta();
         let received = {
             let receiver = self.live_rx.borrow();
             match receiver.as_ref() {
@@ -348,10 +432,10 @@ impl TuiAudio {
             }
         };
         let Some((generation, result)) = received else {
-            return false;
+            return meta_changed;
         };
         if generation != self.live_generation.get() {
-            return false;
+            return meta_changed;
         }
         *self.live_rx.borrow_mut() = None;
         *self.live_cancel.borrow_mut() = None;
@@ -413,6 +497,30 @@ impl TuiAudio {
         true
     }
 
+    /// 收下后台线程拉到的主播名 / 分区；generation 过期就丢掉。
+    fn drain_live_meta(&self) -> bool {
+        let mut changed = false;
+        loop {
+            let received = {
+                let receiver = self.live_meta_rx.borrow();
+                receiver
+                    .as_ref()
+                    .and_then(|receiver| receiver.try_recv().ok())
+            };
+            let Some((generation, meta)) = received else {
+                break;
+            };
+            if generation != self.live_generation.get() {
+                continue;
+            }
+            if self.live_meta.borrow().as_ref() != Some(&meta) {
+                *self.live_meta.borrow_mut() = Some(meta);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     fn begin_reconnect(&self, reason: Option<String>) {
         if !self.is_live() {
             return;
@@ -469,6 +577,8 @@ impl TuiAudio {
         *self.title.borrow_mut() = "未播放".to_owned();
         *self.artist.borrow_mut() = "Nowhere Player".to_owned();
         self.live_room.set(0);
+        *self.live_meta.borrow_mut() = None;
+        *self.live_meta_rx.borrow_mut() = None;
         self.reconnect_attempt.set(0);
         self.reconnect_at.set(None);
         true
@@ -480,6 +590,7 @@ impl TuiAudio {
             cancel.store(true, Ordering::Release);
         }
         *self.live_rx.borrow_mut() = None;
+        *self.live_meta_rx.borrow_mut() = None;
         *self.live_metrics.borrow_mut() = None;
         *self.live_control.borrow_mut() = None;
         self.reconnect_at.set(None);
@@ -1072,6 +1183,21 @@ fn prepare_live(
     })
 }
 
+/// 拉主播名与分区；两条请求都 best-effort。
+fn fetch_live_meta(transport: &dyn np_sources::Transport, room_id: u64) -> LiveMeta {
+    let area = np_live::api::fetch_room_info(transport, room_id)
+        .map(|room| {
+            if room.area_name.trim().is_empty() {
+                room.parent_area_name
+            } else {
+                room.area_name
+            }
+        })
+        .unwrap_or_default();
+    let anchor = np_live::api::fetch_anchor_name(transport, room_id).unwrap_or_default();
+    LiveMeta { anchor, area }
+}
+
 #[cfg(test)]
 impl TuiAudio {
     /// 只设置直播展示状态，不打开设备 / 网络；供 TUI 状态与渲染测试使用。
@@ -1082,6 +1208,14 @@ impl TuiAudio {
         *self.title.borrow_mut() = title.to_owned();
         *self.artist.borrow_mut() = "B站直播".to_owned();
         *self.live_metrics.borrow_mut() = Some(np_live::LiveMetrics::default());
+    }
+
+    /// 测试用：直接写入主播名 / 分区，不经过网络。
+    pub(crate) fn live_meta_for_test(&self, anchor: &str, area: &str) {
+        *self.live_meta.borrow_mut() = Some(LiveMeta {
+            anchor: anchor.to_owned(),
+            area: area.to_owned(),
+        });
     }
 }
 
@@ -1214,6 +1348,43 @@ mod tests {
         );
         assert!(audio.stop_live());
         assert_eq!(audio.live_state(), LiveState::Idle);
+    }
+
+    #[test]
+    fn live_anchor_prefers_meta_and_falls_back_to_the_room() {
+        let audio = TuiAudio::empty();
+        assert_eq!(audio.live_anchor(), "直播");
+        assert_eq!(audio.live_area(), "");
+
+        audio.live_for_test(21622811, "BLAST");
+        assert_eq!(audio.live_anchor(), "房间 21622811");
+        assert_eq!(audio.live_area(), "");
+
+        audio.live_meta_for_test("测试主播", "游戏赛事");
+        assert_eq!(audio.live_anchor(), "测试主播");
+        assert_eq!(audio.live_area(), "游戏赛事");
+
+        assert!(audio.stop_live());
+        assert_eq!(audio.live_anchor(), "直播");
+        assert_eq!(audio.live_area(), "");
+    }
+
+    #[test]
+    fn live_buffer_target_clamps_to_a_sane_range() {
+        let audio = TuiAudio::empty();
+        assert_eq!(audio.live_buffer_target_ms(), 900);
+        audio.set_live_buffer_target(1_200);
+        assert_eq!(audio.live_buffer_target_ms(), 1_200);
+        audio.set_live_buffer_target(0);
+        assert_eq!(
+            audio.live_buffer_target_ms(),
+            np_core::settings::LIVE_BUFFER_MS_MIN
+        );
+        audio.set_live_buffer_target(u64::MAX);
+        assert_eq!(
+            audio.live_buffer_target_ms(),
+            np_core::settings::LIVE_BUFFER_MS_MAX
+        );
     }
 
     #[test]

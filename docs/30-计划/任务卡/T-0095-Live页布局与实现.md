@@ -113,6 +113,15 @@ Player x=2 y=1 68×22
 
 TestBackend 金标；不触网；API fixture；真实终端截图仅 T3 辅助。
 
-## 8. 回报
+## 8. 结果（2026-11-18）
+
+- Live 页 72×24 独占整屏；Player/视觉区/信息叠加/音高/控制/状态栏按基准。
+- 音高条 64 格全 `▰`，accent/faint 两色，无 `▱`。
+- 主播名、标题-分区（area_name 回退 parent_area_name）已接 API。
+- 设置页 `live.buffer_ms`，100ms 步进；启动/tick/保存同步；`start_live` 调用 setter。
+- 72×24 真机截图通过；60×20/40×10 金标；全量门禁 899 tests。
+- `c chat` 仍占位，弹幕输入 UI 未接。
+
+## 9. 回报
 
 STATUS/FILES/TESTS/LAYOUT/API/RISKS。不提交。

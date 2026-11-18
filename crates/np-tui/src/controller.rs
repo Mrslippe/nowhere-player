@@ -140,6 +140,13 @@ pub(crate) fn execute(
             }
         }
         Action::OpenCommand => app.enter_command(),
+        Action::LiveChat => {
+            app.status = if player.is_live() {
+                "弹幕输入待接入".to_owned()
+            } else {
+                "当前没有直播".to_owned()
+            };
+        }
         Action::RefreshLive => {
             if player.refresh_live() {
                 app.status = "直播已刷新到最新".to_owned();

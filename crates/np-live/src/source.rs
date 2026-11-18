@@ -4,11 +4,13 @@
 //! `symphonia` 的 `AacDecoder`（ASC 作为 `extra_data`），中间只有 [`FrameQueue`]。
 //! 因此缓冲是显式、可观测的：
 //!
-//! - 启动等到约 1500ms 音频，再从最新帧截到 1500ms，避免把 CDN 初始 GOP 全部播完；
-//! - 运行期 `buffer > 2000ms` 时按 AAC 帧边界丢旧帧追到 1500ms；
-//! - 队列有数据时持续解码喂 ring；只有队列为空才补静音并记录 underrun；
+//! - 启动等到约一个目标缓冲（默认 900ms），再从最新帧截到目标，避免把 CDN 初始 GOP 全部播完；
+//! - 运行期解码出的 PCM 过 WSOLA：`buffer > target+100ms` 1.05x、`> target+300ms` 1.10x，
+//!   回到 target 恢复 1.00x；只加速不减速，音高不变；
+//! - `buffer > target+500ms` 仍按 AAC 帧边界硬丢旧帧兜底；
+//! - 队列有数据时持续解码喂 ring；只有队列（和 WSOLA 尾部）都空才补静音并记录 underrun；
 //! - 暂停时保留 Player/解码器，网络线程继续读；缓存超过 30s 丢新帧；
-//! - 恢复后先播暂停缓存，播到缓存尾再恢复 1500ms 控制器追 live。
+//! - 恢复后先播暂停缓存，播到缓存尾再恢复目标缓冲控制器追 live。
 
 use std::io::Read;
 use std::thread;
@@ -22,7 +24,7 @@ use symphonia::core::units::{Duration as MediaDuration, Timestamp};
 use symphonia::default::codecs::AacDecoder;
 
 use np_audio::format::{AudioFormat, Codec, SampleFormat};
-use np_audio::{AudioError, AudioSource};
+use np_audio::{AudioError, AudioSource, WsolaTempo};
 
 use crate::control::{LiveControl, PAUSE_CAP_FRAMES, PAUSE_CAP_MS};
 use crate::error::LiveError;
@@ -48,7 +50,8 @@ pub(crate) struct LiveAudioSource {
     metrics: LiveMetrics,
     format: AudioFormat,
     decoded: Vec<f32>,
-    offset: usize,
+    /// WSOLA 追帧器：常开，1.00x 时逐样本还原。
+    tempo: WsolaTempo,
     controller: BufferController,
     consecutive_decode_errors: u32,
     control: LiveControl,
@@ -56,7 +59,7 @@ pub(crate) struct LiveAudioSource {
 }
 
 impl LiveAudioSource {
-    /// 读 FLV 头 / AAC 配置、起网络线程、等到约 1500ms 音频后返回。
+    /// 读 FLV 头 / AAC 配置、起网络线程、等到约一个目标缓冲后返回。
     ///
     /// 可能阻塞在网络读取上（准备线程专用）。
     pub(crate) fn open(
@@ -92,7 +95,7 @@ impl LiveAudioSource {
             return Err(LiveError::BadStream(message));
         }
 
-        // 启动裁剪：只保留最新的约 1500ms，不把 CDN 初始突发全部播一遍。
+        // 启动裁剪：只保留最新的一个目标缓冲，不把 CDN 初始突发全部播一遍。
         let newest = queue.newest_pts().unwrap_or_default();
         let front = queue.front_pts().unwrap_or_default();
         if newest.saturating_sub(front) > target_ms {
@@ -108,7 +111,7 @@ impl LiveAudioSource {
                 metrics: metrics.clone(),
                 format,
                 decoded: Vec::new(),
-                offset: 0,
+                tempo: WsolaTempo::new(format.sample_rate, format.channels),
                 controller: BufferController::new(),
                 consecutive_decode_errors: 0,
                 control,
@@ -147,8 +150,6 @@ impl LiveAudioSource {
                     self.metrics.note_drop(dropped as u64);
                 }
                 // 丢弃的是压缩帧，解码器状态（重叠窗）保留即可，与 spike 一致。
-                self.decoded.clear();
-                self.offset = 0;
                 self.metrics.set_buffer(self.queue.buffer_ms());
             }
             Control::Recovered | Control::Idle => {}
@@ -176,7 +177,6 @@ impl LiveAudioSource {
                     )));
                 }
                 decoded.copy_to_vec_interleaved::<f32>(&mut self.decoded);
-                self.offset = 0;
                 self.metrics.set_buffer(self.queue.buffer_ms());
                 Ok(())
             }
@@ -234,30 +234,44 @@ impl AudioSource for LiveAudioSource {
             self.replay_until_pts = self.queue.newest_pts();
         }
         let mut written = 0;
-        while written < max_frames {
-            if self.offset < self.decoded.len() {
-                let available = (self.decoded.len() - self.offset) / channels;
-                let frames = available.min(max_frames - written);
-                let start = written * channels;
-                let end = start + frames * channels;
-                out[start..end]
-                    .copy_from_slice(&self.decoded[self.offset..self.offset + frames * channels]);
-                self.offset += frames * channels;
-                written += frames;
-                continue;
+        loop {
+            // 先交出 WSOLA 已合成好的样本。
+            if written < max_frames {
+                let samples = self
+                    .tempo
+                    .take(&mut out[written * channels..max_frames * channels]);
+                written += samples / channels;
+            }
+            if written == max_frames {
+                break;
             }
 
             self.update_control();
+            self.tempo.set_speed(self.controller.speed());
 
             // 只要队列里还有帧，就必须持续解码喂 150ms ring。低 buffer 时
             // 绝不能阻塞 decode 线程去等回填，否则 cpal 会先 underrun。
             let Some(frame) = self.queue.pop() else {
                 if self.queue.is_done() {
+                    // 网络错误要尽快冒泡，不能为了 WSOLA 尾巴把错误藏起来。
+                    if let Some(error) = self.queue.error() {
+                        self.metrics.set_buffer(0);
+                        if written == 0 {
+                            return Err(AudioError::Decode(format!("直播流中断：{error}")));
+                        }
+                        return Ok(written);
+                    }
+                    // 正常结束：把 WSOLA 重叠区里剩下的样本合成完再收尾。
+                    self.tempo.finish();
+                    let samples = self
+                        .tempo
+                        .take(&mut out[written * channels..max_frames * channels]);
+                    written += samples / channels;
+                    if samples > 0 {
+                        continue;
+                    }
                     self.metrics.set_buffer(0);
-                    return match self.queue.error() {
-                        Some(error) => Err(AudioError::Decode(format!("直播流中断：{error}"))),
-                        None => Ok(written),
-                    };
+                    return Ok(written);
                 }
                 self.metrics.note_queue_empty();
                 return Ok(self.fill_silence(out, channels, written));
@@ -265,6 +279,7 @@ impl AudioSource for LiveAudioSource {
 
             // 队列里只会留下 pts 递增的帧（丢帧只从队头删），不存在过期帧。
             self.decode_frame(frame)?;
+            self.tempo.push(&self.decoded);
         }
         Ok(written)
     }
@@ -429,6 +444,41 @@ mod tests {
         (frames, rms, samples)
     }
 
+    fn read_all_samples(source: &mut LiveAudioSource) -> Vec<f32> {
+        let channels = usize::from(source.format().channels);
+        let mut out = vec![0.0f32; 1024 * channels];
+        let mut samples = Vec::new();
+        loop {
+            let read = source.read_frames(&mut out).expect("decode");
+            if read == 0 {
+                break;
+            }
+            samples.extend_from_slice(&out[..read * channels]);
+        }
+        samples
+    }
+
+    /// 过零率估算基频；直播夹具是 440Hz 正弦。
+    fn estimated_frequency(samples: &[f32], channels: usize, rate: u32) -> f64 {
+        let frames = samples.len() / channels;
+        let trim = rate as usize / 10; // 首尾各跳过 100ms
+        let end = frames.saturating_sub(trim);
+        if end <= trim {
+            return 0.0;
+        }
+        let mut crossings = 0usize;
+        let mut previous = samples[trim * channels];
+        for frame in (trim + 1)..end {
+            let current = samples[frame * channels];
+            if (previous <= 0.0 && current > 0.0) || (previous >= 0.0 && current < 0.0) {
+                crossings += 1;
+            }
+            previous = current;
+        }
+        let seconds = (end - trim) as f64 / f64::from(rate);
+        crossings as f64 / (2.0 * seconds)
+    }
+
     #[test]
     fn startup_keeps_about_the_target_buffer() {
         let (_source, metrics) = open_source(flv_stream(&fixture_frames()));
@@ -461,6 +511,18 @@ mod tests {
         assert!(rms > 1e-4, "decoded PCM is silent (rms {rms})");
         assert_eq!(metrics.decode_errors(), 0);
         assert!(matches!(source.seek(1_000), Err(AudioError::Seek(_))));
+    }
+
+    #[test]
+    fn wsola_passthrough_keeps_the_tone_pitch() {
+        let (mut source, _) = open_source(flv_stream(&fixture_frames()));
+        let samples = read_all_samples(&mut source);
+        let channels = 2;
+        let hz = estimated_frequency(&samples, channels, 48_000);
+        assert!(
+            (hz - 440.0).abs() < 8.0,
+            "WSOLA at 1.00x changed the pitch: {hz:.1}Hz"
+        );
     }
 
     #[test]
@@ -537,6 +599,16 @@ mod tests {
 
         gate.store(true, Ordering::Release);
         wait_until(|| source.queue.is_done(), Duration::from_secs(2));
+        // 结束前 WSOLA 可能还有不到一个分析窗（20ms）的尾音，读完再到 EOF。
+        let mut tail = 0usize;
+        for _ in 0..8 {
+            let read = source.read_frames(&mut out).expect("clean EOF");
+            if read == 0 {
+                break;
+            }
+            tail += read;
+        }
+        assert!(tail <= 2_048, "unexpected tail after starvation: {tail}");
         assert_eq!(source.read_frames(&mut out).expect("clean EOF"), 0);
     }
 
