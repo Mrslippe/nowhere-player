@@ -28,7 +28,7 @@ pub(crate) const VOLUME_CELLS: u16 = 20;
 /// `live.buffer_ms` 默认值；与 T-0093 在 `np-core::settings` 定义的默认保持一致。
 pub(crate) const DEFAULT_LIVE_BUFFER_MS: u64 = np_core::settings::LIVE_BUFFER_MS_DEFAULT;
 /// 右下角缓冲块固定 17 宽：`" - {current:>4}/{target:<4}ms - "`。
-pub(crate) const BUFFER_STATUS_WIDTH: u16 = 12;
+pub(crate) const BUFFER_STATUS_WIDTH: u16 = 13;
 /// 状态栏提示；`直播` / `暂停` 与 `空格` 后的动作由当前状态单独拼。
 pub(crate) const STATUS_HINTS_PLAYING: &str = " · r 刷新 · 空格 暂停 · c 弹幕 · / 命令";
 pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · 空格 继续 · c 弹幕 · / 命令";
@@ -259,7 +259,7 @@ pub(crate) fn pitch_blocks(row_width: u16) -> u16 {
 /// 右下角缓冲文本：固定 17 宽，current 在前、target 在后。
 pub(crate) fn buffer_status_text(current: u64, target: u64) -> String {
     // 只放固定宽度文本；左右两侧由 Player 下框线的 ━ 填充。
-    format!(" {current:>4}/{target:>4}ms")
+    format!(" {current:>4}/{target:>4}ms ")
 }
 
 /// 音高条的填充格数：取能量最强的频段，把频段位置映射到条宽。
