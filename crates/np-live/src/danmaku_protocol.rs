@@ -1,8 +1,8 @@
 //! B 站直播弹幕协议数据层（T-0100a）。
 //!
-//! 只做字节层：16 字节包头 encode/decode、多包拆分、心跳与认证 body、
-//! `DANMU_MSG` JSON 解析。**不建立连接、不做压缩、不引入依赖**；WS 传输与
-//! zlib/brotli 解压留给后续 T-0100a2。
+//! 只做字节层：16 字节包头 encode/decode（含 `protover` 保留）、多包拆分、
+//! 心跳与认证 body、`DANMU_MSG` JSON 解析。**不建立连接、不解压、不引入依赖**；
+//! WS 传输与 zlib/brotli 解压由 [`crate::danmaku_client`]（T-0100a2）负责。
 //!
 //! 弹幕包全部使用大端序：
 //!
@@ -35,19 +35,25 @@ pub const OP_AUTH: u32 = 7;
 /// 服务端认证回复。
 pub const OP_AUTH_REPLY: u32 = 8;
 
-/// 本模块写出的包固定使用明文协议版本 1。
-const PROTOVER_PLAIN: u16 = 1;
+/// 明文协议版本；[`encode_packet`] 写出的包固定用它。
+pub const PROTOVER_PLAIN: u16 = 1;
+/// zlib 压缩的通知 body；解压由 [`crate::danmaku_client`] 负责。
+pub const PROTOVER_ZLIB: u16 = 2;
+/// brotli 压缩的通知 body；解压由 [`crate::danmaku_client`] 负责。
+pub const PROTOVER_BROTLI: u16 = 3;
 /// 包头里的 sequence，B 站客户端通常固定为 1。
 const SEQUENCE: u32 = 1;
 
 /// 一个已拆出的弹幕包。
 ///
-/// `body` 原样保留（可能是 JSON、认证响应或压缩数据）；压缩包的 `protover`
-/// 会被丢弃，解压需要后续协议扩展。
+/// `body` 原样保留（可能是 JSON、认证响应或压缩数据）；`protover` 说明 body
+/// 的编码方式：0/1 明文、2 zlib、3 brotli。本层只保留、不解压。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DanmakuPacket {
     /// 操作码，见 [`OP_HEARTBEAT`] / [`OP_AUTH`] 等常量。
     pub operation: u32,
+    /// 包头里的 `protover`：0/1 明文、2 zlib、3 brotli。
+    pub protover: u16,
     /// 包头之后的原始 body。
     pub body: Vec<u8>,
 }
@@ -122,6 +128,7 @@ pub fn decode_packets(bytes: &[u8]) -> Result<Vec<DanmakuPacket>, DanmakuProtoco
         let header = &remaining[..HEADER_LEN];
         let total_len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
         let header_len = u16::from_be_bytes([header[4], header[5]]);
+        let protover = u16::from_be_bytes([header[6], header[7]]);
         let operation = u32::from_be_bytes([header[8], header[9], header[10], header[11]]);
         let total_len_usize = total_len as usize;
 
@@ -143,7 +150,11 @@ pub fn decode_packets(bytes: &[u8]) -> Result<Vec<DanmakuPacket>, DanmakuProtoco
 
         // 上面的检查保证 16 <= header_len <= total_len <= remaining.len()。
         let body = remaining[usize::from(header_len)..total_len_usize].to_vec();
-        packets.push(DanmakuPacket { operation, body });
+        packets.push(DanmakuPacket {
+            operation,
+            protover,
+            body,
+        });
         offset += total_len_usize;
     }
 
@@ -292,10 +303,19 @@ mod tests {
     }"#;
 
     fn packet_header(total_len: u32, header_len: u16, operation: u32) -> Vec<u8> {
+        packet_header_with_protover(total_len, header_len, PROTOVER_PLAIN, operation)
+    }
+
+    fn packet_header_with_protover(
+        total_len: u32,
+        header_len: u16,
+        protover: u16,
+        operation: u32,
+    ) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER_LEN);
         bytes.extend_from_slice(&total_len.to_be_bytes());
         bytes.extend_from_slice(&header_len.to_be_bytes());
-        bytes.extend_from_slice(&PROTOVER_PLAIN.to_be_bytes());
+        bytes.extend_from_slice(&protover.to_be_bytes());
         bytes.extend_from_slice(&operation.to_be_bytes());
         bytes.extend_from_slice(&SEQUENCE.to_be_bytes());
         bytes
@@ -392,6 +412,7 @@ mod tests {
             decode_packets(&encoded),
             Ok(vec![DanmakuPacket {
                 operation: OP_HEARTBEAT,
+                protover: PROTOVER_PLAIN,
                 body: Vec::new(),
             }])
         );
@@ -414,6 +435,26 @@ mod tests {
     }
 
     #[test]
+    fn decode_keeps_protover() {
+        let mut stream =
+            packet_header_with_protover(19, HEADER_LEN as u16, PROTOVER_ZLIB, OP_NOTIFICATION);
+        stream.extend_from_slice(b"abc");
+        stream.extend_from_slice(&packet_header_with_protover(
+            16,
+            HEADER_LEN as u16,
+            PROTOVER_BROTLI,
+            OP_NOTIFICATION,
+        ));
+
+        let packets = decode_packets(&stream).expect("两个包应全部解出");
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0].protover, PROTOVER_ZLIB);
+        assert_eq!(packets[0].body, b"abc");
+        assert_eq!(packets[1].protover, PROTOVER_BROTLI);
+        assert!(packets[1].body.is_empty());
+    }
+
+    #[test]
     fn header_longer_than_sixteen_is_honored() {
         let body = b"payload";
         let mut bytes = packet_header(20 + body.len() as u32, 20, OP_NOTIFICATION);
@@ -423,6 +464,7 @@ mod tests {
             decode_packets(&bytes),
             Ok(vec![DanmakuPacket {
                 operation: OP_NOTIFICATION,
+                protover: PROTOVER_PLAIN,
                 body: body.to_vec(),
             }])
         );

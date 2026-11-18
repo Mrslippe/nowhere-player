@@ -65,6 +65,13 @@ crates/np-live/Cargo.toml（仅必要）
 - [ ] 不打印敏感数据 `[数字]`
 - [ ] clippy/fmt `[数字]`
 
-## 6. 回报
+## 6. 结果（2026-11-19）
+
+- `getDanmuInfo`、wss 连接、op7/op8、30s 心跳、op5 收包、zlib/brotli 解压、DANMU_MSG→mpsc 完成。
+- 36 个新测试；np-live 146 tests；全量门禁通过。
+- 真实 B站连接未验证，留 T-0100a3；不自动重连。
+- 已知风险：匿名 auth 未带 buvid、DNS 无超时、读超时耦合 rustls。
+
+## 7. 回报
 
 STATUS/FILES/TESTS/API/BLOCKED/RISKS。不提交。

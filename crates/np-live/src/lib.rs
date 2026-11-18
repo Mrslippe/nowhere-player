@@ -15,6 +15,7 @@ pub mod api;
 pub mod auth;
 mod control;
 pub mod danmaku;
+pub mod danmaku_client;
 pub mod danmaku_protocol;
 pub mod error;
 mod flv;
@@ -26,6 +27,11 @@ mod source;
 pub use auth::{AuthError, AuthStore, BiliAuth, QR_POLL_INTERVAL, QrLogin, QrStatus};
 pub use control::LiveControl;
 pub use danmaku::{DANMAKU_MIN_INTERVAL, DanmakuError, send_danmaku};
+pub use danmaku_client::{
+    CLIENT_PROTOVER, DanmakuHost, DanmakuWsError, DanmuInfo, HEARTBEAT_INTERVAL, IDLE_TIMEOUT,
+    danmu_info_url, get_danmu_info, get_danmu_info_with_auth, parse_danmu_info, run_danmaku_ws,
+};
+pub use danmaku_protocol::DanmakuMessage;
 pub use error::LiveError;
 pub use metrics::LiveMetrics;
 pub use prepare::{PreparedLive, prepare, prepare_auth, prepare_default, prepare_default_auth};
