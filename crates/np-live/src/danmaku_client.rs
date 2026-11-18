@@ -3,7 +3,8 @@
 //! 流程与边界：
 //!
 //! 1. [`get_danmu_info`] 走 [`np_sources::Transport`] 取弹幕服务器 `token` 与
-//!    `host_list`；
+//!    `host_list`；真实接口开始要求 WBI 签名 + `buvid3`，被风控（-352/-403/-412）
+//!    时补一次 nav / spi 后重试；
 //! 2. [`run_danmaku_ws`] 用阻塞式 `tungstenite`（rustls + webpki 根证书）连
 //!    `wss://host/sub`，先发 `op=7` 认证，再每 30 秒发 `op=2` 心跳；
 //! 3. 下行 `op=5` 按 `protover` 解压（0/1 明文、2 zlib、3 brotli），把
@@ -15,12 +16,13 @@
 //! 日志、错误文本与 `Debug` 都不输出 token、cookie 或原始包；单测全部用
 //! [`np_sources::Transport`] 假实现与内存夹具，不建立真实连接。
 
+use std::cell::RefCell;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use np_sources::{SourceError, Transport};
 use serde::Deserialize;
@@ -39,6 +41,12 @@ use crate::danmaku_protocol::{
 const DANMU_INFO_URL: &str = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo";
 /// 弹幕接口要求的来源页；缺了会被 403。
 const DANMU_REFERER: &str = "https://live.bilibili.com/";
+/// WBI 签名的 key 来自 nav 接口（匿名也会返回 `wbi_img`）。
+const WBI_NAV_URL: &str = "https://api.bilibili.com/x/web-interface/nav";
+/// 匿名 `buvid3` / `buvid4`；缺少它时 `getDanmuInfo` 会被风控判 -352。
+const FINGER_URL: &str = "https://api.bilibili.com/x/frontend/finger/spi";
+/// WBI key 与 buvid 的线程内缓存时长；key 每日轮换，1 小时足够保守。
+const WBI_TTL: Duration = Duration::from_secs(60 * 60);
 /// 认证时请求服务端下发压缩通知；protover=3 才会收到 zlib/brotli。
 pub const CLIENT_PROTOVER: u16 = 3;
 /// 心跳间隔，与 B 站 Web 客户端一致。
@@ -190,8 +198,28 @@ pub fn get_danmu_info(
     get_danmu_info_with_auth(transport, room_id, None)
 }
 
+/// WBI 签名与匿名 buvid；只在单个弹幕线程内缓存。
+#[derive(Clone)]
+struct WbiKeys {
+    mixin_key: String,
+    buvid_cookie: String,
+}
+
+struct WbiCache {
+    keys: WbiKeys,
+    fetched_at: Instant,
+}
+
+thread_local! {
+    static WBI_CACHE: RefCell<Option<WbiCache>> = const { RefCell::new(None) };
+}
+
 /// 带可选登录凭证取弹幕服务器信息；登录只影响服务端下发的房间推荐，不影响 token
 /// 的用途。
+///
+/// B 站对 `getDanmuInfo` 启用了 WBI 签名 + `buvid3` 风控：先按老方式请求一次，
+/// 只有命中 -352/-412 才补 nav / spi 并重签重试，正常路径仍然只发一个请求。
+/// 成功后的 key 与 buvid 缓存在当前线程，断线重连不会重复风控探测。
 pub fn get_danmu_info_with_auth(
     transport: &dyn Transport,
     room_id: u64,
@@ -200,8 +228,54 @@ pub fn get_danmu_info_with_auth(
     if room_id == 0 {
         return Err(DanmakuWsError::InvalidRoom("房间号必须是正整数".to_owned()));
     }
-    let url = danmu_info_url(room_id);
-    let cookie = auth.map(BiliAuth::cookie_header).unwrap_or_default();
+    if let Some(keys) = cached_wbi() {
+        match request_danmu_info(transport, room_id, auth, Some(&keys)) {
+            Ok(info) => return Ok(info),
+            Err(error) if is_risk_control(&error) => clear_wbi(),
+            Err(error) => return Err(error),
+        }
+    }
+    match request_danmu_info(transport, room_id, auth, None) {
+        Ok(info) => Ok(info),
+        Err(error) if is_risk_control(&error) => {
+            let Some(keys) = fetch_wbi(transport) else {
+                return Err(error);
+            };
+            let result = request_danmu_info(transport, room_id, auth, Some(&keys));
+            if result.is_ok() {
+                store_wbi(keys);
+            }
+            result
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_risk_control(error: &DanmakuWsError) -> bool {
+    matches!(
+        error,
+        DanmakuWsError::Api {
+            code: -352 | -403 | -412,
+            ..
+        }
+    )
+}
+
+fn request_danmu_info(
+    transport: &dyn Transport,
+    room_id: u64,
+    auth: Option<&BiliAuth>,
+    wbi: Option<&WbiKeys>,
+) -> Result<DanmuInfo, DanmakuWsError> {
+    let url = match wbi {
+        Some(keys) => signed_danmu_info_url(room_id, keys),
+        None => danmu_info_url(room_id),
+    };
+    let auth_cookie = auth.map(BiliAuth::cookie_header).unwrap_or_default();
+    let cookie = match wbi {
+        Some(keys) => merge_cookie(&auth_cookie, &keys.buvid_cookie),
+        None => auth_cookie,
+    };
     let response = if cookie.is_empty() {
         transport.get_with_headers(&url, &[("Referer", DANMU_REFERER)])?
     } else {
@@ -211,6 +285,92 @@ pub fn get_danmu_info_with_auth(
         return Err(DanmakuWsError::Source(SourceError::Http(response.status)));
     }
     parse_danmu_info(&response.body)
+}
+
+/// 把 WBI 参数加到 URL；`wts` 每次取当前秒，`w_rid` 随之重算。
+fn signed_danmu_info_url(room_id: u64, keys: &WbiKeys) -> String {
+    let params = vec![
+        ("id".to_owned(), room_id.to_string()),
+        ("type".to_owned(), "0".to_owned()),
+    ];
+    let query = np_sources::wbi::sign(&params, &keys.mixin_key, unix_seconds());
+    format!("{DANMU_INFO_URL}?{query}")
+}
+
+fn merge_cookie(auth_cookie: &str, buvid_cookie: &str) -> String {
+    match (auth_cookie.is_empty(), buvid_cookie.is_empty()) {
+        (true, _) => buvid_cookie.to_owned(),
+        (_, true) => auth_cookie.to_owned(),
+        _ => format!("{auth_cookie}; {buvid_cookie}"),
+    }
+}
+
+/// 取 nav 的 WBI key 与匿名 buvid；任一步失败都不重试，直接回退到原始错误。
+fn fetch_wbi(transport: &dyn Transport) -> Option<WbiKeys> {
+    let nav = transport
+        .get_with_headers(WBI_NAV_URL, &[("Referer", DANMU_REFERER)])
+        .ok()?;
+    if !(200..=299).contains(&nav.status) {
+        return None;
+    }
+    let nav: NavEnvelope = serde_json::from_slice(&nav.body).ok()?;
+    let wbi_img = nav.data?.wbi_img?;
+    let img_key = np_sources::wbi::key_from_url(&wbi_img.img_url)?;
+    let sub_key = np_sources::wbi::key_from_url(&wbi_img.sub_url)?;
+    let mixin_key = np_sources::wbi::mixin_key(img_key, sub_key);
+
+    let finger = transport
+        .get_with_headers(FINGER_URL, &[("Referer", DANMU_REFERER)])
+        .ok()?;
+    if !(200..=299).contains(&finger.status) {
+        return None;
+    }
+    let finger: FingerEnvelope = serde_json::from_slice(&finger.body).ok()?;
+    let data = finger.data?;
+    let b3 = data.b_3.trim();
+    if b3.is_empty() {
+        return None;
+    }
+    let mut buvid_cookie = format!("buvid3={b3}");
+    let b4 = data.b_4.trim();
+    if !b4.is_empty() {
+        buvid_cookie.push_str(&format!("; buvid4={b4}"));
+    }
+    buvid_cookie.push_str(&format!("; b_nut={}", unix_seconds()));
+    Some(WbiKeys {
+        mixin_key,
+        buvid_cookie,
+    })
+}
+
+fn cached_wbi() -> Option<WbiKeys> {
+    WBI_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache
+            .as_ref()
+            .filter(|entry| entry.fetched_at.elapsed() < WBI_TTL)
+            .map(|entry| entry.keys.clone())
+    })
+}
+
+fn store_wbi(keys: WbiKeys) {
+    WBI_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some(WbiCache {
+            keys,
+            fetched_at: Instant::now(),
+        });
+    });
+}
+
+fn clear_wbi() {
+    WBI_CACHE.with(|cache| *cache.borrow_mut() = None);
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// 解析 `getDanmuInfo` 响应；`token` 为空视为坏响应。
@@ -665,8 +825,42 @@ struct HostEntry {
     wss_port: u16,
 }
 
+/// nav 只取 `wbi_img`；未登录时 `code=-101` 但 data 仍在，所以不看 code。
+#[derive(Deserialize)]
+struct NavEnvelope {
+    data: Option<NavData>,
+}
+
+#[derive(Deserialize)]
+struct NavData {
+    wbi_img: Option<WbiImg>,
+}
+
+#[derive(Deserialize)]
+struct WbiImg {
+    #[serde(default)]
+    img_url: String,
+    #[serde(default)]
+    sub_url: String,
+}
+
+/// `finger/spi` 下发匿名 buvid；字段名就是 `b_3` / `b_4`。
+#[derive(Deserialize)]
+struct FingerEnvelope {
+    data: Option<FingerData>,
+}
+
+#[derive(Deserialize)]
+struct FingerData {
+    #[serde(default)]
+    b_3: String,
+    #[serde(default)]
+    b_4: String,
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     use np_sources::HttpResponse;
@@ -709,6 +903,28 @@ mod tests {
         "message": "0",
         "data": {"token": "mock-token-secret", "host_list": []}
     }"#;
+
+    /// 真实 nav 的 wbi_img 结构；key 用 wbi 模块公开测试向量。
+    const NAV_JSON: &str = r#"{
+        "code": -101,
+        "message": "未登录",
+        "data": {
+            "wbi_img": {
+                "img_url": "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+                "sub_url": "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"
+            }
+        }
+    }"#;
+
+    /// 匿名 buvid 下发结构。
+    const FINGER_JSON: &str = r#"{
+        "code": 0,
+        "message": "0",
+        "data": {"b_3": "buvid-3", "b_4": "buvid-4"}
+    }"#;
+
+    /// 真实接口在缺少 WBI/buvid 时返回的业务错误。
+    const RISK_JSON: &str = r#"{"code":-352,"message":"-352"}"#;
 
     #[derive(Debug, Clone)]
     struct RecordedRequest {
@@ -782,6 +998,57 @@ mod tests {
                 status: self.status,
                 headers: Vec::new(),
                 body: self.body.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    /// 按顺序返回响应，用来模拟“先 -352，再 nav/spi，最后成功”的真机路径。
+    struct ScriptedTransport {
+        responses: Mutex<VecDeque<(u16, &'static str)>>,
+        requests: Mutex<Vec<RecordedRequest>>,
+    }
+
+    impl ScriptedTransport {
+        fn new(responses: &[(u16, &'static str)]) -> Self {
+            Self {
+                responses: Mutex::new(responses.iter().copied().collect()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<RecordedRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Transport for ScriptedTransport {
+        fn get(&self, url: &str) -> np_sources::Result<Vec<u8>> {
+            self.get_with_headers(url, &[])
+                .map(|response| response.body)
+        }
+
+        fn get_with_headers(
+            &self,
+            url: &str,
+            headers: &[(&str, &str)],
+        ) -> np_sources::Result<HttpResponse> {
+            self.requests.lock().unwrap().push(RecordedRequest {
+                url: url.to_owned(),
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                    .collect(),
+            });
+            let (status, body) = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted response");
+            Ok(HttpResponse {
+                status,
+                headers: Vec::new(),
+                body: body.as_bytes().to_vec(),
             })
         }
     }
@@ -898,12 +1165,104 @@ mod tests {
     }
 
     #[test]
+    fn risk_control_codes_cover_wbi_and_anti_crawl() {
+        for code in [-352, -403, -412] {
+            assert!(is_risk_control(&DanmakuWsError::Api {
+                code,
+                message: String::new()
+            }));
+        }
+        assert!(!is_risk_control(&DanmakuWsError::Api {
+            code: 60004,
+            message: String::new()
+        }));
+    }
+
+    #[test]
     fn get_danmu_info_maps_http_status() {
         let transport = FakeTransport::with_status(403, "");
         match get_danmu_info(&transport, 1).unwrap_err() {
             DanmakuWsError::Source(SourceError::Http(403)) => {}
             other => panic!("应映射成 HTTP 403，实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn risk_control_retries_with_wbi_and_buvid() {
+        clear_wbi();
+        let transport = ScriptedTransport::new(&[
+            (200, RISK_JSON),
+            (200, NAV_JSON),
+            (200, FINGER_JSON),
+            (200, DANMU_INFO),
+        ]);
+        let auth = sample_auth();
+        let info = get_danmu_info_with_auth(&transport, 21622811, Some(&auth))
+            .expect("补 WBI/buvid 后应成功");
+        assert_eq!(info.token(), "mock-token-secret");
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 4, "plain -> nav -> spi -> signed");
+        assert!(requests[0].url.contains("id=21622811"));
+        assert!(!requests[0].url.contains("w_rid="));
+        assert!(requests[1].url.contains("/x/web-interface/nav"));
+        assert!(requests[2].url.contains("/x/frontend/finger/spi"));
+        assert!(requests[3].url.contains("w_rid="));
+        assert!(requests[3].url.contains("wts="));
+
+        let cookie = requests[3].header("Cookie").expect("签名请求应带 Cookie");
+        assert!(cookie.contains("SESSDATA=sess-secret"));
+        assert!(cookie.contains("buvid3=buvid-3"));
+        assert!(cookie.contains("buvid4=buvid-4"));
+        clear_wbi();
+    }
+
+    #[test]
+    fn wbi_and_buvid_are_cached_for_reconnects() {
+        clear_wbi();
+        let transport = ScriptedTransport::new(&[
+            (200, RISK_JSON),
+            (200, NAV_JSON),
+            (200, FINGER_JSON),
+            (200, DANMU_INFO),
+            (200, DANMU_INFO),
+        ]);
+        let auth = sample_auth();
+        get_danmu_info_with_auth(&transport, 21622811, Some(&auth)).expect("第一次");
+        get_danmu_info_with_auth(&transport, 21622811, Some(&auth)).expect("第二次");
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 5, "第二次应直接用缓存签名，只发一个请求");
+        assert!(requests[4].url.contains("w_rid="));
+        let cookie = requests[4].header("Cookie").expect("缓存请求应带 Cookie");
+        assert!(cookie.contains("buvid3=buvid-3"));
+        clear_wbi();
+    }
+
+    #[test]
+    fn missing_finger_returns_the_original_risk_error() {
+        clear_wbi();
+        let transport = ScriptedTransport::new(&[(200, RISK_JSON), (200, NAV_JSON), (500, "")]);
+        let error = get_danmu_info(&transport, 21622811).unwrap_err();
+        assert!(matches!(error, DanmakuWsError::Api { code: -352, .. }));
+        assert_eq!(transport.requests().len(), 3);
+    }
+
+    #[test]
+    fn anonymous_risk_retry_sends_buvid_without_login_cookies() {
+        clear_wbi();
+        let transport = ScriptedTransport::new(&[
+            (200, RISK_JSON),
+            (200, NAV_JSON),
+            (200, FINGER_JSON),
+            (200, DANMU_INFO),
+        ]);
+        get_danmu_info(&transport, 21622811).expect("匿名补 buvid 后应成功");
+        let requests = transport.requests();
+        let cookie = requests[3].header("Cookie").expect("应带匿名 buvid");
+        assert!(cookie.contains("buvid3=buvid-3"));
+        assert!(!cookie.contains("SESSDATA"));
+        clear_wbi();
     }
 
     #[test]

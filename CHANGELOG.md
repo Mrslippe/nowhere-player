@@ -43,7 +43,8 @@
 - T3：真实弹幕发送用户实测通过（2026-11-18）
 - T-0099b：SettingsEditor / ChatInput 抽为独立状态机；golden 零 diff
 - T-0100a：B站弹幕协议层（包头/认证/心跳/DANMU_MSG）；29 个协议测试；WS 依赖已锁定
-- T-0100a2：getDanmuInfo + wss 客户端 + zlib/brotli 解压 + mpsc；146 tests；真实连接待 T3
+- T-0100a2：getDanmuInfo + wss 客户端 + zlib/brotli 解压 + mpsc；146 tests
+- T-0100a3：WBI+buvid 风控修复；真实弹幕 211 条/35s；500 条环形缓冲 + 退避重连
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本

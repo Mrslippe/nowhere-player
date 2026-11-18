@@ -1,6 +1,7 @@
 //! TUI 的播放器适配：本地文件真正打开，队列保存可播放路径。
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,12 +11,15 @@ use np_app::{CmdError, PlayerApi};
 use np_audio::{Player, SampleTapHandle};
 use np_core::{PlaybackMode, PlaybackState, PlaybackStatus, QueueView};
 
+use crate::event_loop::{DanmakuLink, run_danmaku_with_retry, sleep_cancellable};
 use crate::model::TrackRef;
 use crate::playback::{PlaybackQueue, QueueItem, TrackKey};
 
 /// 直播的 ring 窗口：比本地文件的 300 ms 更短，启动更快、更贴近 live edge。
 pub(crate) const LIVE_RING_MS: u32 = 150;
-const MAX_RECONNECT_ATTEMPTS: u32 = 6;
+/// 弹幕环形缓冲容量：只保留最近 500 条，供后续浮层读取。
+pub(crate) const DANMAKU_BUFFER_CAPACITY: usize = 500;
+pub(crate) const MAX_RECONNECT_ATTEMPTS: u32 = 6;
 const RECONNECT_DELAYS_SECS: [u64; 6] = [1, 2, 5, 10, 20, 30];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,13 @@ type LivePreparation = (u64, Result<np_live::PreparedLive, LiveFailure>);
 /// 后台弹幕线程回传：请求 generation + 发送结果（错误文本不含凭证）。
 type DanmakuReply = (u64, Result<(), String>);
 
+/// 一次直播的弹幕接收通道；generation 防串台，stop/换房时整体丢弃。
+struct DanmakuSession {
+    generation: u64,
+    messages: std::sync::mpsc::Receiver<np_live::DanmakuMessage>,
+    links: std::sync::mpsc::Receiver<DanmakuLink>,
+}
+
 /// Live 页展示用的房间资料：主播名 + 分区。
 ///
 /// 由独立的 `np-live-meta` 线程 best-effort 拉取；准备线程只负责声音，
@@ -50,7 +61,7 @@ pub(crate) struct LiveMeta {
 
 type LiveMetaReply = (u64, LiveMeta);
 
-fn reconnect_delay(attempt: u32) -> Duration {
+pub(crate) fn reconnect_delay(attempt: u32) -> Duration {
     let index = usize::try_from(attempt.saturating_sub(1))
         .unwrap_or(usize::MAX)
         .min(RECONNECT_DELAYS_SECS.len() - 1);
@@ -87,6 +98,11 @@ pub struct TuiAudio {
     auth_loaded: Cell<bool>,
     chat_generation: Cell<u64>,
     chat_rx: RefCell<Option<std::sync::mpsc::Receiver<DanmakuReply>>>,
+    danmaku_session: RefCell<Option<DanmakuSession>>,
+    danmaku_cancel: RefCell<Option<Arc<AtomicBool>>>,
+    danmaku_generation: Cell<u64>,
+    danmaku_link: Cell<DanmakuLink>,
+    danmaku_recent: RefCell<VecDeque<np_live::DanmakuMessage>>,
     #[cfg(test)]
     chat_test_result: RefCell<Option<Result<(), String>>>,
     #[cfg(test)]
@@ -141,6 +157,11 @@ impl TuiAudio {
             auth_loaded: Cell::new(false),
             chat_generation: Cell::new(0),
             chat_rx: RefCell::new(None),
+            danmaku_session: RefCell::new(None),
+            danmaku_cancel: RefCell::new(None),
+            danmaku_generation: Cell::new(0),
+            danmaku_link: Cell::new(DanmakuLink::Idle),
+            danmaku_recent: RefCell::new(VecDeque::new()),
             #[cfg(test)]
             chat_test_result: RefCell::new(None),
             #[cfg(test)]
@@ -472,6 +493,162 @@ impl TuiAudio {
         Some((generation, result))
     }
 
+    /// 当前弹幕连接状态；Live 页状态栏只读它做轻提示。
+    pub(crate) fn danmaku_link(&self) -> DanmakuLink {
+        self.danmaku_link.get()
+    }
+
+    /// 最近收到的弹幕（旧 → 新，最多 500 条）；供下一步浮层读取。
+    #[cfg(test)]
+    pub(crate) fn danmaku_messages(&self) -> Vec<np_live::DanmakuMessage> {
+        self.danmaku_recent.borrow().iter().cloned().collect()
+    }
+
+    /// 主线程每 tick 调用：把弹幕消息收进环形缓冲，并更新连接状态。
+    ///
+    /// 返回 `true` 表示缓冲区或状态栏有变化，需要重绘。单条解析失败在
+    /// np-live 层已经跳过，这里只面对结构化的 [`np_live::DanmakuMessage`]。
+    pub(crate) fn poll_danmaku(&self) -> bool {
+        let mut changed = false;
+        let mut received = Vec::new();
+        let mut links = Vec::new();
+        let mut messages_done = false;
+        let mut links_done = false;
+        {
+            let session = self.danmaku_session.borrow();
+            let Some(session) = session.as_ref() else {
+                return false;
+            };
+            if session.generation != self.danmaku_generation.get() {
+                return false;
+            }
+            loop {
+                match session.messages.try_recv() {
+                    Ok(message) => received.push(message),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        messages_done = true;
+                        break;
+                    }
+                }
+            }
+            loop {
+                match session.links.try_recv() {
+                    Ok(link) => links.push(link),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        links_done = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !received.is_empty() {
+            changed = true;
+            let mut recent = self.danmaku_recent.borrow_mut();
+            for message in received {
+                if recent.len() >= DANMAKU_BUFFER_CAPACITY {
+                    recent.pop_front();
+                }
+                recent.push_back(message);
+            }
+            // 连接成功后不一定马上有弹幕；收到第一条就足以确认链路可用。
+            if self.danmaku_link.get() != DanmakuLink::Failed
+                && self.danmaku_link.get() != DanmakuLink::Connected
+            {
+                self.danmaku_link.set(DanmakuLink::Connected);
+                changed = true;
+            }
+        }
+
+        for link in links {
+            if link != self.danmaku_link.get() {
+                self.danmaku_link.set(link);
+                changed = true;
+            }
+        }
+
+        // 线程退出后两侧通道都会断开；保留缓冲和最终状态，只释放通道。
+        if messages_done && links_done {
+            if matches!(
+                self.danmaku_link.get(),
+                DanmakuLink::Connecting | DanmakuLink::Reconnecting { .. }
+            ) {
+                // 线程异常结束（没有发最终状态）时不要把“连接中”挂死。
+                self.danmaku_link.set(DanmakuLink::Failed);
+                changed = true;
+            }
+            *self.danmaku_session.borrow_mut() = None;
+            *self.danmaku_cancel.borrow_mut() = None;
+        }
+        changed
+    }
+
+    /// 启动弹幕长连接：断线按 1/2/5/10/20/30s 重连，最多 6 次。
+    ///
+    /// 每次重连都会重新走 `getDanmuInfo`；日志与状态文本不包含 token / cookie。
+    fn start_danmaku(&self, room_id: u64, auth: Option<np_live::BiliAuth>) {
+        self.stop_danmaku();
+        let generation = self.danmaku_generation.get().wrapping_add(1);
+        self.danmaku_generation.set(generation);
+        self.danmaku_recent.borrow_mut().clear();
+        self.danmaku_link.set(DanmakuLink::Connecting);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.danmaku_cancel.borrow_mut() = Some(Arc::clone(&cancel));
+        let (message_tx, message_rx) = std::sync::mpsc::channel();
+        let (link_tx, link_rx) = std::sync::mpsc::channel();
+        *self.danmaku_session.borrow_mut() = Some(DanmakuSession {
+            generation,
+            messages: message_rx,
+            links: link_rx,
+        });
+
+        let spawn = std::thread::Builder::new()
+            .name("np-live-danmaku".to_owned())
+            .spawn(move || {
+                let transport = np_sources::ReqwestTransport::new();
+                let transport = transport.as_ref();
+                let _ = run_danmaku_with_retry(
+                    &cancel,
+                    || match transport {
+                        Ok(transport) => np_live::run_danmaku_ws(
+                            transport,
+                            room_id,
+                            auth.as_ref(),
+                            &cancel,
+                            &message_tx,
+                        ),
+                        Err(_) => Err(np_live::DanmakuWsError::Connect(
+                            "网络客户端初始化失败".to_owned(),
+                        )),
+                    },
+                    |delay| sleep_cancellable(&cancel, delay),
+                    |link| {
+                        let _ = link_tx.send(link);
+                    },
+                );
+            });
+        if let Err(error) = spawn {
+            self.stop_danmaku();
+            self.danmaku_link.set(DanmakuLink::Failed);
+            *self.live_note.borrow_mut() = Some(format!("弹幕连接线程启动失败：{error}"));
+        }
+    }
+
+    /// cancel 并丢弃当前弹幕会话；generation 递增，旧线程的回传全部作废。
+    fn stop_danmaku(&self) {
+        if let Some(cancel) = self.danmaku_cancel.borrow_mut().take() {
+            cancel.store(true, Ordering::Release);
+        }
+        self.danmaku_generation
+            .set(self.danmaku_generation.get().wrapping_add(1));
+        *self.danmaku_session.borrow_mut() = None;
+        self.danmaku_recent.borrow_mut().clear();
+        self.danmaku_link.set(DanmakuLink::Idle);
+    }
+
     /// 开始一路直播：停止当前播放、保留队列，后台准备网络与首帧。
     ///
     /// 本方法不碰网络；准备线程完成后由 [`poll_live`](Self::poll_live) 在主线程
@@ -502,6 +679,9 @@ impl TuiAudio {
         *self.live_meta.borrow_mut() = None;
         *self.live_meta_rx.borrow_mut() = None;
 
+        // 声音与弹幕各自独立：弹幕线程失败只影响状态栏提示，不影响音频。
+        self.start_danmaku(room_id, auth.clone());
+
         // 主播名 / 分区与音频准备并行：多一条短请求，不拖慢起播。
         let (meta_tx, meta_rx) = std::sync::mpsc::channel();
         *self.live_meta_rx.borrow_mut() = Some(meta_rx);
@@ -529,6 +709,7 @@ impl TuiAudio {
                 let _ = tx.send((generation, result));
             });
         if let Err(error) = spawn {
+            self.stop_danmaku();
             self.live_state.set(LiveState::Idle);
             *self.live_rx.borrow_mut() = None;
             *self.live_cancel.borrow_mut() = None;
@@ -590,6 +771,7 @@ impl TuiAudio {
                         player.set_volume(self.volume.get());
                         let tap = player.sample_tap();
                         if let Err(error) = player.play() {
+                            self.stop_danmaku();
                             self.live_state.set(LiveState::Idle);
                             *self.title.borrow_mut() = "未播放".to_owned();
                             *self.artist.borrow_mut() = "Nowhere Player".to_owned();
@@ -612,6 +794,7 @@ impl TuiAudio {
                         });
                     }
                     Err(error) => {
+                        self.stop_danmaku();
                         self.live_state.set(LiveState::Idle);
                         *self.title.borrow_mut() = "未播放".to_owned();
                         *self.artist.borrow_mut() = "Nowhere Player".to_owned();
@@ -731,6 +914,7 @@ impl TuiAudio {
         self.chat_generation
             .set(self.chat_generation.get().wrapping_add(1));
         *self.chat_rx.borrow_mut() = None;
+        self.stop_danmaku();
         self.live_state.set(LiveState::Idle);
     }
 
@@ -1009,6 +1193,7 @@ impl TuiAudio {
         // 没有 Player（异常/测试）才回退到重连。
         let room = self.live_room.get();
         if room == 0 {
+            self.stop_danmaku();
             self.live_state.set(LiveState::Idle);
             *self.live_note.borrow_mut() = Some("直播恢复失败：房间号丢失".to_owned());
             return;
@@ -1385,6 +1570,32 @@ impl TuiAudio {
     /// 测试用：到目前为止真正进入发送路径的次数。
     pub(crate) fn danmaku_calls_for_test(&self) -> u32 {
         self.chat_test_calls.get()
+    }
+
+    /// 测试用：直接设置弹幕连接状态，不建立真实连接。
+    pub(crate) fn danmaku_link_for_test(&self, link: DanmakuLink) {
+        self.danmaku_link.set(link);
+    }
+
+    /// 测试用：建立一条假弹幕通道，模拟后台线程的消息与状态回传。
+    pub(crate) fn danmaku_channel_for_test(
+        &self,
+    ) -> (
+        std::sync::mpsc::Sender<np_live::DanmakuMessage>,
+        std::sync::mpsc::Sender<DanmakuLink>,
+    ) {
+        self.stop_danmaku();
+        let generation = self.danmaku_generation.get().wrapping_add(1);
+        self.danmaku_generation.set(generation);
+        let (message_tx, message_rx) = std::sync::mpsc::channel();
+        let (link_tx, link_rx) = std::sync::mpsc::channel();
+        *self.danmaku_session.borrow_mut() = Some(DanmakuSession {
+            generation,
+            messages: message_rx,
+            links: link_rx,
+        });
+        self.danmaku_link.set(DanmakuLink::Connecting);
+        (message_tx, link_tx)
     }
 }
 

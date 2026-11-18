@@ -1,5 +1,7 @@
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -8,7 +10,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 
 use crate::app::{App, parse_search_input};
-use crate::audio::TuiAudio;
+use crate::audio::{MAX_RECONNECT_ATTEMPTS, TuiAudio, reconnect_delay};
 use crate::keymap::Action;
 use crate::model::*;
 use crate::player_bar::update_spectrum;
@@ -17,6 +19,105 @@ use np_app::LibraryHandle;
 use np_app::PlayerApi;
 use np_app::{SettingsHandle, ThemeApi};
 use np_core::Block;
+
+/// 弹幕长连接状态；只用于 Live 页状态栏轻提示，不参与布局。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DanmakuLink {
+    /// 没有直播，或弹幕连接尚未启动。
+    Idle,
+    /// 后台线程正在取 token / 连接 / 认证。
+    Connecting,
+    /// 至少收到一条 `DANMU_MSG`。
+    Connected,
+    /// 断线后退避等待重连；`attempt` 从 1 数到 6。
+    Reconnecting { attempt: u32 },
+    /// 6 次重连都失败，或线程无法启动。
+    Failed,
+}
+
+impl DanmakuLink {
+    /// 状态栏右侧的轻提示；`Idle` 不占位，保证现有 golden 不变。
+    pub(crate) fn hint(self) -> Option<String> {
+        match self {
+            Self::Idle => None,
+            Self::Connecting => Some("弹幕连接中".to_owned()),
+            Self::Connected => Some("弹幕已连接".to_owned()),
+            Self::Reconnecting { attempt } => {
+                Some(format!("弹幕重连 {attempt}/{MAX_RECONNECT_ATTEMPTS}"))
+            }
+            Self::Failed => Some("弹幕未连接".to_owned()),
+        }
+    }
+}
+
+/// 后台弹幕线程的结束方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DanmakuRunEnd {
+    Cancelled,
+    SenderClosed,
+    Exhausted,
+}
+
+/// 断线重连驱动：成功、取消或 6 次重连失败后返回。
+///
+/// 由 `np-live-danmaku` 线程调用；单测用假 runner / 假 sleeper 验证退避与上限。
+pub(crate) fn run_danmaku_with_retry<F, S, R>(
+    cancel: &AtomicBool,
+    mut attempt_once: F,
+    mut wait: S,
+    mut report: R,
+) -> DanmakuRunEnd
+where
+    F: FnMut() -> Result<(), np_live::DanmakuWsError>,
+    S: FnMut(Duration) -> bool,
+    R: FnMut(DanmakuLink),
+{
+    let mut attempt = 0u32;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return DanmakuRunEnd::Cancelled;
+        }
+        match attempt_once() {
+            // 接收端被丢弃（stop / 换房）：正常收尾，不重连。
+            Ok(()) => return DanmakuRunEnd::SenderClosed,
+            Err(np_live::DanmakuWsError::Cancelled) => return DanmakuRunEnd::Cancelled,
+            Err(_) => {
+                if cancel.load(Ordering::Relaxed) {
+                    return DanmakuRunEnd::Cancelled;
+                }
+                attempt = attempt.saturating_add(1);
+                if attempt > MAX_RECONNECT_ATTEMPTS {
+                    report(DanmakuLink::Failed);
+                    return DanmakuRunEnd::Exhausted;
+                }
+                let delay = reconnect_delay(attempt);
+                report(DanmakuLink::Reconnecting { attempt });
+                if !wait(delay) {
+                    return DanmakuRunEnd::Cancelled;
+                }
+            }
+        }
+    }
+}
+
+/// 以 100ms 粒度睡眠，期间检查取消；返回 `false` 表示被取消。
+pub(crate) fn sleep_cancellable(cancel: &AtomicBool, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        let slice = deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(100));
+        std::thread::sleep(slice);
+    }
+}
+
 pub(crate) struct ThemeContext<'a> {
     pub(crate) api: &'a dyn ThemeApi,
     pub(crate) settings: &'a SettingsHandle,
@@ -118,6 +219,10 @@ where
             draw_needed = true;
         }
         if player.poll_live() {
+            draw_needed = true;
+        }
+        // 弹幕收包与状态提示独立于音频；每 tick 只做非阻塞 try_recv。
+        if player.poll_danmaku() {
             draw_needed = true;
         }
         if !player.is_live() {
@@ -341,5 +446,198 @@ where
         } else if player.is_playing() {
             draw_needed = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::DANMAKU_BUFFER_CAPACITY;
+
+    fn danmaku_message(index: usize) -> np_live::DanmakuMessage {
+        np_live::DanmakuMessage {
+            user: format!("用户{index}"),
+            text: format!("弹幕-{index}"),
+            color: 16_777_215,
+            timestamp: index as u64,
+        }
+    }
+
+    #[test]
+    fn danmaku_ring_keeps_only_the_latest_500() {
+        let audio = TuiAudio::empty();
+        let (messages, _links) = audio.danmaku_channel_for_test();
+        for index in 0..DANMAKU_BUFFER_CAPACITY + 1 {
+            messages
+                .send(danmaku_message(index))
+                .expect("fake channel should stay open");
+        }
+        assert!(audio.poll_danmaku());
+        let recent = audio.danmaku_messages();
+        assert_eq!(recent.len(), DANMAKU_BUFFER_CAPACITY);
+        assert_eq!(recent.first().expect("oldest").text, "弹幕-1");
+        assert_eq!(recent.last().expect("newest").text, "弹幕-500");
+    }
+
+    #[test]
+    fn poll_danmaku_sets_connected_on_first_message() {
+        let audio = TuiAudio::empty();
+        let (messages, _links) = audio.danmaku_channel_for_test();
+        assert_eq!(audio.danmaku_link(), DanmakuLink::Connecting);
+        messages.send(danmaku_message(0)).expect("send");
+        assert!(audio.poll_danmaku());
+        assert_eq!(audio.danmaku_link(), DanmakuLink::Connected);
+        assert_eq!(audio.danmaku_messages().len(), 1);
+        // 没有新消息时不必重绘。
+        assert!(!audio.poll_danmaku());
+    }
+
+    #[test]
+    fn poll_danmaku_applies_reconnect_and_failure_status() {
+        let audio = TuiAudio::empty();
+        let (_messages, links) = audio.danmaku_channel_for_test();
+        links
+            .send(DanmakuLink::Reconnecting { attempt: 2 })
+            .expect("send");
+        assert!(audio.poll_danmaku());
+        assert_eq!(
+            audio.danmaku_link(),
+            DanmakuLink::Reconnecting { attempt: 2 }
+        );
+        links.send(DanmakuLink::Failed).expect("send");
+        assert!(audio.poll_danmaku());
+        assert_eq!(audio.danmaku_link(), DanmakuLink::Failed);
+        assert_eq!(DanmakuLink::Failed.hint().as_deref(), Some("弹幕未连接"));
+    }
+
+    #[test]
+    fn stop_live_cancels_and_ignores_late_danmaku() {
+        let audio = TuiAudio::empty();
+        audio.live_for_test(21622811, "BLAST");
+        let (messages, links) = audio.danmaku_channel_for_test();
+        messages.send(danmaku_message(0)).expect("send");
+        assert!(audio.poll_danmaku());
+        assert_eq!(audio.danmaku_messages().len(), 1);
+
+        assert!(audio.stop_live());
+        assert_eq!(audio.danmaku_link(), DanmakuLink::Idle);
+        assert!(audio.danmaku_messages().is_empty());
+        // 旧线程即使还在跑，也已拿不到接收端；消息不会串到新会话。
+        assert!(messages.send(danmaku_message(1)).is_err());
+        assert!(links.send(DanmakuLink::Connected).is_err());
+        assert!(!audio.poll_danmaku());
+        assert!(audio.danmaku_messages().is_empty());
+    }
+
+    #[test]
+    fn retry_loop_steps_through_the_configured_backoff() {
+        let cancel = AtomicBool::new(false);
+        let mut waits = Vec::new();
+        let mut statuses = Vec::new();
+        let end = run_danmaku_with_retry(
+            &cancel,
+            || Err(np_live::DanmakuWsError::Timeout("测试断线")),
+            |delay| {
+                waits.push(delay.as_secs());
+                true
+            },
+            |link| statuses.push(link),
+        );
+        assert_eq!(end, DanmakuRunEnd::Exhausted);
+        assert_eq!(waits, vec![1, 2, 5, 10, 20, 30]);
+        assert_eq!(
+            statuses,
+            vec![
+                DanmakuLink::Reconnecting { attempt: 1 },
+                DanmakuLink::Reconnecting { attempt: 2 },
+                DanmakuLink::Reconnecting { attempt: 3 },
+                DanmakuLink::Reconnecting { attempt: 4 },
+                DanmakuLink::Reconnecting { attempt: 5 },
+                DanmakuLink::Reconnecting { attempt: 6 },
+                DanmakuLink::Failed,
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_loop_stops_after_a_successful_connection() {
+        let cancel = AtomicBool::new(false);
+        let mut calls = 0u32;
+        let mut waits = Vec::new();
+        let mut statuses = Vec::new();
+        let end = run_danmaku_with_retry(
+            &cancel,
+            || {
+                calls += 1;
+                if calls <= 2 {
+                    Err(np_live::DanmakuWsError::Closed)
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| {
+                waits.push(delay.as_secs());
+                true
+            },
+            |link| statuses.push(link),
+        );
+        assert_eq!(end, DanmakuRunEnd::SenderClosed);
+        assert_eq!(calls, 3);
+        assert_eq!(waits, vec![1, 2]);
+        assert_eq!(statuses.len(), 2);
+        assert!(!statuses.contains(&DanmakuLink::Failed));
+    }
+
+    #[test]
+    fn retry_loop_is_cancelled_by_stop() {
+        let cancel = AtomicBool::new(false);
+        let mut waits = 0u32;
+        let mut statuses = Vec::new();
+        let end = run_danmaku_with_retry(
+            &cancel,
+            || Err(np_live::DanmakuWsError::Closed),
+            |_| {
+                waits += 1;
+                false
+            },
+            |link| statuses.push(link),
+        );
+        assert_eq!(end, DanmakuRunEnd::Cancelled);
+        assert_eq!(waits, 1);
+        assert_eq!(statuses, vec![DanmakuLink::Reconnecting { attempt: 1 }]);
+
+        let cancel = AtomicBool::new(true);
+        let end = run_danmaku_with_retry(
+            &cancel,
+            || panic!("cancel must be checked before connecting"),
+            |_| panic!("must not wait"),
+            |_| panic!("must not report"),
+        );
+        assert_eq!(end, DanmakuRunEnd::Cancelled);
+
+        let cancel = AtomicBool::new(false);
+        let end = run_danmaku_with_retry(
+            &cancel,
+            || Err(np_live::DanmakuWsError::Cancelled),
+            |_| panic!("must not wait after Cancelled"),
+            |_| panic!("must not report after Cancelled"),
+        );
+        assert_eq!(end, DanmakuRunEnd::Cancelled);
+    }
+
+    #[test]
+    fn cancellable_sleep_wakes_on_cancel() {
+        let cancel = AtomicBool::new(true);
+        assert!(!sleep_cancellable(&cancel, Duration::from_secs(1)));
+
+        let cancel = AtomicBool::new(false);
+        assert!(sleep_cancellable(&cancel, Duration::from_millis(5)));
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let handle = std::thread::spawn(move || sleep_cancellable(&flag, Duration::from_secs(10)));
+        std::thread::sleep(Duration::from_millis(20));
+        cancel.store(true, Ordering::Release);
+        assert!(!handle.join().expect("sleeper thread"));
     }
 }

@@ -401,7 +401,7 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
 fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player: &TuiAudio) {
     let state = player.live_state_text();
     let paused = state == "暂停";
-    let hints_text = chat_hints(app, paused);
+    let hints_text = chat_hints(app, paused, player);
     let state = StatusState {
         text: state,
         warn: false,
@@ -417,18 +417,25 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, playe
 }
 
 /// 状态栏提示：输入框打开时切换成发送/取消提示，发送结果短暂覆盖快捷键。
-fn chat_hints(app: &App, paused: bool) -> String {
-    if let Some(chat) = app.chat_input.as_ref() {
-        return match chat.error() {
+///
+/// 弹幕连接状态放在最前面做轻提示；`Idle` 不显示，现有 golden 不受影响。
+fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
+    let base = if let Some(chat) = app.chat_input.as_ref() {
+        match chat.error() {
             Some(error) => format!(" · {error}"),
             None if chat.pending().is_some() => " · 发送中…".to_owned(),
             None => " · Enter 发送 · Esc 取消".to_owned(),
-        };
-    }
-    match app.chat_notice.as_deref() {
-        Some(notice) => format!(" · {notice}"),
-        None if paused => STATUS_HINTS_PAUSED.to_owned(),
-        None => STATUS_HINTS_PLAYING.to_owned(),
+        }
+    } else {
+        match app.chat_notice.as_deref() {
+            Some(notice) => format!(" · {notice}"),
+            None if paused => STATUS_HINTS_PAUSED.to_owned(),
+            None => STATUS_HINTS_PLAYING.to_owned(),
+        }
+    };
+    match player.danmaku_link().hint() {
+        Some(hint) => format!(" · {hint}{base}"),
+        None => base,
     }
 }
 
@@ -683,6 +690,21 @@ mod tests {
         let status = compact(&row(&terminal, 9));
         assert!(status.starts_with('┗'), "{status:?}");
         assert!(status.contains("直播·r刷新"), "{status:?}");
+    }
+
+    #[test]
+    fn live_status_shows_the_danmaku_connection_hint() {
+        let app = themed_app();
+        let audio = live_audio();
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Connected);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let status = compact(&row(&terminal, 23));
+        assert!(status.contains("直播·弹幕已连接·r刷新"), "{status:?}");
+
+        audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Reconnecting { attempt: 2 });
+        let terminal = draw_live(72, 24, &app, &audio);
+        let status = compact(&row(&terminal, 23));
+        assert!(status.contains("弹幕重连2/6"), "{status:?}");
     }
 
     #[test]
