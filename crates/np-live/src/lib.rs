@@ -15,6 +15,7 @@ pub mod api;
 pub mod auth;
 mod control;
 pub mod danmaku;
+pub mod danmaku_protocol;
 pub mod error;
 mod flv;
 mod metrics;
