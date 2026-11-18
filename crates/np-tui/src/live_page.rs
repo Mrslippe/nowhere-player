@@ -18,16 +18,19 @@ use crate::glyphs;
 use crate::input::{display_width, input_window, truncate_width};
 use crate::player_bar::draw_visual;
 
-/// 音高条格数（72×24 基线）；更窄时按内容宽收缩。
-pub(crate) const PITCH_CELLS: u16 = 28;
+/// 音高条左右各留 1 格（与 Player 页 bar 算法一致）。
+pub(crate) const PITCH_SIDE_PADDING: u16 = 2;
 /// 开播时长固定宽度 `HH:MM:SS`。
 pub(crate) const ELAPSED_WIDTH: u16 = 8;
 /// 音量条格数，与 Player 顶边一致。
 pub(crate) const VOLUME_CELLS: u16 = 20;
 /// `live.buffer_ms` 默认值；与 T-0093 在 `np-core::settings` 定义的默认保持一致。
 pub(crate) const DEFAULT_LIVE_BUFFER_MS: u64 = np_core::settings::LIVE_BUFFER_MS_DEFAULT;
-/// 状态栏快捷键；`LIVE`/`PAUSE` 由当前状态单独绘制。
-pub(crate) const STATUS_HINTS: &str = " · r refresh · space pause · c chat · / command";
+/// 右下角缓冲块固定 17 宽：`" - {current:>4}/{target:<4}ms - "`。
+pub(crate) const BUFFER_STATUS_WIDTH: u16 = 12;
+/// 状态栏提示；`直播` / `暂停` 与 `空格` 后的动作由当前状态单独拼。
+pub(crate) const STATUS_HINTS_PLAYING: &str = " · r 刷新 · 空格 暂停 · c 弹幕 · / 命令";
+pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · 空格 继续 · c 弹幕 · / 命令";
 /// 弹幕输入上限：B 站单条弹幕最多 20 个字符（CJK 按 1 个字符计）。
 pub(crate) const CHAT_MAX_CHARS: usize = 20;
 /// 输入框内容行：`› ` + 输入区 + 右边框。
@@ -246,6 +249,18 @@ fn truncate_left(value: &str, width: usize) -> String {
     format!("…{}", kept.into_iter().collect::<String>())
 }
 
+/// 音高条格数：照搬 Player 页 bar 算法，
+/// `blocks = (row.width - 左空 1 - 右空 1 - 时长 8) / 2`。
+pub(crate) fn pitch_blocks(row_width: u16) -> u16 {
+    row_width.saturating_sub(PITCH_SIDE_PADDING + ELAPSED_WIDTH) / 2
+}
+
+/// 右下角缓冲文本：固定 17 宽，current 在前、target 在后。
+pub(crate) fn buffer_status_text(current: u64, target: u64) -> String {
+    // 只放固定宽度文本；左右两侧由 Player 下框线的 ━ 填充。
+    format!(" {current:>4}/{target:>4}ms")
+}
+
 /// 音高条的填充格数：取能量最强的频段，把频段位置映射到条宽。
 ///
 /// 静音（全部为 0 或低于阈值）返回 0，整条只用未填充色。
@@ -442,8 +457,8 @@ fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player
     if row.width < 12 {
         return;
     }
-    let available_blocks = row.width.saturating_sub(2 + ELAPSED_WIDTH) / 2;
-    let cells = PITCH_CELLS.min(available_blocks).max(1);
+    let available_blocks = pitch_blocks(row.width);
+    let cells = available_blocks.max(1);
     let filled = pitch_fill(&app.spectrum, usize::from(cells));
     let bright = Style::default().fg(app.palette.accent);
     let dark = Style::default().fg(app.palette.faint);
@@ -462,7 +477,8 @@ fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player
         );
         x = x.saturating_add(2);
     }
-    let time_x = row.right().saturating_sub(1 + ELAPSED_WIDTH);
+    // 开播时长右对齐到内容区最后一格（整体比音高条再右移一格）。
+    let time_x = row.right().saturating_sub(ELAPSED_WIDTH);
     frame.buffer_mut().set_string(
         time_x,
         row.y,
@@ -514,10 +530,9 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
     x = x.saturating_add(1);
 
     let target = player.live_buffer_target_ms();
-    let actual = player.live_buffer_ms().unwrap_or(0);
-    let buffer_text = format!("{target}/{actual}ms");
-    let buffer_width = display_width(&buffer_text) as u16;
-    let text_x = area.right().saturating_sub(2 + buffer_width);
+    let current = player.live_buffer_ms().unwrap_or(0);
+    let buffer_text = buffer_status_text(current, target);
+    let text_x = area.right().saturating_sub(2 + BUFFER_STATUS_WIDTH);
     let fill_end = text_x.saturating_sub(1);
     if x < fill_end {
         let fill = "━".repeat(usize::from(fill_end - x));
@@ -556,7 +571,8 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, playe
         .set_string(area.x.saturating_add(1), y, " ", edge);
     let mut x = area.x.saturating_add(2);
     let max_x = area.right().saturating_sub(2);
-    let state = player.live_short_state();
+    let state = player.live_state_text();
+    let paused = state == "暂停";
     frame.buffer_mut().set_string(
         x,
         y,
@@ -567,7 +583,7 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, playe
     );
     x = x.saturating_add(display_width(state) as u16);
     let available = usize::from(max_x.saturating_sub(x));
-    let hints_text = chat_hints(app);
+    let hints_text = chat_hints(app, paused);
     let hints = truncate_width(&hints_text, available);
     if hints.is_empty() {
         return;
@@ -580,7 +596,7 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, playe
 }
 
 /// 状态栏提示：输入框打开时切换成发送/取消提示，发送结果短暂覆盖快捷键。
-fn chat_hints(app: &App) -> String {
+fn chat_hints(app: &App, paused: bool) -> String {
     if let Some(chat) = app.chat_input.as_ref() {
         return match chat.error() {
             Some(error) => format!(" · {error}"),
@@ -590,7 +606,8 @@ fn chat_hints(app: &App) -> String {
     }
     match app.chat_notice.as_deref() {
         Some(notice) => format!(" · {notice}"),
-        None => STATUS_HINTS.to_owned(),
+        None if paused => STATUS_HINTS_PAUSED.to_owned(),
+        None => STATUS_HINTS_PLAYING.to_owned(),
     }
 }
 
@@ -688,6 +705,7 @@ impl App {
         }
         self.chat_input = Some(ChatInput::new());
         self.chat_notice = None;
+        self.chat_notice_expires_at = None;
         true
     }
 
@@ -759,7 +777,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.chat_input = None;
-                self.chat_notice = Some("弹幕已发送".to_owned());
+                self.show_chat_notice("弹幕已发送");
             }
             Err(error) => chat.set_error(format!("发送失败：{error}")),
         }
@@ -774,6 +792,7 @@ impl App {
 
     pub(crate) fn clear_chat_notice(&mut self) {
         self.chat_notice = None;
+        self.chat_notice_expires_at = None;
     }
 }
 
@@ -896,6 +915,58 @@ mod tests {
     }
 
     #[test]
+    fn pitch_blocks_follow_the_player_bar_algorithm() {
+        // 终端宽 -> pitch 行宽 = 终端宽 - 6。
+        assert_eq!(pitch_blocks(66), 28, "72 宽");
+        assert_eq!(pitch_blocks(54), 22, "60 宽");
+        assert_eq!(pitch_blocks(34), 12, "40 宽");
+        // 80 宽的内容区只有 74 列；(74-1-1-8)/2 = 32。
+        assert_eq!(pitch_blocks(74), 32, "80 宽");
+    }
+
+    #[test]
+    fn pitch_bar_grows_with_a_wider_terminal() {
+        let app = themed_app();
+        let audio = live_audio();
+        let terminal = draw_live(80, 24, &app, &audio);
+        let buffer = terminal.backend().buffer();
+        let cells: Vec<&str> = (3..3 + 32 * 2 - 1)
+            .map(|x| buffer[(x, 21)].symbol())
+            .collect();
+        assert_eq!(
+            cells.iter().filter(|symbol| **symbol == "▰").count(),
+            32,
+            "80 宽应有 32 块"
+        );
+        // 时间块右对齐到内容区最后一格。
+        assert_eq!(buffer[(76, 21)].symbol(), "2");
+        assert_eq!(buffer[(69, 21)].symbol(), "0");
+        assert_eq!(buffer[(75, 21)].symbol(), "2");
+    }
+
+    #[test]
+    fn buffer_status_is_a_fixed_seventeen_columns() {
+        for (current, target) in [(930, 1000), (1100, 1000), (0, 900)] {
+            assert_eq!(
+                display_width(&buffer_status_text(current, target)),
+                usize::from(BUFFER_STATUS_WIDTH),
+                "{current}/{target}"
+            );
+        }
+        assert!(buffer_status_text(930, 1000).contains("930/1000ms"));
+    }
+
+    #[test]
+    fn paused_live_status_swaps_the_space_action() {
+        let app = themed_app();
+        let audio = live_audio();
+        audio.set_live_paused_for_test(true);
+        let terminal = draw_live(72, 24, &app, &audio);
+        let status = compact(&row(&terminal, 23));
+        assert!(status.contains("暂停·r刷新·空格继续"), "{status:?}");
+    }
+
+    #[test]
     fn live_page_draws_the_72x24_baseline() {
         let app = themed_app();
         let audio = live_audio();
@@ -938,16 +1009,16 @@ mod tests {
         assert_eq!(buffer[(3, 21)].symbol(), "▰");
         assert_eq!(buffer[(58, 21)].symbol(), " ");
         assert_eq!(buffer[(59, 21)].symbol(), " ");
-        assert_eq!(buffer[(68, 21)].symbol(), " ");
-        assert_eq!(buffer[(60, 21)].symbol(), "0");
-        assert_eq!(buffer[(67, 21)].symbol(), "2");
+        assert_eq!(buffer[(60, 21)].symbol(), " ");
+        assert_eq!(buffer[(61, 21)].symbol(), "0");
+        assert_eq!(buffer[(68, 21)].symbol(), "2");
         assert!(!pitch_row.contains('▱'));
 
         assert_eq!(buffer[(2, 22)].symbol(), "┗");
         assert_eq!(buffer[(69, 22)].symbol(), "┛");
         let control = compact(&row(&terminal, 22));
         assert!(control.contains('↻'), "{control:?}");
-        assert!(control.contains("900/0ms"), "{control:?}");
+        assert!(control.contains("0/900ms"), "{control:?}");
         assert_eq!(buffer[(4, 22)].symbol(), "↻");
         assert_eq!(buffer[(5, 22)].symbol(), " ");
         assert_eq!(buffer[(8, 22)].symbol(), " ");
@@ -955,10 +1026,9 @@ mod tests {
 
         let status = compact(&row(&terminal, 23));
         assert!(
-            status.contains("LIVE·rrefresh·spacepause·cchat·/command"),
+            status.contains("直播·r刷新·空格暂停·c弹幕·/命令"),
             "{status:?}"
         );
-        assert!(!status.contains("直播"), "{status:?}");
     }
 
     #[test]
@@ -969,16 +1039,14 @@ mod tests {
         let terminal = draw_live(72, 24, &app, &audio);
         let status = compact(&row(&terminal, 23));
         assert!(
-            status.contains("LIVE·rrefresh·spacepause·cchat·/command"),
+            status.contains("直播·r刷新·空格暂停·c弹幕·/命令"),
             "{status:?}"
         );
-        assert!(!status.contains("直播"), "{status:?}");
 
         let terminal = draw_live(40, 10, &app, &audio);
         let status = compact(&row(&terminal, 9));
         assert!(status.starts_with('┗'), "{status:?}");
-        assert!(status.contains("LIVE·rrefresh"), "{status:?}");
-        assert!(!status.contains("直播"), "{status:?}");
+        assert!(status.contains("直播·r刷新"), "{status:?}");
     }
 
     #[test]
@@ -1000,8 +1068,8 @@ mod tests {
         assert_eq!(filled, 14);
         assert_eq!(buffer[(3, 21)].fg, app.palette.accent);
         assert_eq!(buffer[(3 + 27 * 2, 21)].fg, app.palette.faint);
-        assert_eq!(buffer[(60, 21)].symbol(), "0");
-        assert_eq!(buffer[(67, 21)].symbol(), "2");
+        assert_eq!(buffer[(61, 21)].symbol(), "0");
+        assert_eq!(buffer[(68, 21)].symbol(), "2");
     }
 
     #[test]
@@ -1067,7 +1135,10 @@ mod tests {
             let player_top = row(&terminal, 1);
             assert!(player_top.contains('┏'), "{width}x{height}: {player_top:?}");
             let status = row(&terminal, height - 1);
-            assert!(status.contains("LIVE"), "{width}x{height}: {status:?}");
+            assert!(
+                compact(&status).contains("直播"),
+                "{width}x{height}: {status:?}"
+            );
             assert!(!status.contains("▱"));
         }
     }

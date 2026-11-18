@@ -12,6 +12,7 @@ use np_core::{Block, BlockStatus, Output};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
 #[test]
@@ -1424,10 +1425,10 @@ fn settings_editing_updates_audio_and_saves() {
 
     app.row_index = 0;
     crate::settings_page::adjust_setting(&mut app, -1, &audio, &settings, &theme).unwrap();
-    assert!((audio.volume() - 0.45).abs() < 0.001);
+    assert!((audio.volume() - 0.49).abs() < 0.001);
     assert!(matches!(
         settings.get("playback.volume"),
-        Some(np_core::SettingValue::Num(value)) if (value - 0.45).abs() < 0.001
+        Some(np_core::SettingValue::Num(value)) if (value - 0.49).abs() < 0.001
     ));
 
     app.row_index = 1;
@@ -1495,8 +1496,306 @@ fn live_buffer_setting_is_editable_and_reaches_the_player() {
         .iter()
         .map(|cell| cell.symbol())
         .collect();
-    assert!(text.contains("1000/0ms"), "target/actual missing: {text}");
+    assert!(text.contains("0/1000ms"), "target/actual missing: {text}");
     let _ = std::fs::remove_dir_all(root);
+}
+
+fn settings_fixture() -> (
+    App,
+    np_app::SettingsHandle,
+    TuiAudio,
+    crate::theme::TuiThemeApi,
+    PathBuf,
+) {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-settings-edit-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let settings = np_app::SettingsHandle::load(root.clone());
+    let page = crate::settings_page::settings_page(&settings);
+    let audio = TuiAudio::empty();
+    audio.set_volume(0.5);
+    let theme = crate::theme::TuiThemeApi::new(root.join("themes"));
+    let mut app = App::new();
+    app.load_theme(&theme, "milkgreen");
+    app.views = vec![page.view];
+    app.view_kind = vec![BrowseKind::Settings];
+    app.view_depth = vec![0];
+    app.settings_fields = page.fields;
+    app.focus = Focus::List;
+    (app, settings, audio, theme, root)
+}
+
+#[test]
+fn settings_edit_waits_for_enter_and_esc_restores() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = 0;
+
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(app.settings_edit.is_some());
+    assert_eq!(app.views[0].rows[0][2], "‹ 50% ›");
+    assert_eq!(audio.volume(), 0.5);
+    assert!(settings.get("playback.volume").is_none());
+
+    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[0][2], "‹ 51% ›");
+    assert_eq!(audio.volume(), 0.5, "编辑态不能直接改播放器");
+    assert!(settings.get("playback.volume").is_none());
+
+    assert!(crate::settings_page::cancel_settings_edit(
+        &mut app, &settings
+    ));
+    assert!(app.settings_edit.is_none());
+    assert_eq!(app.views[0].rows[0][2], "100%");
+    assert_eq!(audio.volume(), 0.5);
+
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    crate::settings_page::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(app.settings_edit.is_none());
+    assert!((audio.volume() - 0.51).abs() < 0.001);
+    assert!(matches!(
+        settings.get("playback.volume"),
+        Some(np_core::SettingValue::Num(value)) if (value - 0.51).abs() < 0.001
+    ));
+    assert_eq!(app.views[0].rows[0][2], "51%");
+    assert!(app.status_expires_at.is_some(), "保存成功应是瞬时状态");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn settings_edit_blocks_global_focus_keys() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = 0;
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+
+    assert!(crate::settings_page::handle_settings_edit_key(
+        KeyCode::Left,
+        &mut app,
+        &audio,
+        &theme,
+        &settings
+    ));
+    assert_eq!(app.focus, Focus::List, "编辑态 ← 不得切焦点");
+    assert!(app.settings_edit.is_some());
+
+    assert!(crate::settings_page::handle_settings_edit_key(
+        KeyCode::Right,
+        &mut app,
+        &audio,
+        &theme,
+        &settings
+    ));
+    assert_eq!(app.focus, Focus::List, "编辑态 → 不得切焦点");
+
+    assert!(crate::settings_page::handle_settings_edit_key(
+        KeyCode::Esc,
+        &mut app,
+        &audio,
+        &theme,
+        &settings
+    ));
+    assert!(app.settings_edit.is_none());
+    assert_eq!(app.focus, Focus::List);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn settings_bool_enter_toggles_and_commits_without_edit_mode() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "ui.splash")
+        .expect("ui.splash");
+    assert_eq!(settings.get_bool("ui.splash"), None);
+
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(app.settings_edit.is_none());
+    assert_eq!(settings.get_bool("ui.splash"), Some(false));
+    assert!(app.status_expires_at.is_some());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn settings_read_only_enter_never_enters_edit() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.settings_fields
+        .push(crate::settings_page::SettingsField {
+            key: "custom.readonly".to_owned(),
+            label: String::new(),
+            kind: crate::settings_page::SettingsKind::ReadOnly,
+            default: None,
+        });
+    app.views[0].rows.push(vec![
+        "其他".to_owned(),
+        "custom.readonly".to_owned(),
+        "值".to_owned(),
+    ]);
+    app.row_index = app.settings_fields.len() - 1;
+
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert!(app.settings_edit.is_none());
+    assert!(app.status.contains("只读"), "{}", app.status);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn settings_buffer_uses_100ms_steps_and_commits_on_enter() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == np_core::settings::LIVE_BUFFER_MS_KEY)
+        .expect("live buffer");
+    assert_eq!(audio.live_buffer_target_ms(), 900);
+
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][2], "‹ 1000 ms ›");
+    assert_eq!(audio.live_buffer_target_ms(), 900, "提交前不改播放器");
+
+    crate::settings_page::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(audio.live_buffer_target_ms(), 1000);
+    assert!(matches!(
+        settings.get(np_core::settings::LIVE_BUFFER_MS_KEY),
+        Some(np_core::SettingValue::Num(value)) if (value - 1000.0).abs() < 0.001
+    ));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn settings_playback_mode_edits_as_an_enum() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "playback.mode")
+        .expect("playback.mode");
+    assert_eq!(audio.mode_id(), "sequential");
+
+    crate::settings_page::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_page::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][2], "‹ ↻ ›");
+    assert_eq!(audio.mode_id(), "sequential");
+
+    crate::settings_page::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(audio.mode_id(), "list");
+    assert_eq!(settings.get_str("playback.mode").as_deref(), Some("list"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn transient_status_expires_after_three_seconds() {
+    let mut app = App::new();
+    let now = Instant::now();
+    app.set_transient_status_at("已创建歌单：X", now);
+    assert!(!app.expire_status(now + Duration::from_secs(2), "就绪"));
+    assert_eq!(app.status, "已创建歌单：X");
+    assert!(app.expire_status(now + Duration::from_secs(3), "就绪"));
+    assert_eq!(app.status, "就绪");
+}
+
+#[test]
+fn persistent_status_is_never_auto_cleared() {
+    let mut app = App::new();
+    app.set_status("搜索中…");
+    let now = Instant::now();
+    assert!(!app.expire_status(now + Duration::from_secs(30), "就绪"));
+    assert_eq!(app.status, "搜索中…");
+}
+
+#[test]
+fn live_status_default_is_chinese_after_expiry() {
+    let mut app = App::new();
+    let now = Instant::now();
+    app.set_transient_status_at("弹幕已发送", now);
+    assert!(app.expire_status(now + Duration::from_secs(3), "直播"));
+    assert_eq!(app.status, "直播");
+    app.set_transient_status_at("弹幕已发送", now);
+    assert!(app.expire_status(now + Duration::from_secs(3), "暂停"));
+    assert_eq!(app.status, "暂停");
+}
+
+#[test]
+fn chat_notice_expires_after_three_seconds() {
+    let mut app = App::new();
+    let now = Instant::now();
+    app.show_chat_notice_at("弹幕已发送", now);
+    assert!(!app.expire_chat_notice(now + Duration::from_secs(2)));
+    assert_eq!(app.chat_notice.as_deref(), Some("弹幕已发送"));
+    assert!(app.expire_chat_notice(now + Duration::from_secs(3)));
+    assert!(app.chat_notice.is_none());
+}
+
+fn long_tree_app() -> App {
+    let mut app = App::new();
+    let api = crate::theme::TuiThemeApi::new(std::env::temp_dir().join("np-tui-scroll-theme"));
+    app.load_theme(&api, "milkgreen");
+    app.views = (0..9)
+        .map(|index| ViewData {
+            title: format!("页面{index}"),
+            columns: vec!["序号".to_owned()],
+            rows: Vec::new(),
+            refs: Vec::new(),
+            durations: Vec::new(),
+        })
+        .collect();
+    app.view_depth = vec![0; 9];
+    app.view_kind = (0..9).map(|_| BrowseKind::Library).collect();
+    app.focus = Focus::Browse;
+    app.view_index = 8;
+    app
+}
+
+#[test]
+fn browse_tree_scrolls_the_ninth_view_into_seven_rows() {
+    assert_eq!(scroll_first(8, 7), 2);
+    let mut app = long_tree_app();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let _ = draw_text(&mut app, &mut terminal, &audio);
+    let compact = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    let rows: Vec<(u16, String)> = (2..=8)
+        .map(|y| (y, compact(&row_text(&terminal, y))))
+        .collect();
+    let (selected_y, selected) = rows
+        .iter()
+        .find(|(_, text)| text.contains("►页面8"))
+        .expect("selected ninth view must be visible");
+    assert_eq!(*selected_y, 8, "选中行必须在 7 行窗口内");
+    assert!(selected.contains("页面8"), "{selected}");
+}
+
+#[test]
+fn settings_list_scrolls_the_ninth_field_into_six_rows() {
+    let (mut app, settings, _audio, _theme, root) = settings_fixture();
+    assert_eq!(app.views[0].rows.len(), 9);
+    app.row_index = 8;
+    assert_eq!(scroll_first(8, 6), 3);
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let _ = draw_text(&mut app, &mut terminal, &audio);
+
+    let visible = row_text(&terminal, 8);
+    let compact = visible
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert!(compact.contains("直播缓冲"), "{visible}");
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(20, 8)].bg, app.palette.fg, "第 9 项反白条在窗口内");
+    let _ = std::fs::remove_dir_all(root);
+    let _ = settings;
 }
 
 #[test]
@@ -1803,7 +2102,11 @@ fn live_player_bar_shows_live_instead_of_zero_time() {
     audio.live_for_test(21622811, "BLAST 决赛");
     let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     let text = draw_text(&mut app, &mut terminal, &audio);
-    assert!(text.contains("LIVE"), "LIVE badge missing");
+    let compact: String = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(compact.contains("直播"), "live badge missing: {compact}");
     assert!(
         !text.contains("00:00 / 00:00"),
         "live must not render a zero position/duration"

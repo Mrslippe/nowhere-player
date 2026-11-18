@@ -23,13 +23,6 @@ pub(crate) fn execute(
 ) {
     match action {
         Action::NextSearchPlatform => cycle_search_platform(app, library, search_tx),
-        Action::SettingsAdjust(direction) => {
-            if let Err(error) =
-                crate::settings_page::adjust_setting(app, direction, player, settings, theme)
-            {
-                app.status = error;
-            }
-        }
         Action::FocusLeft | Action::FocusRight => {
             app.search_input_active = false;
             app.focus = match app.focus {
@@ -56,7 +49,7 @@ pub(crate) fn execute(
         Action::Enter => enter(app, player, library, search_tx, theme, settings),
         Action::Escape => {
             if player.stop_live() {
-                app.status = "已停止直播".to_owned();
+                app.set_transient_status("已停止直播");
             } else if app.pending_add.is_some() {
                 app.cancel_pending_add();
             } else if app.pending_remove.is_some() {
@@ -65,7 +58,7 @@ pub(crate) fn execute(
                 app.cancel_playlist_delete();
             } else if app.quit_armed {
                 app.quit_armed = false;
-                app.status = "已取消退出".to_owned();
+                app.set_transient_status("已取消退出");
             } else if app.focus == Focus::List {
                 app.focus = Focus::Browse;
             }
@@ -73,21 +66,21 @@ pub(crate) fn execute(
         Action::ClearSearch => app.reset_search_to_empty(),
         Action::ResetSetting => {
             if let Err(error) = crate::settings_page::reset_setting(app, player, settings, theme) {
-                app.status = error;
+                app.set_status(error);
             }
         }
         Action::Remove => {
             if app.pending_remove.is_some() {
-                app.status = "请按 Enter 确认移除".to_owned();
+                app.set_status("请按 Enter 确认移除".to_owned());
             } else if let Err(error) = app.arm_remove() {
-                app.status = error;
+                app.set_status(error);
             }
         }
         Action::Add => {
             if app.pending_add.is_some() {
-                app.status = "请按 Enter 确认添加".to_owned();
+                app.set_status("请按 Enter 确认添加".to_owned());
             } else if let Err(error) = app.begin_add_to_playlist() {
-                app.status = error;
+                app.set_status(error);
             }
         }
         Action::OpenSearch => crate::search_ui::open_search(app),
@@ -97,22 +90,22 @@ pub(crate) fn execute(
                 "playback.mode",
                 np_core::SettingValue::Str(player.mode_id().to_owned()),
             );
-            app.status = format!("模式：{}", playback_mode_label(mode));
+            app.set_transient_status(format!("模式：{}", playback_mode_label(mode)));
             app.refresh_settings_view(settings);
         }
         Action::SeekBack => {
             if player.is_live() {
-                app.status = "直播中不可跳转".to_owned();
+                app.set_status("直播中不可跳转".to_owned());
             } else {
                 let availability = TransportAvailability::from_player(player);
                 if !availability.enabled(Action::SeekBack) {
-                    app.status = "已到开头".to_owned();
+                    app.set_transient_status("已到开头");
                 } else {
                     let target = player.position_ms().saturating_sub(5_000);
                     if let Err(error) = PlayerApi::seek(player, target) {
-                        app.status = error.message;
+                        app.set_status(error.message);
                     } else {
-                        app.status = "后退 5s".to_owned();
+                        app.set_transient_status("后退 5s");
                         app.flash_transport(Action::SeekBack);
                     }
                 }
@@ -120,20 +113,20 @@ pub(crate) fn execute(
         }
         Action::SeekForward => {
             if player.is_live() {
-                app.status = "直播中不可跳转".to_owned();
+                app.set_status("直播中不可跳转".to_owned());
             } else {
                 let availability = TransportAvailability::from_player(player);
                 if !availability.enabled(Action::SeekForward) {
-                    app.status = "已到结尾".to_owned();
+                    app.set_transient_status("已到结尾");
                 } else {
                     let position = player.position_ms().saturating_add(5_000);
                     let target = player
                         .duration_ms()
                         .map_or(position, |duration| position.min(duration));
                     if let Err(error) = PlayerApi::seek(player, target) {
-                        app.status = error.message;
+                        app.set_status(error.message);
                     } else {
-                        app.status = "前进 5s".to_owned();
+                        app.set_transient_status("前进 5s");
                         app.flash_transport(Action::SeekForward);
                     }
                 }
@@ -144,14 +137,14 @@ pub(crate) fn execute(
             if player.is_live() {
                 app.begin_live_chat();
             } else {
-                app.status = "当前没有直播".to_owned();
+                app.set_status("当前没有直播".to_owned());
             }
         }
         Action::RefreshLive => {
             if player.refresh_live() {
-                app.status = "直播已刷新到最新".to_owned();
+                app.set_transient_status("直播已刷新到最新");
             } else {
-                app.status = "当前没有直播".to_owned();
+                app.set_status("当前没有直播".to_owned());
             }
         }
         Action::TogglePlay => {
@@ -167,25 +160,25 @@ pub(crate) fn execute(
                 || app.pending_playlist_delete.is_some()
                 || app.quit_armed
             {
-                app.status = "请先完成或取消当前确认".to_owned();
+                app.set_status("请先完成或取消当前确认".to_owned());
             } else if let Err(error) = app.begin_playlist_create() {
-                app.status = error;
+                app.set_status(error);
             }
         }
         Action::NextTrack => {
             if player.is_live() {
-                app.status = "直播中不可切换".to_owned();
+                app.set_status("直播中不可切换".to_owned());
             } else {
                 let availability = TransportAvailability::from_player(player);
                 if !availability.enabled(Action::NextTrack) {
-                    app.status = "没有下一首".to_owned();
+                    app.set_status("没有下一首".to_owned());
                 } else {
                     match player.next() {
                         Ok(_) => {
-                            app.status = "下一首".to_owned();
+                            app.set_transient_status("下一首");
                             app.flash_transport(Action::NextTrack);
                         }
-                        Err(error) => app.status = error.message,
+                        Err(error) => app.set_status(error.message),
                     }
                     app.refresh_queue_view(player, &**library);
                 }
@@ -193,27 +186,27 @@ pub(crate) fn execute(
         }
         Action::DeletePlaylist => {
             if app.pending_playlist_delete.is_some() {
-                app.status = "请按 Enter 确认删除".to_owned();
+                app.set_status("请按 Enter 确认删除".to_owned());
             } else if app.pending_add.is_some() || app.pending_remove.is_some() || app.quit_armed {
-                app.status = "请先完成或取消当前确认".to_owned();
+                app.set_status("请先完成或取消当前确认".to_owned());
             } else if let Err(error) = app.arm_playlist_delete() {
-                app.status = error;
+                app.set_status(error);
             }
         }
         Action::PrevTrack => {
             if player.is_live() {
-                app.status = "直播中不可切换".to_owned();
+                app.set_status("直播中不可切换".to_owned());
             } else {
                 let availability = TransportAvailability::from_player(player);
                 if !availability.enabled(Action::PrevTrack) {
-                    app.status = "没有上一首".to_owned();
+                    app.set_status("没有上一首".to_owned());
                 } else {
                     match player.prev() {
                         Ok(_) => {
-                            app.status = "上一首".to_owned();
+                            app.set_transient_status("上一首");
                             app.flash_transport(Action::PrevTrack);
                         }
-                        Err(error) => app.status = error.message,
+                        Err(error) => app.set_status(error.message),
                     }
                     app.refresh_queue_view(player, &**library);
                 }
@@ -228,15 +221,15 @@ pub(crate) fn execute(
                 "playback.volume",
                 np_core::SettingValue::Num(f64::from(volume)),
             );
-            app.status = format!("音量 {}%", (volume * 100.0).round());
+            app.set_transient_status(format!("音量 {}%", (volume * 100.0).round()));
             app.refresh_settings_view(settings);
         }
         Action::Quit => {
             if !app.quit_armed {
                 app.quit_armed = true;
-                app.status = "Enter确认退出 · Esc取消".to_owned();
+                app.set_status("Enter确认退出 · Esc取消".to_owned());
             } else {
-                app.status = "请按 Enter 确认退出".to_owned();
+                app.set_status("请按 Enter 确认退出".to_owned());
             }
         }
     }
@@ -286,9 +279,9 @@ fn enter(
         Some(BrowseKind::Search) if app.filtered_rows().is_empty() => {}
         Some(BrowseKind::Settings) => {
             if let Err(error) =
-                crate::settings_page::adjust_setting(app, 1, player, settings, theme)
+                crate::settings_page::begin_settings_edit(app, player, settings, theme)
             {
-                app.status = error;
+                app.set_status(error);
             }
         }
         _ => play_selected(app, player, library, search_tx),
@@ -332,10 +325,10 @@ fn play_selected(
             };
             match result {
                 Ok(_) => {
-                    app.status = "播放中".to_owned();
+                    app.set_transient_status("播放中");
                     app.flash_transport(Action::TogglePlay);
                 }
-                Err(error) => app.status = error.message,
+                Err(error) => app.set_status(error.message),
             }
             app.refresh_queue_view(player, &**library);
         }
@@ -344,17 +337,17 @@ fn play_selected(
                 if let Err(error) =
                     app.play_online_search_result(app.row_index, library, search_tx, player)
                 {
-                    app.status = error;
+                    app.set_status(error);
                 }
             } else if let Some(BrowseKind::Playlist(name)) = &kind {
                 if let Err(error) = app.start_playlist_prepare(name, app.row_index, library) {
-                    app.status = error;
+                    app.set_status(error);
                 }
             } else {
-                app.status = "远程条目缺少播放上下文".to_owned();
+                app.set_status("远程条目缺少播放上下文".to_owned());
             }
         }
-        None => app.status = "没有可播放的曲目".to_owned(),
+        None => app.set_status("没有可播放的曲目".to_owned()),
     }
 }
 

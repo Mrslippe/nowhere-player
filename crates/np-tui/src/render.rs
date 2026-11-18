@@ -216,6 +216,9 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             (esc, "返回"),
         ];
     }
+    if app.settings_edit.is_some() {
+        return vec![("←→", "调整"), (enter, "保存"), (esc, "取消")];
+    }
     if app.playlist_input.is_some() {
         return vec![(enter, "创建"), (esc, "取消")];
     }
@@ -287,12 +290,7 @@ fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ],
         },
         Some(BrowseKind::Search) => vec![(enter, "进入"), (tab, "平台")],
-        Some(BrowseKind::Settings) if list => vec![
-            ("←→", "调整"),
-            (enter, "切换"),
-            (reset, "重置"),
-            (esc, "返回"),
-        ],
+        Some(BrowseKind::Settings) if list => vec![(enter, "编辑"), (reset, "重置"), (esc, "返回")],
         Some(BrowseKind::Settings) => vec![(enter, "进入"), ("↑↓", "选择")],
         None if list => vec![("↑↓", "选择"), (esc, "返回")],
         None => vec![("↑↓", "选择"), ("←→", "焦点")],
@@ -420,7 +418,16 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         app.view_index + 1
     };
-    let left_count = format!(" {view_number} of {} ", app.views.len());
+    // 树超过 7 行时在计数前加溢出箭头；选中项始终在可见窗口内。
+    let tree_visible = usize::from(inner.height);
+    let tree_first = scroll_first(app.view_index, tree_visible);
+    let tree_overflow = match (tree_first > 0, tree_first + tree_visible < app.views.len()) {
+        (true, true) => "↕",
+        (true, false) => "↑",
+        (false, true) => "↓",
+        (false, false) => "",
+    };
+    let left_count = format!(" {tree_overflow}{view_number} of {} ", app.views.len());
     let count_style = Style::default()
         .fg(app.palette.faint)
         .add_modifier(Modifier::ITALIC);
@@ -502,13 +509,29 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 }
 
+/// 滚动窗口起点：选中项始终落在 `[first, first + visible)`。
+/// `visible == 0` 时返回 0，渲染层自己处理空窗口。
+pub(crate) fn scroll_first(selected: usize, visible: usize) -> usize {
+    if visible == 0 {
+        0
+    } else {
+        selected.saturating_sub(visible - 1)
+    }
+}
+
 pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = area;
+    let visible = usize::from(inner.height);
+    if visible == 0 {
+        return;
+    }
+    let first = scroll_first(app.view_index, visible);
     let lines: Vec<Line> = app
         .views
         .iter()
         .enumerate()
-        .take(inner.height as usize)
+        .skip(first)
+        .take(visible)
         .map(|(index, view)| {
             let selected = index == app.view_index;
             let active = selected && app.focus == Focus::Browse;
@@ -612,7 +635,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             .add_modifier(Modifier::BOLD),
     ));
     let visible = inner.height.saturating_sub(1) as usize;
-    let first = app.row_index.saturating_sub(visible.saturating_sub(1));
+    let first = scroll_first(app.row_index, visible);
     for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
         let selected = app.focus == Focus::List && index == app.row_index;
         let style = if selected {
@@ -866,7 +889,7 @@ fn draw_list_scrollbar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
     let thumb_len = (track_len * visible / total).max(1).min(track_len);
-    let first = app.row_index.saturating_sub(visible.saturating_sub(1));
+    let first = scroll_first(app.row_index, visible);
     let max_first = total - visible;
     let offset = first * (track_len - thumb_len) / max_first.max(1);
     let thumb_start = track_start.saturating_add(offset as u16);

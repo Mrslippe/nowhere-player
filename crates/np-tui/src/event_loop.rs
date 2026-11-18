@@ -57,6 +57,19 @@ where
 {
     let mut draw_needed = true;
     loop {
+        let now = std::time::Instant::now();
+        // 成功 / 取消类状态 3 秒后回默认；错误与进行中状态没有到期时间。
+        let default_status = if player.is_live() {
+            player.live_state_text()
+        } else {
+            "就绪"
+        };
+        if app.expire_status(now, default_status) {
+            draw_needed = true;
+        }
+        if app.expire_chat_notice(now) {
+            draw_needed = true;
+        }
         // `live.buffer_ms` 由设置页 / config set 修改，主循环每 tick 同步一次。
         let target = crate::settings_page::live_buffer_ms(theme_ctx.settings);
         if target != player.live_buffer_target_ms() {
@@ -87,7 +100,7 @@ where
                     app.view_index = index;
                     app.focus = Focus::List;
                 }
-                app.status = "搜索完成".to_owned();
+                app.set_transient_status("搜索完成");
                 app.search_pending = false;
                 app.search_attempted = true;
                 draw_needed = true;
@@ -96,10 +109,10 @@ where
         while let Ok(path) = search.play_rx.try_recv() {
             match player.play(Some(path)) {
                 Ok(_) => {
-                    app.status = "播放中".to_owned();
+                    app.set_transient_status("播放中");
                     app.flash_transport(Action::TogglePlay);
                 }
-                Err(error) => app.status = error.message.clone(),
+                Err(error) => app.set_status(error.message.clone()),
             }
             app.refresh_queue_view(player, &**library);
             draw_needed = true;
@@ -129,12 +142,12 @@ where
             }
             Ok(false) => {}
             Err(error) => {
-                app.status = error.message.clone();
+                app.set_status(error.message.clone());
                 draw_needed = true;
             }
         }
         if let Some(note) = player.take_live_note() {
-            app.status = note;
+            app.set_status(note);
             draw_needed = true;
         }
         #[cfg(windows)]
@@ -192,11 +205,23 @@ where
                                     app.end_search_edit();
                                     app.start_search_draft(draft, library, search.tx);
                                 }
-                                Err(error) => app.status = error,
+                                Err(error) => app.set_status(error),
                             },
                             KeyCode::Esc => app.end_search_edit(),
                             _ => {}
                         }
+                        draw_needed = true;
+                        continue;
+                    }
+                    // 设置编辑态优先于全局键：←/→ 只改 draft，不会切焦点。
+                    if app.settings_edit.is_some() {
+                        crate::settings_page::handle_settings_edit_key(
+                            key.code,
+                            app,
+                            player,
+                            theme_ctx.api,
+                            theme_ctx.settings,
+                        );
                         draw_needed = true;
                         continue;
                     }
@@ -240,7 +265,7 @@ where
                             KeyCode::Right => app.move_playlist_cursor(true),
                             KeyCode::Enter => {
                                 if let Err(error) = app.confirm_playlist_create(&**library) {
-                                    app.status = error;
+                                    app.set_status(error);
                                 }
                             }
                             KeyCode::Esc => app.cancel_playlist_create(),
@@ -253,21 +278,21 @@ where
                         if key.code == KeyCode::Enter {
                             if app.pending_add.is_some() {
                                 if let Err(error) = app.confirm_add_to_playlist(&**library) {
-                                    app.status = error;
+                                    app.set_status(error);
                                 }
                                 draw_needed = true;
                                 continue;
                             }
                             if app.pending_remove.is_some() {
                                 if let Err(error) = app.confirm_remove(player, &**library) {
-                                    app.status = error;
+                                    app.set_status(error);
                                 }
                                 draw_needed = true;
                                 continue;
                             }
                             if app.pending_playlist_delete.is_some() {
                                 if let Err(error) = app.confirm_playlist_delete(&**library) {
-                                    app.status = error;
+                                    app.set_status(error);
                                 }
                                 draw_needed = true;
                                 continue;

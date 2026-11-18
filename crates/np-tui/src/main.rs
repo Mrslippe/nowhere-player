@@ -34,6 +34,7 @@ mod selftest;
 mod settings_page;
 mod splash;
 mod startup;
+mod status;
 mod theme;
 mod transport;
 #[cfg(windows)]

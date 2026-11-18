@@ -1,12 +1,14 @@
 pub(crate) use crate::model::*;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use crate::audio::TuiAudio;
 use crate::keymap::Action;
 use crate::playback::{QueueItem, TrackKey};
-use crate::settings_page::{SettingsField, settings_page};
+use crate::settings_page::{SettingsEdit, SettingsField, settings_page};
+use crate::status::BlockStatusExt;
+pub(crate) use crate::status::now_millis;
 use crate::theme::Palette;
 #[cfg(windows)]
 use crate::tray;
@@ -17,6 +19,7 @@ use np_app::{
     execute_with_services, online_play_hit, online_play_started_block, run_online_play,
 };
 use np_core::{Block, BlockStatus};
+
 pub(crate) struct PlaylistInput {
     pub(crate) value: String,
     pub(crate) cursor: usize,
@@ -41,6 +44,8 @@ pub(crate) struct App {
     pub(crate) history_cursor: Option<usize>,
     pub(crate) blocks: Vec<Block>,
     pub(crate) status: String,
+    /// 瞬时状态到期时间；`None` 表示常驻（错误 / 进行中）。
+    pub(crate) status_expires_at: Option<Instant>,
     pub(crate) spectrum: Vec<f32>,
     pub(crate) waveform: Vec<f32>,
     pub(crate) stereo_left: Vec<f32>,
@@ -62,6 +67,7 @@ pub(crate) struct App {
     pub(crate) show_key_hints: bool,
     pub(crate) transport_feedback: Option<(Action, Instant)>,
     pub(crate) settings_fields: Vec<SettingsField>,
+    pub(crate) settings_edit: Option<SettingsEdit>,
     pub(crate) no_color_ignored: bool,
     playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
     playlist_prepare_rx: std::sync::mpsc::Receiver<PlaylistReady>,
@@ -88,6 +94,7 @@ pub(crate) struct App {
     pub(crate) playlist_input: Option<PlaylistInput>,
     pub(crate) chat_input: Option<crate::live_page::ChatInput>,
     pub(crate) chat_notice: Option<String>,
+    pub(crate) chat_notice_expires_at: Option<Instant>,
 }
 
 impl App {
@@ -100,6 +107,7 @@ impl App {
             history_cursor: None,
             blocks: Vec::new(),
             status: "就绪".to_owned(),
+            status_expires_at: None,
             spectrum: vec![0.0; 16],
             waveform: vec![0.0; 2048],
             stereo_left: vec![0.0; 2048],
@@ -121,6 +129,7 @@ impl App {
             show_key_hints: false,
             transport_feedback: None,
             settings_fields: Vec::new(),
+            settings_edit: None,
             no_color_ignored: false,
             playlist_prepare_tx,
             playlist_prepare_rx,
@@ -147,8 +156,10 @@ impl App {
             playlist_input: None,
             chat_input: None,
             chat_notice: None,
+            chat_notice_expires_at: None,
         }
     }
+
     pub(crate) fn input_text(&self) -> String {
         self.input.iter().collect()
     }
@@ -216,13 +227,13 @@ impl App {
         let (palette, warnings) = Palette::from_tokens(&reply.tokens);
         self.palette = palette;
         if let Some(warning) = warnings.first() {
-            self.status = format!("主题告警：{warning}");
+            self.set_status(format!("主题告警：{warning}"));
         }
         osc::set_background(self.palette.bg);
         self.theme_id = reply.id;
         self.theme_name = reply.name;
         if let Some(warning) = reply.warnings.first() {
-            self.status = format!("主题告警：{warning}");
+            self.set_status(format!("主题告警：{warning}"));
         }
     }
 
@@ -232,12 +243,12 @@ impl App {
             Err(error) => {
                 if let Some(theme) = np_core::theme::BuiltinTheme::find("milkgreen") {
                     self.apply_theme_reply(np_core::theme::ThemeApplyReply::from_builtin(theme));
-                    self.status = format!("主题加载失败：{}，已回退 MilkGreen", error.message);
+                    self.set_status(format!("主题加载失败：{}，已回退 MilkGreen", error.message));
                 } else {
                     self.palette = Palette::default_dark();
                     self.theme_id = "milkgreen".to_owned();
                     self.theme_name = "MilkGreen".to_owned();
-                    self.status = format!("主题加载失败：{}", error.message);
+                    self.set_status(format!("主题加载失败：{}", error.message));
                 }
             }
         }
@@ -248,27 +259,31 @@ impl App {
         let Some(rx) = &self.tray_rx else {
             return false;
         };
+        let mut actions = Vec::new();
         while let Ok(action) = rx.try_recv() {
+            actions.push(action);
+        }
+        for action in actions {
             match action {
                 tray::TrayAction::Show => tray::focus_console(),
                 tray::TrayAction::Toggle => {
                     player.toggle();
-                    self.status = if player.is_playing() {
-                        "托盘：继续播放".to_owned()
+                    self.set_transient_status(if player.is_playing() {
+                        "托盘：继续播放"
                     } else {
-                        "托盘：已暂停".to_owned()
-                    };
+                        "托盘：已暂停"
+                    });
                 }
                 tray::TrayAction::Next => match player.next() {
-                    Ok(_) => self.status = "媒体键：下一首".to_owned(),
-                    Err(error) => self.status = format!("下一首失败：{}", error.message),
+                    Ok(_) => self.set_transient_status("媒体键：下一首"),
+                    Err(error) => self.set_status(format!("下一首失败：{}", error.message)),
                 },
                 tray::TrayAction::Prev => match player.prev() {
-                    Ok(_) => self.status = "媒体键：上一首".to_owned(),
-                    Err(error) => self.status = format!("上一首失败：{}", error.message),
+                    Ok(_) => self.set_transient_status("媒体键：上一首"),
+                    Err(error) => self.set_status(format!("上一首失败：{}", error.message)),
                 },
                 tray::TrayAction::HotkeyFailed => {
-                    self.status = "全局热键注册失败（可能被占用）".to_owned();
+                    self.set_status("全局热键注册失败（可能被占用）".to_owned());
                 }
                 tray::TrayAction::Quit => return true,
             }
@@ -295,6 +310,7 @@ impl App {
         };
         let settings_page = settings_page(settings);
         self.settings_fields = settings_page.fields;
+        self.settings_edit = None;
         let settings_view = settings_page.view;
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
@@ -456,13 +472,13 @@ impl App {
             cursor: 0,
         });
         self.focus = Focus::List;
-        self.status = "输入歌单名 · Enter创建 · Esc取消".to_owned();
+        self.set_status("输入歌单名 · Enter创建 · Esc取消".to_owned());
         Ok(())
     }
 
     pub(crate) fn cancel_playlist_create(&mut self) {
         if self.playlist_input.take().is_some() {
-            self.status = "已取消创建".to_owned();
+            self.set_transient_status("已取消创建");
         }
     }
 
@@ -517,7 +533,7 @@ impl App {
         }
         self.playlist_expanded = true;
         self.rebuild_playlist_views(library, Some(&name));
-        self.status = format!("已创建歌单：{name}");
+        self.set_transient_status(format!("已创建歌单：{name}"));
         Ok(())
     }
 
@@ -536,13 +552,13 @@ impl App {
             return Err("没有选中歌单".to_owned());
         };
         self.pending_playlist_delete = Some(name.clone());
-        self.status = format!("Enter确认删除歌单：{name} · Esc取消");
+        self.set_status(format!("Enter确认删除歌单：{name} · Esc取消"));
         Ok(())
     }
 
     pub(crate) fn cancel_playlist_delete(&mut self) {
         if self.pending_playlist_delete.take().is_some() {
-            self.status = "已取消删除歌单".to_owned();
+            self.set_transient_status("已取消删除歌单");
         }
     }
 
@@ -561,7 +577,7 @@ impl App {
             .playlist_delete(playlist.id)
             .map_err(|error| error.message.clone())?;
         self.rebuild_playlist_views(library, None);
-        self.status = format!("已删除歌单：{name}");
+        self.set_transient_status(format!("已删除歌单：{name}"));
         Ok(())
     }
 
@@ -632,13 +648,13 @@ impl App {
             return Err("当前行不是歌曲".to_owned());
         }
         self.pending_remove = Some((self.view_index, self.row_index));
-        self.status = "Enter确认移除 · Esc取消".to_owned();
+        self.set_status("Enter确认移除 · Esc取消".to_owned());
         Ok(())
     }
 
     pub(crate) fn cancel_pending_remove(&mut self) {
         if self.pending_remove.take().is_some() {
-            self.status = "已取消移除".to_owned();
+            self.set_transient_status("已取消移除");
         }
     }
 
@@ -670,7 +686,7 @@ impl App {
                     .queue_remove(row_index)
                     .map_err(|error| error.message.clone())?;
                 self.refresh_queue_view(player, library);
-                self.status = "已从队列移除".to_owned();
+                self.set_transient_status("已从队列移除");
             }
             BrowseKind::Playlist(name) => {
                 let playlist = library
@@ -687,7 +703,7 @@ impl App {
                 {
                     self.views[index] = playlist_child_view(library, &name);
                 }
-                self.status = format!("已从歌单移除：{name}");
+                self.set_transient_status(format!("已从歌单移除：{name}"));
             }
             BrowseKind::Library | BrowseKind::Search => {
                 let title = view
@@ -713,7 +729,7 @@ impl App {
                     .queue_remove(position)
                     .map_err(|error| error.message.clone())?;
                 self.refresh_queue_view(player, library);
-                self.status = "已从播放队列移除".to_owned();
+                self.set_transient_status("已从播放队列移除");
             }
             _ => return Err("当前列表不支持移除".to_owned()),
         }
@@ -768,7 +784,7 @@ impl App {
         self.view_index = root;
         self.row_index = 0;
         self.focus = Focus::List;
-        self.status = "选择歌单后按 Enter 添加 · Esc取消".to_owned();
+        self.set_status("选择歌单后按 Enter 添加 · Esc取消".to_owned());
         Ok(())
     }
 
@@ -777,7 +793,7 @@ impl App {
             self.view_index = pending.origin_view.min(self.views.len().saturating_sub(1));
             self.row_index = pending.origin_row;
             self.focus = pending.origin_focus;
-            self.status = "已取消添加".to_owned();
+            self.set_transient_status("已取消添加");
         }
     }
 
@@ -879,7 +895,7 @@ impl App {
             self.row_index = 0;
             self.focus = Focus::List;
         }
-        self.status = format!("已添加到歌单：{name}");
+        self.set_transient_status(format!("已添加到歌单：{name}"));
         Ok(())
     }
 
@@ -958,7 +974,7 @@ impl App {
         let input = format!("play {}", index + 1);
         let template = online_play_started_block(&block_id, &input, index, track);
         self.upsert_block(template.clone());
-        self.status = "准备中…（下载后自动播放）".to_owned();
+        self.set_status("准备中…（下载后自动播放）".to_owned());
         let online = library.online();
         let tx = tx.clone();
         let target = RemotePlayback { tx: remote_tx };
@@ -1028,7 +1044,7 @@ impl App {
             np_app::search_started_block(&block_id, &options.keyword, &options.keyword)
         };
         self.upsert_block(template.clone());
-        self.status = "搜索中…（输入行仍可编辑）".to_owned();
+        self.set_status("搜索中…（输入行仍可编辑）".to_owned());
         let online = library.online();
         let library = Arc::clone(library);
         let tx = tx.clone();
@@ -1069,7 +1085,7 @@ impl App {
         let tx = self.playlist_prepare_tx.clone();
         let name = name.to_owned();
         let library = Arc::clone(library);
-        self.status = "准备中…".to_owned();
+        self.set_status("准备中…".to_owned());
         std::thread::spawn(move || {
             let result = prepare_playlist(&name, index, &library);
             let _ = tx.send(PlaylistReady { generation, result });
@@ -1090,10 +1106,10 @@ impl App {
             }
             match ready.result {
                 Ok((items, selected)) => match player.replace_playlist(items, selected.as_ref()) {
-                    Ok(_) => self.status = "播放中".to_owned(),
-                    Err(error) => self.status = error.message,
+                    Ok(_) => self.set_transient_status("播放中"),
+                    Err(error) => self.set_status(error.message),
                 },
-                Err(error) => self.status = error,
+                Err(error) => self.set_status(error),
             }
             self.refresh_queue_view(player, library);
         }
@@ -1292,13 +1308,13 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.history_cursor = None;
-        self.status = format!("执行：{input}");
+        self.set_status(format!("执行：{input}"));
         if let Some(status) = crate::live_command::start_live_command(&input, player) {
-            self.status = status;
+            self.set_status(status);
             return;
         }
         if let Some(status) = crate::login_command::run(&input, player) {
-            self.status = status;
+            self.set_status(status);
             return;
         }
         let block_id = format!("tui-{}", now_millis());
@@ -1324,7 +1340,7 @@ impl App {
                 np_app::search_started_block(&block_id, &input, &options.keyword)
             };
             self.upsert_block(template.clone());
-            self.status = "搜索中…（输入行仍可编辑）".to_owned();
+            self.set_status("搜索中…（输入行仍可编辑）".to_owned());
             let online = library.online();
             let library = Arc::clone(library);
             let tx = tx.clone();
@@ -1367,7 +1383,7 @@ impl App {
             let search_id = self.search_id;
             let template = online_play_started_block(&block_id, &input, index, &track);
             self.upsert_block(template.clone());
-            self.status = "准备中…（下载后自动播放）".to_owned();
+            self.set_status("准备中…（下载后自动播放）".to_owned());
             let online = library.online();
             let tx = tx.clone();
             let target = RemotePlayback { tx: remote_tx };
@@ -1404,15 +1420,19 @@ impl App {
         match execution {
             Execution::Ignored => {}
             Execution::Blocks { done, .. } => {
-                self.status = format!(
+                let text = format!(
                     "{} · {}ms",
                     done.status_label(),
                     done.duration_ms.unwrap_or(0)
                 );
+                match done.status {
+                    BlockStatus::Done | BlockStatus::Cancelled => self.set_transient_status(text),
+                    _ => self.set_status(text),
+                }
                 self.upsert_block(*done);
             }
             Execution::Accepted { running } => {
-                self.status = "后台任务已受理".to_owned();
+                self.set_status("后台任务已受理".to_owned());
                 self.upsert_block(*running);
             }
         }
@@ -1446,7 +1466,7 @@ impl App {
             && let Some(enabled) = settings.get_bool("startup.enabled")
             && let Err(error) = startup::set_enabled(enabled)
         {
-            self.status = format!("自启设置失败：{error}");
+            self.set_status(format!("自启设置失败：{error}"));
         }
         if let Ok(Some(parsed)) = np_core::command::parse(&input)
             && parsed.spec.name == "theme"
@@ -1459,21 +1479,6 @@ impl App {
     }
 }
 
-impl BlockStatusExt for Block {
-    fn status_label(&self) -> &'static str {
-        match self.status {
-            BlockStatus::Pending => "等待",
-            BlockStatus::Running => "执行中",
-            BlockStatus::Done => "完成",
-            BlockStatus::Error => "失败",
-            BlockStatus::Cancelled => "取消",
-        }
-    }
-}
-
-trait BlockStatusExt {
-    fn status_label(&self) -> &'static str;
-}
 fn library_view(library: &dyn LibraryApi) -> ViewData {
     let tracks = library.list_recent(200).unwrap_or_default();
     let refs = tracks
@@ -1788,12 +1793,4 @@ fn format_date(ms: i64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { year + 1 } else { year };
     format!("{year:04}.{month:02}.{day:02}")
-}
-
-pub(crate) fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }

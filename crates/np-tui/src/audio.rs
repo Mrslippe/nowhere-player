@@ -295,12 +295,12 @@ impl TuiAudio {
             .unwrap_or_default()
     }
 
-    /// 状态行最左：暂停显示 PAUSE，其余直播状态显示 LIVE。
-    pub(crate) fn live_short_state(&self) -> &'static str {
+    /// Live 页状态栏的中文状态：`暂停` / `直播`。
+    pub(crate) fn live_state_text(&self) -> &'static str {
         if self.live_state.get() == LiveState::Paused {
-            "PAUSE"
+            "暂停"
         } else {
-            "LIVE"
+            "直播"
         }
     }
 
@@ -1353,6 +1353,15 @@ impl TuiAudio {
         *self.live_metrics.borrow_mut() = Some(np_live::LiveMetrics::default());
     }
 
+    /// 测试用：切换 Live 页的暂停 / 继续展示状态。
+    pub(crate) fn set_live_paused_for_test(&self, paused: bool) {
+        self.live_state.set(if paused {
+            LiveState::Paused
+        } else {
+            LiveState::Playing
+        });
+    }
+
     /// 测试用：直接写入主播名 / 分区，不经过网络。
     pub(crate) fn live_meta_for_test(&self, anchor: &str, area: &str) {
         *self.live_meta.borrow_mut() = Some(LiveMeta {
@@ -1511,12 +1520,12 @@ mod tests {
     }
 
     #[test]
-    fn live_short_state_is_pause_when_paused() {
+    fn live_state_text_is_chinese_and_flips_on_pause() {
         let audio = TuiAudio::empty();
         audio.live_for_test(21622811, "BLAST");
-        assert_eq!(audio.live_short_state(), "LIVE");
+        assert_eq!(audio.live_state_text(), "直播");
         audio.live_state.set(LiveState::Paused);
-        assert_eq!(audio.live_short_state(), "PAUSE");
+        assert_eq!(audio.live_state_text(), "暂停");
     }
 
     #[test]

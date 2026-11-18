@@ -36,7 +36,6 @@ pub(crate) enum Action {
     VolumeUp,
     VolumeDown,
     Quit,
-    SettingsAdjust(i32),
 }
 
 pub(crate) const TRANSPORT_ACTIONS: [Action; 5] = [
@@ -91,21 +90,8 @@ const BINDINGS: &[Binding] = &[
         action: Action::RefreshLive,
         label: "F5",
     },
-    // 设置页的左右调整与重置优先于全局焦点键。
-    Binding {
-        key: KeyCode::Left,
-        shift: false,
-        scope: Scope::SettingsList,
-        action: Action::SettingsAdjust(-1),
-        label: "←",
-    },
-    Binding {
-        key: KeyCode::Right,
-        shift: false,
-        scope: Scope::SettingsList,
-        action: Action::SettingsAdjust(1),
-        label: "→",
-    },
+    // 设置页的 `r` 重置优先于全局键；←/→ 在选择态交给全局焦点切换，
+    // 编辑态由事件循环先行拦截，不改值。
     Binding {
         key: KeyCode::Char('r'),
         shift: false,
@@ -509,11 +495,16 @@ mod tests {
     }
 
     #[test]
-    fn settings_and_search_scopes_win_over_global() {
+    fn settings_left_right_do_not_change_values_in_selection_mode() {
         let settings = ctx(Focus::List, BrowseKind::Settings);
+        // 选择态 ←/→ 落回全局焦点切换；改值只发生在编辑态。
         assert_eq!(
             resolve(&settings, KeyCode::Left, KeyModifiers::NONE),
-            Some(Action::SettingsAdjust(-1))
+            Some(Action::FocusLeft)
+        );
+        assert_eq!(
+            resolve(&settings, KeyCode::Right, KeyModifiers::NONE),
+            Some(Action::FocusRight)
         );
         let search = ctx(Focus::List, BrowseKind::Search);
         assert_eq!(
