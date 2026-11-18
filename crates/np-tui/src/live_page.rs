@@ -27,8 +27,8 @@ pub(crate) const ELAPSED_WIDTH: u16 = 8;
 pub(crate) const VOLUME_CELLS: u16 = 20;
 /// `live.buffer_ms` 默认值；与 T-0093 在 `np-core::settings` 定义的默认保持一致。
 pub(crate) const DEFAULT_LIVE_BUFFER_MS: u64 = np_core::settings::LIVE_BUFFER_MS_DEFAULT;
-/// 右下角缓冲块固定 17 宽：`" - {current:>4}/{target:<4}ms - "`。
-pub(crate) const BUFFER_STATUS_WIDTH: u16 = 13;
+/// 右下角缓冲块固定 11 宽：`{current:>4}/{target:>4}ms`（左右各 1 空格已删，T-0101）。
+pub(crate) const BUFFER_STATUS_WIDTH: u16 = 11;
 /// 状态栏提示；`直播` / `暂停` 与 `空格` 后的动作由当前状态单独拼。
 ///
 /// `d 弹幕` 在隐藏态也常驻，用户不必先知道快捷键才能发现浮层（T-0100c）。
@@ -38,10 +38,10 @@ pub(crate) const STATUS_HINTS_PAUSED: &str = " · r 刷新 · d 弹幕 · 空格
 pub(crate) const STATUS_HINTS_PLAYING_NO_DANMAKU: &str = " · r 刷新 · 空格 暂停 · / 命令";
 pub(crate) const STATUS_HINTS_PAUSED_NO_DANMAKU: &str = " · r 刷新 · 空格 继续 · / 命令";
 
-/// 浮层可见时的状态栏提示：在常驻的 `d 弹幕` 之外补滚动 / 跟随键。
+/// 浮层可见时的状态栏提示：在常驻的 `d 弹幕` 之外补滚动 / 翻页 / 跟随键。
 fn danmaku_status_hints(paused: bool) -> String {
     let space = if paused { "继续" } else { "暂停" };
-    format!(" · d 弹幕 · ↑/↓ 滚动 · f 跟随 · 空格 {space} · c 弹幕 · / 命令")
+    format!(" · d 弹幕 · ↑/↓ 滚动 · PgUp/PgDn 翻页 · f 跟随 · 空格 {space} · c 弹幕 · / 命令")
 }
 
 /// Live 页各区域坐标；72×24 下即卡 §5 的数值。
@@ -142,10 +142,12 @@ pub(crate) fn pitch_blocks(row_width: u16) -> u16 {
     row_width.saturating_sub(PITCH_SIDE_PADDING + ELAPSED_WIDTH) / 2
 }
 
-/// 右下角缓冲文本：固定 17 宽，current 在前、target 在后。
+/// 右下角缓冲文本：固定 11 宽，current 在前、target 在后。
+///
+/// T-0101 删掉左右各 1 格空格；数字域仍是固定 4 位，右对齐到控制行末，
+/// 数值变化时不会左右跳动。
 pub(crate) fn buffer_status_text(current: u64, target: u64) -> String {
-    // 只放固定宽度文本；左右两侧由 Player 下框线的 ━ 填充。
-    format!(" {current:>4}/{target:>4}ms ")
+    format!("{current:>4}/{target:>4}ms")
 }
 
 /// 音高条的填充格数：取能量最强的频段，把频段位置映射到条宽。
@@ -447,11 +449,13 @@ fn draw_status(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, playe
 ///
 /// 弹幕连接状态放在最前面做轻提示；`Idle` 不显示，现有 golden 不受影响。
 fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
-    let base = if let Some(chat) = app.chat_input.as_ref() {
+    let base = if app.live_exit_armed() {
+        " · Enter 退出直播 · Esc 取消".to_owned()
+    } else if let Some(chat) = app.chat_input.as_ref() {
         match chat.error() {
             Some(error) => format!(" · {error}"),
             None if chat.pending().is_some() => " · 发送中…".to_owned(),
-            None => " · Enter 发送 · Esc 退出输入".to_owned(),
+            None => " · Enter 发送 · PgUp/PgDn 翻页 · Esc 收起".to_owned(),
         }
     } else {
         let danmaku_disabled =
@@ -468,6 +472,50 @@ fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
     match player.danmaku_link().hint() {
         Some(hint) => format!(" · {hint}{base}"),
         None => base,
+    }
+}
+
+/// Live 页退出确认状态（T-0101）：`Esc` 进入，`Enter` 停止直播，`Esc` 取消。
+impl App {
+    /// Live 页是否处于退出确认态。
+    pub(crate) fn live_exit_armed(&self) -> bool {
+        self.danmaku_overlay.exit_armed()
+    }
+
+    /// 第一次 `Esc`：只进入确认态，不立即停播。
+    pub(crate) fn arm_live_exit(&mut self) -> bool {
+        if self.live_exit_armed() {
+            return false;
+        }
+        self.danmaku_overlay.arm_exit();
+        self.quit_armed = false;
+        self.set_status("Enter确认退出直播 · Esc取消".to_owned());
+        true
+    }
+
+    /// 确认态再次 `Esc`：取消退出，继续播放。
+    pub(crate) fn cancel_live_exit(&mut self) -> bool {
+        if !self.danmaku_overlay.clear_exit() {
+            return false;
+        }
+        self.set_transient_status("已取消退出");
+        true
+    }
+
+    /// 非 `Enter` 路径清除确认态（如 `q` 接管确认、停播后复位）。
+    pub(crate) fn clear_live_exit(&mut self) {
+        self.danmaku_overlay.clear_exit();
+    }
+
+    /// 确认态 `Enter`：停止直播并清空浮层 / 输入状态，队列保留。
+    pub(crate) fn confirm_live_exit(&mut self, player: &TuiAudio) -> bool {
+        let armed = self.danmaku_overlay.clear_exit();
+        self.reset_danmaku_overlay();
+        let stopped = player.stop_live();
+        if armed && stopped {
+            self.set_status("已停止直播".to_owned());
+        }
+        stopped
     }
 }
 
@@ -621,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_status_is_a_fixed_seventeen_columns() {
+    fn buffer_status_is_a_fixed_eleven_columns_without_side_padding() {
         for (current, target) in [(930, 1000), (1100, 1000), (0, 900)] {
             assert_eq!(
                 display_width(&buffer_status_text(current, target)),
@@ -629,7 +677,8 @@ mod tests {
                 "{current}/{target}"
             );
         }
-        assert!(buffer_status_text(930, 1000).contains("930/1000ms"));
+        assert_eq!(buffer_status_text(930, 1000), " 930/1000ms");
+        assert_eq!(buffer_status_text(0, 900), "   0/ 900ms");
     }
 
     #[test]
@@ -855,13 +904,23 @@ mod tests {
         assert_eq!(buffer[(41, 18)].symbol(), "好");
         assert_eq!(buffer[(43, 18)].symbol(), " ");
         assert_eq!(buffer[(43, 18)].bg, app.palette.fg, "cursor after CJK");
-        assert_eq!(buffer[(69, 18)].symbol(), "│");
+        assert_eq!(buffer[(69, 18)].symbol(), " ", "Input 右侧不再画竖线");
+        // 硬件光标（IME 候选栏锚点）落在字符串实际单元格。
+        assert_eq!(terminal.backend().cursor_position(), (43, 18).into());
+        assert!(terminal.backend().cursor_visible());
 
         app.move_live_chat_cursor(false);
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(41, 18)].symbol(), "好");
         assert_eq!(buffer[(41, 18)].bg, app.palette.fg, "cursor on a wide char");
+        assert_eq!(terminal.backend().cursor_position(), (41, 18).into());
+
+        // 失焦：只保留 `c` 提示，硬件光标隐藏。
+        app.cancel_live_chat();
+        let terminal = draw_live(72, 24, &app, &audio);
+        assert!(!terminal.backend().cursor_visible());
+        assert!(compact(&row(&terminal, 18)).contains("按c输入弹幕"));
     }
 
     #[test]
@@ -874,13 +933,13 @@ mod tests {
         let audio = live_audio();
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
-        // 光标仍落在 Input 内；右侧只有 x69 的浅色内竖线。
+        // 光标仍落在 Input 内；右侧完全开口。
         let cursor_cells: Vec<u16> = (37..69)
             .filter(|x| buffer[(*x, 18)].bg == app.palette.fg)
             .collect();
         assert_eq!(cursor_cells.len(), 1, "{cursor_cells:?}");
         assert_eq!(cursor_cells[0], 67);
-        assert_eq!(buffer[(69, 18)].symbol(), "│");
+        assert_eq!(buffer[(69, 18)].symbol(), " ");
         assert_eq!(buffer[(68, 18)].symbol(), " ");
     }
 
@@ -1001,28 +1060,25 @@ mod tests {
         assert_eq!(buffer[(69, 2)].symbol(), "┛");
         assert_eq!(buffer[(36, 19)].symbol(), "┗");
         assert_eq!(buffer[(69, 19)].symbol(), "┓");
-        // 左缘 ┃ 贯穿消息区与 Input；右侧只在上下角与 Input 行内收口。
+        // 左缘 ┃ 贯穿消息区与 Input；右侧完全开口，只在上下角收口。
         for y in 3..19 {
             let left = if y == 17 { "┣" } else { "┃" };
             assert_eq!(buffer[(36, y)].symbol(), left, "left border y {y}");
-            let right = if y == 18 { "│" } else { " " };
-            assert_eq!(buffer[(69, y)].symbol(), right, "right side y {y}");
-            if y == 18 {
-                assert_eq!(buffer[(69, y)].fg, app.palette.faint, "Input 内竖线是浅色");
-            }
+            assert_eq!(buffer[(69, y)].symbol(), " ", "right side y {y}");
         }
-        // Input 分隔线 y17：┣ x36、" 输入" x37..41、━ x42..68，无右端。
+        // Input 分隔线 y17：┣ x36、" 输入 " x37..42、━ x43..68，无右端。
         assert_eq!(buffer[(36, 17)].symbol(), "┣");
         assert_eq!(buffer[(37, 17)].symbol(), " ");
         assert_eq!(buffer[(38, 17)].symbol(), "输");
         assert_eq!(buffer[(40, 17)].symbol(), "入");
-        assert_eq!(buffer[(42, 17)].symbol(), "━");
+        assert_eq!(buffer[(42, 17)].symbol(), " ");
+        assert_eq!(buffer[(43, 17)].symbol(), "━");
         assert_eq!(buffer[(69, 17)].symbol(), " ");
-        // Input 行 y18：x37 `>` 提示符，x38 留空，x69 浅色内竖线。
+        // Input 行 y18：x37 `>` 提示符，x38 留空，右侧完全开口。
         assert_eq!(buffer[(36, 18)].symbol(), "┃");
         assert_eq!(buffer[(37, 18)].symbol(), ">");
         assert_eq!(buffer[(38, 18)].symbol(), " ");
-        assert_eq!(buffer[(69, 18)].symbol(), "│");
+        assert_eq!(buffer[(69, 18)].symbol(), " ");
 
         // 视觉区仍完整绘制：x3..x35 是频谱，浮层只盖住右侧。
         assert_eq!(buffer[(3, 2)].symbol(), "░");
@@ -1043,9 +1099,9 @@ mod tests {
         let mut visible = themed_app();
         visible.toggle_danmaku_overlay(0);
         let _ = buffer_text(&draw_live(72, 24, &visible, &audio));
-        visible.toggle_danmaku_overlay(0);
+        visible.hide_danmaku_overlay();
         let hidden_again = buffer_text(&draw_live(72, 24, &visible, &audio));
-        assert_eq!(hidden, hidden_again, "d 关掉后必须回到隐藏态");
+        assert_eq!(hidden, hidden_again, "Esc 收起后必须回到隐藏态");
 
         // 左侧 33 列频谱与整条信息行不因浮层出现而移动。
         visible.toggle_danmaku_overlay(0);
@@ -1197,12 +1253,13 @@ mod tests {
     }
 
     #[test]
-    fn danmaku_overlay_online_is_four_digits_and_missing_shows_dashes() {
+    fn danmaku_overlay_online_uses_w_above_9999_and_dashes_when_missing() {
         let audio = live_audio();
         audio.live_online_for_test(Some(12345));
         let app = overlay_app(&audio);
         let terminal = draw_live(72, 24, &app, &audio);
-        assert!(compact(&row(&terminal, 2)).contains("9999"));
+        let title = row(&terminal, 2);
+        assert!(title.contains(" 1.2w "), "{title:?}");
 
         audio.live_online_for_test(None);
         let terminal = draw_live(72, 24, &app, &audio);
@@ -1240,7 +1297,7 @@ mod tests {
             assert_eq!(buffer[(overlay.x, input_y)].symbol(), "┃");
             assert_eq!(
                 buffer[(overlay.right().saturating_sub(1), input_y)].symbol(),
-                "│"
+                " "
             );
             assert_eq!(buffer[(overlay.x.saturating_add(1), input_y)].symbol(), ">");
             assert_eq!(
@@ -1279,16 +1336,19 @@ mod tests {
         let terminal = draw_live(72, 24, &app, &audio);
         assert!(compact(&row(&terminal, 18)).contains(">d"));
 
-        // Esc：退出焦点，浮层保持打开。
+        // Esc：收起浮层并清空焦点（草稿一起丢弃）。
         crate::chat_input::handle_chat_key(KeyCode::Esc, &mut app, &audio);
         assert!(!app.live_chat_active());
-        assert!(app.danmaku_overlay_visible());
-        let terminal = draw_live(72, 24, &app, &audio);
-        assert!(compact(&row(&terminal, 18)).contains("按c输入弹幕"));
-
-        // 退出焦点后 d 才关闭。
-        app.toggle_danmaku_overlay(0);
         assert!(!app.danmaku_overlay_visible());
+        assert!(app.chat_input.is_none());
+        let terminal = draw_live(72, 24, &app, &audio);
+        assert_ne!(terminal.backend().buffer()[(36, 18)].symbol(), "┃");
+        assert!(!compact(&row(&terminal, 18)).contains("按c输入弹幕"));
+
+        // d 重新打开并聚焦 Input。
+        app.toggle_danmaku_overlay(0);
+        assert!(app.danmaku_overlay_visible());
+        assert!(app.live_chat_active());
     }
 
     #[test]
@@ -1320,7 +1380,7 @@ mod tests {
         let focused = draw_live(72, 24, &app, &audio);
         let focused_status = compact(&row(&focused, 23));
         assert!(focused_status.contains("Enter发送"), "{focused_status:?}");
-        assert!(focused_status.contains("Esc退出输入"), "{focused_status:?}");
+        assert!(focused_status.contains("Esc收起"), "{focused_status:?}");
 
         // Esc 退出焦点后才轮到滚动键提示。
         let mut app = app;

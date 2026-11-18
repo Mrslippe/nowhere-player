@@ -48,8 +48,20 @@ pub(crate) fn execute(
         Action::TogglePlaylist => app.toggle_playlist(),
         Action::Enter => enter(app, player, library, search_tx, theme, settings),
         Action::Escape => {
-            if player.stop_live() {
-                app.set_transient_status("已停止直播");
+            if player.is_live() {
+                // T-0101：Live 的 Esc 不再直接停播。`q` 的应用退出确认优先；
+                // 否则先收起浮层，没有浮层时第一次 Esc 进入退出确认，
+                // 确认态再按 Esc 取消。
+                if app.quit_armed {
+                    app.quit_armed = false;
+                    app.set_transient_status("已取消退出");
+                } else if app.live_exit_armed() {
+                    app.cancel_live_exit();
+                } else if app.danmaku_overlay_visible() {
+                    app.hide_danmaku_overlay();
+                } else {
+                    app.arm_live_exit();
+                }
             } else if app.pending_add.is_some() {
                 app.cancel_pending_add();
             } else if app.pending_remove.is_some() {
@@ -234,6 +246,7 @@ pub(crate) fn execute(
         Action::Quit => {
             if !app.quit_armed {
                 app.quit_armed = true;
+                app.clear_live_exit();
                 app.set_status("Enter确认退出 · Esc取消".to_owned());
             } else {
                 app.set_status("请按 Enter 确认退出".to_owned());

@@ -6,7 +6,7 @@
 //! T-0100b2 起浮层改为覆盖式：视觉区仍按 66×19 完整绘制，浮层叠在右侧；
 //! 左侧频谱不再被压缩。T-0100b3 起浮层为 34×18、落在 x36,y2：左缘 `┃`、
 //! 上下横线与 `┣ 输入 ━` 分隔都用粗线，右侧只在右上 `┛`、右下 `┓` 收口；
-//! 消息行不画竖框，Input 行右端仅保留一条浅色内竖线。
+//! 消息行与 Input 行右侧均不画竖框。
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -27,18 +27,16 @@ use crate::theme::Palette;
 pub(crate) const OVERLAY_WIDTH: u16 = 34;
 /// 浮层最大高度：72×24 下 y2..y19 共 18 行，信息行 y20 不被覆盖。
 pub(crate) const OVERLAY_MAX_HEIGHT: u16 = 18;
-/// 标题文字；`┏` 后留 1 个空格，再写 `弹幕`。
-pub(crate) const TITLE_TEXT: &str = " 弹幕";
-/// Input 分隔行标签；`┣` 后留 1 个空格，再写 `输入`。
-pub(crate) const INPUT_LABEL: &str = " 输入";
+/// 标题文字；`弹幕` 左右各 1 空格（T-0101）。
+pub(crate) const TITLE_TEXT: &str = " 弹幕 ";
+/// Input 分隔行标签；`输入` 左右各 1 空格（T-0101）。
+pub(crate) const INPUT_LABEL: &str = " 输入 ";
 /// 空态文案。
 pub(crate) const EMPTY_TEXT: &str = "暂无弹幕";
 /// 未读数最多显示到 99+。
 const MAX_UNREAD_LABEL: u64 = 99;
-/// 同接数固定 4 格；两侧各 1 空格由 [`online_text`] 补。
+/// 同接数（≤9999）固定 4 格；两侧各 1 空格由 [`online_text`] 补。
 const ONLINE_CELL_WIDTH: usize = 4;
-/// 标题行右侧的完整同接块：` 2000 ` / `  --  `。
-const ONLINE_BLOCK_WIDTH: u16 = 6;
 /// 浮层固定占用的行数：顶边 1 + 分隔 1 + 输入 1 + 底边 1。
 const CHROME_ROWS: u16 = 4;
 /// 浮层最小高度：至少保留 1 行消息 + 三行 Input。
@@ -87,6 +85,9 @@ pub(crate) struct DanmakuOverlay {
     total_lines: Cell<usize>,
     /// 终端高度（行）；<10 时整个弹幕栏禁用。
     screen_height: u16,
+    /// Live 页退出确认态：`Esc` 置位，`Enter` 停播或确认态 `Esc` 清除。
+    /// 停播走 [`Self::reset`] 时一并归零。
+    exit_armed: bool,
 }
 
 impl Default for DanmakuOverlay {
@@ -100,6 +101,7 @@ impl Default for DanmakuOverlay {
             body_rows: Cell::new(0),
             total_lines: Cell::new(0),
             screen_height: 24,
+            exit_armed: false,
         }
     }
 }
@@ -145,17 +147,6 @@ impl DanmakuOverlay {
         self.offset_from_bottom = 0;
     }
 
-    /// 打开 / 关闭；打开时只显示面板，输入聚焦由 `c` 负责。
-    #[cfg(test)]
-    pub(crate) fn toggle(&mut self) -> bool {
-        if self.visible {
-            self.hide();
-        } else {
-            self.show();
-        }
-        self.visible
-    }
-
     pub(crate) fn focus_input(&mut self) {
         self.visible = true;
         self.input_focused = true;
@@ -163,6 +154,21 @@ impl DanmakuOverlay {
 
     pub(crate) fn blur_input(&mut self) {
         self.input_focused = false;
+    }
+
+    /// Live 页退出确认态。
+    pub(crate) fn exit_armed(&self) -> bool {
+        self.exit_armed
+    }
+
+    pub(crate) fn arm_exit(&mut self) {
+        self.exit_armed = true;
+    }
+
+    pub(crate) fn clear_exit(&mut self) -> bool {
+        let armed = self.exit_armed;
+        self.exit_armed = false;
+        armed
     }
 
     /// 同步消息计数；返回未读或总数是否变化（需要重绘）。
@@ -195,6 +201,26 @@ impl DanmakuOverlay {
         }
         self.offset_from_bottom -= 1;
         if self.offset_from_bottom == 0 {
+            self.seen_total = self.total;
+        }
+        true
+    }
+
+    /// PgUp / PgDn：按整页滚动；已在顶部 / 底部时返回 `false`。
+    pub(crate) fn scroll_page(&mut self, up: bool) -> bool {
+        let rows = self.body_rows.get().max(1);
+        let total = self.total_lines.get();
+        let max_offset = total.saturating_sub(rows);
+        let target = if up {
+            self.offset_from_bottom.saturating_add(rows).min(max_offset)
+        } else {
+            self.offset_from_bottom.saturating_sub(rows)
+        };
+        if target == self.offset_from_bottom {
+            return false;
+        }
+        self.offset_from_bottom = target;
+        if target == 0 {
             self.seen_total = self.total;
         }
         true
@@ -265,10 +291,20 @@ pub(crate) fn area(layout: &LiveLayout) -> Option<Rect> {
     ))
 }
 
-/// 标题行右侧的同接数：固定 4 格，缺失 ` -- `。
+/// 标题行右侧的同接数：≤9999 固定 4 格；>9999 用 `w`（如 `1.2w`）。
+///
+/// 只截断到 0.1w（不四舍五入），保证 10000..=99999 恰好 4 格；更大的数自然
+/// 变成 `10.0w` / `123.4w`，由调用方按实际显示宽度右对齐，不覆盖右上角。
 pub(crate) fn online_label(online: Option<u64>) -> String {
     match online {
-        Some(value) => format!("{:>width$}", value.min(9999), width = ONLINE_CELL_WIDTH),
+        Some(value) if value > 9999 => {
+            let label = format!("{}.{}w", value / 10_000, (value % 10_000) / 1_000);
+            format!(
+                "{label:>width$}",
+                width = ONLINE_CELL_WIDTH.max(label.len())
+            )
+        }
+        Some(value) => format!("{value:>width$}", width = ONLINE_CELL_WIDTH),
         None => " -- ".to_owned(),
     }
 }
@@ -290,7 +326,8 @@ pub(crate) fn keys_owned(app: &App) -> bool {
         && !app.playlist_input_active()
 }
 
-/// 浮层可见时的按键：↑/↓ 滚动、`f` 跟随；`d` / `c` 由 keymap 处理。
+/// 浮层可见时的按键：↑/↓ 滚动、PgUp/PgDn 翻页、`f` 跟随；`d` / `c` 由
+/// keymap 处理。
 ///
 /// 返回 `true` 表示按键已被浮层消费，即使已经滚到边界也不再落到全局键位。
 pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> bool {
@@ -301,6 +338,14 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Down => {
             app.scroll_danmaku(false);
+            true
+        }
+        KeyCode::PageUp => {
+            app.scroll_danmaku_page(true);
+            true
+        }
+        KeyCode::PageDown => {
+            app.scroll_danmaku_page(false);
             true
         }
         KeyCode::Char('f') => {
@@ -314,7 +359,7 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> bool {
 /// 绘制浮层：铺底 → 边框 / 分隔线 → 标题与同接 → 换行消息 → 输入行。
 ///
 /// 边框按卡面 T-0100b3 §0：顶行 `┏ ━ ┛`、底行 `┗ ━ ┓`、Input 分隔 `┣ 输入 ━`
-/// 全部用粗线；消息行右侧完全开口，Input 行右端只有一条浅色内竖线。
+/// 全部用粗线；消息行与 Input 行右侧完全开口。
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAudio) {
     if area.width < 8 || area.height < CHROME_ROWS {
         return;
@@ -330,7 +375,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
 
     let border = Style::default().fg(palette.line_strong).bg(bg);
     let right = area.right().saturating_sub(1);
-    // 只画左竖边；消息行右侧保持空白，Input 行右端稍后补浅色内竖线。
+    // 只画左竖边；消息行与 Input 行右侧保持空白。
     for y in area.y.saturating_add(1)..area.bottom() {
         frame.buffer_mut().set_string(area.x, y, "┃", border);
     }
@@ -390,18 +435,12 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
     };
     crate::chat_input::draw_input(frame, input_area, app);
     // Input 行提示符是 ASCII `>`（x37），x38 留空、x39 起是输入内容；
-    // 右端 x69 补一条浅色内竖线，与消息行的完全开口区分。
+    // 右侧完全开口，不画竖线。
     frame.buffer_mut().set_string(
         input_area.x,
         input_area.y,
         ">",
         Style::default().fg(palette.accent).bg(bg),
-    );
-    frame.buffer_mut().set_string(
-        right,
-        input_area.y,
-        "│",
-        Style::default().fg(palette.faint).bg(bg),
     );
 }
 
@@ -421,7 +460,7 @@ fn draw_title(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAud
     );
 
     let online = online_text(player.live_online());
-    let online_x = right.saturating_sub(ONLINE_BLOCK_WIDTH);
+    let online_x = right.saturating_sub(display_width(&online) as u16);
     frame.buffer_mut().set_string(
         online_x,
         area.y,
@@ -686,21 +725,21 @@ impl App {
         changed
     }
 
-    /// `d`：显示 / 隐藏浮层；从隐藏打开时同步聚焦 Input（T-0100b2）。
+    /// `d`：打开浮层并聚焦 Input（T-0101 起 `d` 只负责打开，关闭交给 `Esc`）。
     ///
-    /// 输入焦点存在时 `d` 是普通字符（事件循环先走 chat 分支），因此关闭
-    /// 路径是先 `Esc` 退出焦点，再按 `d`。
+    /// 输入焦点存在时 `d` 是普通字符（事件循环先走 chat 分支）。
     pub(crate) fn toggle_danmaku_overlay(&mut self, total: u64) {
         if self.danmaku_overlay.screen_height() < DANMAKU_MIN_SCREEN_HEIGHT {
             return;
         }
         self.danmaku_overlay.sync(total);
-        if self.danmaku_overlay.visible() {
-            self.danmaku_overlay.hide();
-            self.chat_input = None;
-        } else {
-            self.begin_live_chat();
-        }
+        self.begin_live_chat();
+    }
+
+    /// `Esc`：收起浮层并清空输入焦点与草稿。
+    pub(crate) fn hide_danmaku_overlay(&mut self) {
+        self.danmaku_overlay.hide();
+        self.chat_input = None;
     }
 
     pub(crate) fn scroll_danmaku(&mut self, up: bool) -> bool {
@@ -709,6 +748,10 @@ impl App {
         } else {
             self.danmaku_overlay.scroll_down()
         }
+    }
+
+    pub(crate) fn scroll_danmaku_page(&mut self, up: bool) -> bool {
+        self.danmaku_overlay.scroll_page(up)
     }
 
     pub(crate) fn follow_danmaku(&mut self) -> bool {
@@ -873,6 +916,24 @@ mod tests {
     }
 
     #[test]
+    fn page_keys_move_by_one_window_and_clamp() {
+        let mut overlay = DanmakuOverlay::default();
+        overlay.sync(40);
+        overlay.show();
+        overlay.set_scroll_metrics(40, 14);
+        assert!(overlay.scroll_page(true));
+        assert_eq!(overlay.offset(), 14);
+        assert!(overlay.scroll_page(true));
+        assert_eq!(overlay.offset(), 26, "40 行、14 行窗口最多上移 26 行");
+        assert!(!overlay.scroll_page(true));
+        assert!(overlay.scroll_page(false));
+        assert_eq!(overlay.offset(), 12);
+        overlay.follow();
+        assert!(!overlay.scroll_page(false));
+        assert_eq!(overlay.offset(), 0);
+    }
+
+    #[test]
     fn toggle_resets_scroll_and_clears_the_backlog() {
         let mut overlay = DanmakuOverlay::default();
         overlay.sync(10);
@@ -881,9 +942,9 @@ mod tests {
         assert!(overlay.scroll_up());
         overlay.sync(12);
         assert_eq!(overlay.unread(), 2);
-        assert!(!overlay.toggle(), "closes");
+        overlay.hide();
         assert!(!overlay.visible());
-        assert!(overlay.toggle(), "opens");
+        overlay.show();
         assert!(overlay.visible());
         assert!(!overlay.input_focused());
         assert_eq!(overlay.unread(), 0);
@@ -900,22 +961,24 @@ mod tests {
     }
 
     #[test]
-    fn online_is_four_digits_with_one_space_on_each_side() {
+    fn online_is_four_digits_up_to_9999_and_uses_w_above_it() {
         assert_eq!(online_text(Some(2000)), " 2000 ");
         assert_eq!(online_text(Some(0)), "    0 ");
         assert_eq!(online_text(Some(9999)), " 9999 ");
-        assert_eq!(online_text(Some(99999)), " 9999 ");
+        assert_eq!(online_text(Some(12345)), " 1.2w ");
+        assert_eq!(online_text(Some(10000)), " 1.0w ");
+        assert_eq!(online_text(Some(99999)), " 9.9w ");
+        assert_eq!(online_text(Some(123456)), " 12.3w ");
         assert_eq!(online_text(None), "  --  ");
-        assert_eq!(
-            display_width(&online_text(None)),
-            usize::from(ONLINE_BLOCK_WIDTH)
-        );
-        for value in [0, 9, 99, 999, 2000, 9999, 12345] {
+        // ≤9999 与 ` -- ` 都保持 4 格数字域 + 两侧空格。
+        for value in [0, 9, 99, 999, 2000, 9999, 12345, 99999] {
             assert_eq!(
                 display_width(&online_text(Some(value))),
-                usize::from(ONLINE_BLOCK_WIDTH)
+                ONLINE_CELL_WIDTH + 2,
+                "{value}"
             );
         }
+        assert_eq!(display_width(&online_text(None)), ONLINE_CELL_WIDTH + 2);
     }
 
     #[test]
@@ -1005,9 +1068,12 @@ mod tests {
         assert!(!keys_owned(&app));
         app.playlist_input = None;
 
-        // 退出焦点后 d 才关闭浮层。
-        app.toggle_danmaku_overlay(0);
+        // Esc 收起浮层；d 只负责打开 / 聚焦。
+        app.hide_danmaku_overlay();
         assert!(!app.danmaku_overlay_visible());
         assert!(!keys_owned(&app));
+        app.toggle_danmaku_overlay(0);
+        assert!(app.danmaku_overlay_visible());
+        assert!(app.live_chat_active());
     }
 }

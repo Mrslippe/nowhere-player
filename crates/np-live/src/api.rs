@@ -13,11 +13,16 @@ use crate::error::LiveError;
 
 /// 直播 playurl 接口。
 const PLAY_INFO_URL: &str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
-/// 房间信息接口（标题 / 开播状态 / 分区）。
+/// 房间信息接口（标题 / 开播状态 / 分区 / 主播 UID）。
 const ROOM_INFO_URL: &str = "https://api.live.bilibili.com/room/v1/Room/get_info";
+/// 房间初始化接口；房间信息缺 uid 时用它兜底取主播 UID。
+const ROOM_INIT_URL: &str = "https://api.live.bilibili.com/room/v1/Room/room_init";
 /// 主播资料接口（主播名）。
 const ANCHOR_INFO_URL: &str =
     "https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room";
+/// 实时同接人数接口（`data.count`，公开 GET、无 WBI）。
+const ONLINE_RANK_URL: &str =
+    "https://api.live.bilibili.com/xlive/general-interface/v1/rank/queryContributionRank";
 
 /// 打开 CDN 长连接时必须带的请求头（B 站缺 `Referer` 会 403）。
 const STREAM_HEADERS: [(&str, &str); 3] = [
@@ -53,6 +58,16 @@ pub fn anchor_info_url(room_id: u64) -> String {
     format!("{ANCHOR_INFO_URL}?roomid={room_id}")
 }
 
+/// `room_init` URL；返回真实房间号与主播 UID。
+pub fn room_init_url(room_id: u64) -> String {
+    format!("{ROOM_INIT_URL}?id={room_id}")
+}
+
+/// 实时同接人数 URL：公开 GET、无 WBI、不带 cookie。
+pub fn online_rank_url(ruid: u64, room_id: u64) -> String {
+    format!("{ONLINE_RANK_URL}?ruid={ruid}&room_id={room_id}&page=1&page_size=10&type=online_rank")
+}
+
 /// CDN 长连接请求头。
 pub fn stream_headers() -> &'static [(&'static str, &'static str)] {
     &STREAM_HEADERS
@@ -80,7 +95,7 @@ impl PlayInfo {
     }
 }
 
-/// 房间信息（标题 / 分区）。主播名走 [`fetch_anchor_name`]。
+/// 房间信息（标题 / 分区 / 主播 UID）。主播名走 [`fetch_anchor_name`]。
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
     pub room_id: u64,
@@ -92,8 +107,16 @@ pub struct RoomInfo {
     pub parent_area_name: String,
     /// B站开播时间（UTC+8 解析成 Unix 秒）；解析失败为 `None`。
     pub live_started_at: Option<u64>,
-    /// 当前同接人数（`data.online`）；接口缺失时为 `None`。
-    pub online: Option<u64>,
+    /// 主播 UID（`data.uid`），用于查询实时同接人数；旧接口可能缺失。
+    pub uid: Option<u64>,
+}
+
+/// `room_init` 的要点：真实房间号与主播 UID。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomInit {
+    pub room_id: u64,
+    pub uid: Option<u64>,
+    pub live_status: i64,
 }
 
 /// 取 playurl。调用方负责把 [`PlayInfo::live_status`] / `flv_url` 映射成
@@ -144,6 +167,29 @@ pub fn fetch_anchor_name(transport: &dyn Transport, room_id: u64) -> Result<Stri
     parse_anchor_name(&body)
 }
 
+/// 取房间初始化信息（真实房间号 + 主播 UID）。best-effort。
+pub fn fetch_room_init(transport: &dyn Transport, room_id: u64) -> Result<RoomInit, LiveError> {
+    validate_room(room_id)?;
+    let body = transport.get(&room_init_url(room_id))?;
+    parse_room_init(&body)
+}
+
+/// 取实时同接人数（`queryContributionRank?type=online_rank` 的 `data.count`）。
+///
+/// 公开 GET、无 WBI、不带 cookie；失败由调用方显示 ` -- `，不阻断播放。
+pub fn fetch_online_count(
+    transport: &dyn Transport,
+    ruid: u64,
+    room_id: u64,
+) -> Result<u64, LiveError> {
+    validate_room(room_id)?;
+    if ruid == 0 {
+        return Err(LiveError::BadStream("主播 UID 必须是正整数".to_owned()));
+    }
+    let body = transport.get(&online_rank_url(ruid, room_id))?;
+    parse_online_count(&body)
+}
+
 /// 解析 `getRoomPlayInfo` 响应。
 pub fn parse_play_info(body: &[u8], requested_room: u64) -> Result<PlayInfo, LiveError> {
     let envelope: Envelope<PlayData> = serde_json::from_slice(body)
@@ -181,8 +227,34 @@ pub fn parse_room_info(body: &[u8]) -> Result<RoomInfo, LiveError> {
         area_name: data.area_name,
         parent_area_name: data.parent_area_name,
         live_started_at: parse_live_time(&data.live_time),
-        online: data.online,
+        uid: data.uid,
     })
+}
+
+/// 解析 `room_init` 响应。
+pub fn parse_room_init(body: &[u8]) -> Result<RoomInit, LiveError> {
+    let envelope: Envelope<RoomInitData> = serde_json::from_slice(body)
+        .map_err(|error| LiveError::BadStream(format!("room_init JSON 解析失败：{error}")))?;
+    envelope.ensure_ok("room_init")?;
+    let data = envelope
+        .data
+        .ok_or_else(|| LiveError::BadStream("room_init 响应缺少 data".to_owned()))?;
+    Ok(RoomInit {
+        room_id: data.room_id,
+        uid: data.uid,
+        live_status: data.live_status,
+    })
+}
+
+/// 解析 `queryContributionRank?type=online_rank` 响应；`data.count` 即同接人数。
+pub fn parse_online_count(body: &[u8]) -> Result<u64, LiveError> {
+    let envelope: Envelope<OnlineRankData> = serde_json::from_slice(body)
+        .map_err(|error| LiveError::BadStream(format!("同接 JSON 解析失败：{error}")))?;
+    envelope.ensure_ok("同接")?;
+    envelope
+        .data
+        .and_then(|data| data.count)
+        .ok_or_else(|| LiveError::BadStream("同接响应缺少 count".to_owned()))
 }
 
 /// 解析 `get_anchor_in_room` 响应；`uname` 为空视为坏响应。
@@ -339,7 +411,23 @@ struct RoomData {
     #[serde(default)]
     live_time: String,
     #[serde(default)]
-    online: Option<u64>,
+    uid: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RoomInitData {
+    #[serde(default)]
+    room_id: u64,
+    #[serde(default)]
+    uid: Option<u64>,
+    #[serde(default)]
+    live_status: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OnlineRankData {
+    #[serde(default)]
+    count: Option<u64>,
 }
 
 fn parse_live_time(value: &str) -> Option<u64> {
@@ -480,14 +568,78 @@ mod tests {
     }
 
     #[test]
-    fn room_fixture_yields_online_and_missing_online_is_none() {
+    fn room_fixture_yields_the_anchor_uid() {
         let room = parse_room_info(ROOM.as_bytes()).unwrap();
-        assert_eq!(room.online, Some(8400));
+        assert_eq!(room.uid, Some(474_595_627));
 
         let room =
             parse_room_info(br#"{"code":0,"data":{"room_id":1,"title":"x","live_status":1}}"#)
                 .unwrap();
-        assert_eq!(room.online, None);
+        assert_eq!(room.uid, None);
+    }
+
+    #[test]
+    fn room_init_url_and_fixture_yield_the_anchor_uid() {
+        let url = room_init_url(21622811);
+        assert!(url.contains("/room/v1/Room/room_init"));
+        assert!(url.contains("id=21622811"));
+
+        let init = parse_room_init(
+            br#"{"code":0,"data":{"room_id":21622811,"short_id":0,"uid":474595627,"live_status":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(init.room_id, 21622811);
+        assert_eq!(init.uid, Some(474_595_627));
+        assert!(init.live_status == 1);
+    }
+
+    #[test]
+    fn online_rank_url_is_public_and_requests_online_rank_count() {
+        let url = online_rank_url(474_595_627, 21622811);
+        assert!(url.contains("queryContributionRank"));
+        assert!(url.contains("ruid=474595627"));
+        assert!(url.contains("room_id=21622811"));
+        assert!(url.contains("page=1"));
+        assert!(url.contains("page_size=10"));
+        assert!(url.contains("type=online_rank"));
+        assert!(!url.contains("wbi"));
+    }
+
+    #[test]
+    fn online_rank_parses_count_and_rejects_bad_payloads() {
+        assert_eq!(
+            parse_online_count(br#"{"code":0,"message":"0","data":{"count":12345}}"#).unwrap(),
+            12345
+        );
+        assert_eq!(
+            parse_online_count(br#"{"code":0,"data":{"count":0}}"#).unwrap(),
+            0
+        );
+        assert!(matches!(
+            parse_online_count(br#"{"code":0,"data":{}}"#).unwrap_err(),
+            LiveError::BadStream(_)
+        ));
+        assert!(matches!(
+            parse_online_count(br#"{"code":-400,"message":"bad"}"#).unwrap_err(),
+            LiveError::Api { code: -400, .. }
+        ));
+    }
+
+    #[test]
+    fn fetch_online_count_uses_the_online_rank_url() {
+        let transport = RecordingTransport::new(r#"{"code":0,"data":{"count":321}}"#);
+        assert_eq!(fetch_online_count(&transport, 42, 7).unwrap(), 321);
+        let urls = transport.urls.lock().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].contains("type=online_rank"));
+        assert!(urls[0].contains("ruid=42"));
+    }
+
+    #[test]
+    fn fetch_online_count_rejects_a_zero_uid_before_any_request() {
+        let transport = RecordingTransport::new(r#"{"code":0,"data":{"count":1}}"#);
+        assert!(fetch_online_count(&transport, 0, 7).is_err());
+        assert!(transport.urls.lock().unwrap().is_empty());
     }
 
     #[test]

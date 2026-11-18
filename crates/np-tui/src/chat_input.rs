@@ -146,16 +146,28 @@ impl ChatInput {
 }
 
 /// 处理输入框打开时的按键；返回前不会进入全局 / Live 键位解析。
+///
+/// PgUp/PgDn 在输入聚焦时仍优先翻弹幕：只滚动历史，不移动文本光标。
+/// Esc 收起整个浮层并清空焦点（T-0101），不再保留浮层。
 pub(crate) fn handle_chat_key(code: KeyCode, app: &mut App, player: &TuiAudio) {
+    match code {
+        KeyCode::PageUp => {
+            app.scroll_danmaku_page(true);
+            return;
+        }
+        KeyCode::PageDown => {
+            app.scroll_danmaku_page(false);
+            return;
+        }
+        _ => {}
+    }
     let outcome = match app.chat_input.as_mut() {
         Some(chat) => chat.handle_key(code),
         None => return,
     };
     match outcome {
         ChatOutcome::Handled => {}
-        ChatOutcome::Cancel => {
-            app.cancel_live_chat();
-        }
+        ChatOutcome::Cancel => app.hide_danmaku_overlay(),
         ChatOutcome::Submit(message) => app.submit_live_chat_message(message, player),
     }
 }
@@ -214,6 +226,23 @@ pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         area,
     );
 
+    // 复用 Keyword 输入框的硬件光标：IME 候选栏跟随真实单元格，CJK 按
+    // 显示宽度计算；失焦时不设置，ratatui 会在下一次绘制隐藏光标。
+    if focused {
+        let prefix: String = chat
+            .value
+            .iter()
+            .skip(start)
+            .take(chat.cursor.saturating_sub(start))
+            .collect();
+        let cursor_x = area
+            .x
+            .saturating_add(2)
+            .saturating_add(display_width(&prefix) as u16)
+            .min(area.right().saturating_sub(1));
+        frame.set_cursor_position((cursor_x, area.y));
+    }
+
     if chat.pending().is_some() {
         let label = " 发送中… ";
         let label_width = display_width(label) as u16;
@@ -241,7 +270,7 @@ impl App {
         self.chat_input.is_some() && self.danmaku_overlay.input_focused()
     }
 
-    /// `c`：打开浮层并聚焦 Input（T-0100b2）；已打开时只重新聚焦。
+    /// `c` / `d`：打开浮层并聚焦 Input（T-0100b2 / T-0101）；已打开时只重新聚焦。
     ///
     /// 终端高度 <10 时不打开、不占位，回退到普通 Live 页。
     pub(crate) fn begin_live_chat(&mut self) -> bool {
@@ -259,7 +288,8 @@ impl App {
         true
     }
 
-    /// `Esc`：退出输入焦点，浮层保持打开；草稿一并丢弃。
+    /// 只退出输入焦点、保留浮层并丢弃草稿；`Esc` 收起整个浮层走
+    /// [`App::hide_danmaku_overlay`]（T-0101）。
     pub(crate) fn cancel_live_chat(&mut self) -> bool {
         let had = self.chat_input.take().is_some();
         self.danmaku_overlay.blur_input();

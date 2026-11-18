@@ -2250,6 +2250,18 @@ fn escape_and_transport_actions_respect_live_mode() {
     );
     assert_eq!(app.status, "直播中不可跳转");
 
+    // d 打开浮层并聚焦；此时 Esc 先收起浮层，不进入退出确认。
+    crate::controller::execute(
+        Action::ToggleDanmaku,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(app.danmaku_overlay_visible());
+    assert!(app.live_chat_active());
     crate::controller::execute(
         Action::Escape,
         &mut app,
@@ -2259,7 +2271,44 @@ fn escape_and_transport_actions_respect_live_mode() {
         &theme,
         &settings,
     );
+    assert!(!app.danmaku_overlay_visible());
+    assert!(!app.live_chat_active());
+    assert!(!app.live_exit_armed());
+    assert!(audio.is_live());
+
+    // T-0101：第一次 Esc 只进入退出确认，不立即停播。
+    crate::controller::execute(
+        Action::Escape,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(app.live_exit_armed());
+    assert!(audio.is_live(), "确认态不能直接停播");
+    assert!(app.status.contains("Enter确认退出直播"), "{}", app.status);
+
+    // 确认态 Esc 取消。
+    crate::controller::execute(
+        Action::Escape,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(!app.live_exit_armed());
+    assert!(audio.is_live());
+    assert_eq!(app.status, "已取消退出");
+
+    // 再次 Esc 进入确认态，Enter 等价动作确认退出（事件循环调用同一方法）。
+    app.arm_live_exit();
+    assert!(app.confirm_live_exit(&audio));
     assert_eq!(app.status, "已停止直播");
+    assert!(!app.live_exit_armed());
     assert!(!audio.is_live());
 
     let _ = std::fs::remove_dir_all(root);
@@ -2283,7 +2332,7 @@ fn live_chat_audio() -> TuiAudio {
 }
 
 #[test]
-fn live_chat_opens_from_c_and_escape_only_closes_input() {
+fn live_chat_opens_from_c_and_escape_collapses_the_overlay_without_stopping_live() {
     let root = std::env::temp_dir().join(format!(
         "np-tui-chat-{}-{}",
         std::process::id(),
@@ -2316,9 +2365,11 @@ fn live_chat_opens_from_c_and_escape_only_closes_input() {
     assert!(app.live_chat_active());
     assert_ne!(app.status, "弹幕输入待接入");
 
-    // Esc 只关闭输入框，不停止直播。
+    // Esc 收起整个弹幕框（清空焦点），不停止直播、也不进入退出确认。
     crate::chat_input::handle_chat_key(KeyCode::Esc, &mut app, &audio);
     assert!(!app.live_chat_active());
+    assert!(!app.danmaku_overlay_visible());
+    assert!(!app.live_exit_armed());
     assert!(audio.is_live(), "Esc in chat must not stop live");
 
     let _ = std::fs::remove_dir_all(root);
@@ -2467,6 +2518,97 @@ fn live_chat_failure_keeps_content_and_passes_the_error_through() {
     assert!(error.contains("过于频繁"), "{error}");
     assert!(error.contains("发送失败"), "{error}");
     assert_eq!(audio.danmaku_calls_for_test(), 1, "no automatic retry");
+}
+
+#[test]
+fn danmaku_keys_page_while_focused_and_enter_sends() {
+    let audio = live_chat_audio();
+    audio.bili_auth_for_test(Some(bili_auth_stub()));
+    audio.danmaku_result_for_test(Ok(()));
+    let (sender, _links) = audio.danmaku_channel_for_test();
+    for index in 0..40 {
+        sender
+            .send(np_live::DanmakuMessage {
+                user: "观众".to_owned(),
+                uid: None,
+                text: format!("第{index}条弹幕"),
+                color: 16_777_215,
+                timestamp: index,
+            })
+            .expect("send");
+    }
+    assert!(audio.poll_danmaku());
+    audio.danmaku_link_for_test(crate::event_loop::DanmakuLink::Idle);
+
+    let mut app = App::new();
+    app.toggle_danmaku_overlay(audio.danmaku_received());
+    assert!(app.live_chat_active(), "d 打开时聚焦 Input");
+    app.danmaku_overlay.set_scroll_metrics(40, 14);
+    app.insert_live_chat_char('你');
+
+    // PgUp/PgDn 在输入聚焦时仍翻页，且不移动文本光标。
+    crate::chat_input::handle_chat_key(KeyCode::PageUp, &mut app, &audio);
+    assert_eq!(app.danmaku_overlay.offset(), 14);
+    crate::chat_input::handle_chat_key(KeyCode::PageUp, &mut app, &audio);
+    assert_eq!(app.danmaku_overlay.offset(), 26);
+    crate::chat_input::handle_chat_key(KeyCode::PageDown, &mut app, &audio);
+    assert_eq!(app.danmaku_overlay.offset(), 12);
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.text()),
+        Some("你".to_owned())
+    );
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.cursor_column()),
+        Some(2),
+        "翻页不移动输入光标"
+    );
+    app.move_live_chat_cursor(false);
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.cursor_column()),
+        Some(0),
+        "翻页不移动输入光标"
+    );
+
+    // f 在输入聚焦时只是普通字符，不会跟随。
+    crate::chat_input::handle_chat_key(KeyCode::Char('f'), &mut app, &audio);
+    assert_eq!(app.danmaku_overlay.offset(), 12);
+    assert_eq!(
+        app.chat_input.as_ref().map(|chat| chat.text()),
+        Some("f你".to_owned()),
+        "f 是普通字符，插在光标位置"
+    );
+
+    // Enter 走真正的发送路径（handle_chat_key）。
+    crate::chat_input::handle_chat_key(KeyCode::Enter, &mut app, &audio);
+    assert_eq!(audio.danmaku_calls_for_test(), 1);
+    assert!(app.chat_input.as_ref().expect("chat").pending().is_some());
+}
+
+#[test]
+fn danmaku_follows_from_the_unfocused_overlay() {
+    let mut app = App::new();
+    app.toggle_danmaku_overlay(0);
+    app.danmaku_overlay.set_scroll_metrics(40, 14);
+    assert!(app.scroll_danmaku(true));
+    // d 打开会聚焦 Input；Esc 相当于收起，这里直接失焦以验证 f。
+    app.cancel_live_chat();
+    assert!(app.danmaku_overlay_visible());
+    assert!(!app.live_chat_active());
+    assert!(crate::danmaku_overlay::handle_key(
+        &mut app,
+        KeyCode::PageUp
+    ));
+    assert_eq!(app.danmaku_overlay.offset(), 15);
+    assert!(crate::danmaku_overlay::handle_key(
+        &mut app,
+        KeyCode::PageDown
+    ));
+    assert_eq!(app.danmaku_overlay.offset(), 1);
+    assert!(crate::danmaku_overlay::handle_key(
+        &mut app,
+        KeyCode::Char('f')
+    ));
+    assert_eq!(app.danmaku_overlay.offset(), 0);
 }
 
 #[test]

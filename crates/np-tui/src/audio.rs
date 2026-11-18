@@ -685,7 +685,7 @@ impl TuiAudio {
         self.start_danmaku(room_id, auth.clone());
 
         // 主播名 / 分区与音频准备并行：多一条短请求，不拖慢起播。
-        // 同接数（`online`）短周期变化，之后每 30s 重新拉一次（T-0100b2）。
+        // 同接数（online_rank）短周期变化，之后每 3s 重新拉一次（T-0101）。
         self.spawn_live_meta(generation, room_id);
         self.live_meta_refresh_at
             .set(Some(Instant::now() + LIVE_META_REFRESH));
@@ -808,30 +808,6 @@ impl TuiAudio {
             }
         }
         true
-    }
-
-    /// 收下后台线程拉到的主播名 / 分区；generation 过期就丢掉。
-    fn drain_live_meta(&self) -> bool {
-        let mut changed = false;
-        loop {
-            let received = {
-                let receiver = self.live_meta_rx.borrow();
-                receiver
-                    .as_ref()
-                    .and_then(|receiver| receiver.try_recv().ok())
-            };
-            let Some((generation, meta)) = received else {
-                break;
-            };
-            if generation != self.live_generation.get() {
-                continue;
-            }
-            if self.live_meta.borrow().as_ref() != Some(&meta) {
-                *self.live_meta.borrow_mut() = Some(meta);
-                changed = true;
-            }
-        }
-        changed
     }
 
     fn begin_reconnect(&self, reason: Option<String>) {

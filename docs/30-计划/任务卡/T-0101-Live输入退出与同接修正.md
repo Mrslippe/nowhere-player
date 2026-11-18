@@ -72,6 +72,13 @@ crates/np-live/src/lib.rs（仅必要）
 - [ ] 同接 3s 刷新、w 格式、失败 -- `[数字]`
 - [ ] 全量门禁 + release build `[数字]`
 
-## 5. 回报
+## 5. 结果（2026-11-19）
+
+- 六项完成：IME 硬件光标复用、标签右空格、buffer 左右各少1格、d/Esc/PgUp/PgDn、Live Esc 确认、同接 3s。
+- 同接改 `queryContributionRank.type=online_rank.count`；失败 ` -- `；>9999 用 w。
+- workspace 1071 tests；全量门禁通过；release 独立 target 构建成功。
+- 真实中文 IME 候选栏 T3 待人工；主 target 被运行中进程锁定，未强杀。
+
+## 6. 回报
 
 STATUS/FILES/TESTS/UI/RISKS。不提交。

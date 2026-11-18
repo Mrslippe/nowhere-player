@@ -395,7 +395,7 @@ fn golden_live_danmaku_hidden_is_the_baseline() {
     let mut app = themed_app();
     let audio = live_audio();
     app.toggle_danmaku_overlay(audio.danmaku_received());
-    app.toggle_danmaku_overlay(audio.danmaku_received());
+    app.hide_danmaku_overlay();
     snapshot_app("live_72x24.txt", 72, 24, &mut app, &audio);
 }
 
@@ -404,6 +404,22 @@ fn golden_live_danmaku_empty_72x24() {
     let audio = live_audio();
     let mut app = overlay_app(&audio);
     snapshot_app("live_danmaku_empty_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_danmaku_online_w_72x24() {
+    let audio = live_audio();
+    audio.live_online_for_test(Some(12345));
+    let mut app = overlay_app(&audio);
+    snapshot_app("live_danmaku_online_w_72x24.txt", 72, 24, &mut app, &audio);
+}
+
+#[test]
+fn golden_live_exit_confirm_72x24() {
+    let audio = live_audio();
+    let mut app = themed_app();
+    app.arm_live_exit();
+    snapshot_app("live_exit_confirm_72x24.txt", 72, 24, &mut app, &audio);
 }
 
 #[test]
@@ -539,13 +555,14 @@ fn danmaku_overlay_frame_matches_the_strict_card() {
     let buffer = terminal.backend().buffer();
     let symbol = |x: u16, y: u16| buffer[(x, y)].symbol();
 
-    // 顶边 y2：┏ x36，━ 填充，┛ x69；标题 `弹幕` 落在 37..41。
+    // 顶边 y2：┏ x36，━ 填充，┛ x69；标题 ` 弹幕 ` 落在 37..42。
     assert_eq!(symbol(36, 2), "┏");
     assert_eq!(symbol(69, 2), "┛");
     assert_eq!(symbol(37, 2), " ");
     assert_eq!(symbol(38, 2), "弹");
     assert_eq!(symbol(40, 2), "幕");
-    for x in 42..63 {
+    assert_eq!(symbol(42, 2), " ", "标签右侧保留 1 空格");
+    for x in 43..63 {
         assert_eq!(symbol(x, 2), "━", "top fill x {x}");
     }
     // 同接数固定 4 位、两侧空格：x63..x68 是 ` 2000 `。
@@ -560,23 +577,23 @@ fn danmaku_overlay_frame_matches_the_strict_card() {
         assert_eq!(symbol(69, y), " ", "right side stays open y {y}");
     }
 
-    // Input 分隔 y17：┣ x36 + " 输入" x37..41 + ━ 42..68，无右端。
+    // Input 分隔 y17：┣ x36 + " 输入 " x37..42 + ━ 43..68，无右端。
     assert_eq!(symbol(36, 17), "┣");
     assert_eq!(symbol(37, 17), " ");
     assert_eq!(symbol(38, 17), "输");
     assert_eq!(symbol(40, 17), "入");
+    assert_eq!(symbol(42, 17), " ", "标签右侧保留 1 空格");
     assert_eq!(buffer[(38, 17)].fg, app.palette.accent, "输入标签用 accent");
-    for x in 42..69 {
+    for x in 43..69 {
         assert_eq!(symbol(x, 17), "━", "separator fill x {x}");
     }
     assert_eq!(symbol(69, 17), " ");
 
-    // Input y18：x37 `>` 提示符、x38 留空、x39..x68 内容、x69 浅色内竖线。
+    // Input y18：x37 `>` 提示符、x38 留空、x39..x68 内容、右侧完全开口。
     assert_eq!(symbol(36, 18), "┃");
     assert_eq!(symbol(37, 18), ">");
     assert_eq!(symbol(38, 18), " ");
-    assert_eq!(symbol(69, 18), "│");
-    assert_eq!(buffer[(69, 18)].fg, app.palette.faint, "Input 内竖线是浅色");
+    assert_eq!(symbol(69, 18), " ");
 
     // 底边 y19：┗ x36，━ 37..68，┓ x69。
     assert_eq!(symbol(36, 19), "┗");

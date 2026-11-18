@@ -236,6 +236,7 @@ where
             draw_needed = true;
         }
         if !player.is_live() {
+            app.clear_live_exit();
             if app.live_chat_active() {
                 app.cancel_live_chat();
                 draw_needed = true;
@@ -420,6 +421,11 @@ where
                                 if let Err(error) = app.confirm_playlist_delete(&**library) {
                                     app.set_status(error);
                                 }
+                                draw_needed = true;
+                                continue;
+                            }
+                            if app.live_exit_armed() {
+                                app.confirm_live_exit(player);
                                 draw_needed = true;
                                 continue;
                             }
