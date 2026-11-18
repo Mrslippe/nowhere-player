@@ -3,8 +3,10 @@
 //! 消息源是 [`TuiAudio`] 的 500 条环形缓冲；本模块只负责窗口选择、控制字符
 //! 清理、按显示宽度换行与绘制，不建立连接，也不改变 `c` 输入框的状态机。
 //!
-//! T-0100b2 起浮层改为覆盖式：视觉区仍按 66×19 完整绘制，浮层 32×18 叠在
-//! 右侧（x37,y2）；左侧频谱不再被压缩。
+//! T-0100b2 起浮层改为覆盖式：视觉区仍按 66×19 完整绘制，浮层叠在右侧；
+//! 左侧频谱不再被压缩。T-0100b3 起浮层为 34×18、落在 x36,y2：左缘 `┃`、
+//! 上下横线与 `┣ 输入 ━` 分隔都用粗线，右侧只在右上 `┛`、右下 `┓` 收口；
+//! 消息行不画竖框，Input 行右端仅保留一条浅色内竖线。
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -21,12 +23,14 @@ use crate::live_page::LiveLayout;
 use crate::model::Focus;
 use crate::theme::Palette;
 
-/// 浮层宽度：72×24 下覆盖视觉区右侧 32 列，左侧仍完整绘制 34 列频谱。
-pub(crate) const OVERLAY_WIDTH: u16 = 32;
+/// 浮层宽度：34 = 左框 1 + 内容 32 + 右上 / 右下角 1；72×24 下占 x36..x69。
+pub(crate) const OVERLAY_WIDTH: u16 = 34;
 /// 浮层最大高度：72×24 下 y2..y19 共 18 行，信息行 y20 不被覆盖。
 pub(crate) const OVERLAY_MAX_HEIGHT: u16 = 18;
-/// 标题文字；`┌` 后留 1 个空格，再写 `弹幕`。
+/// 标题文字；`┏` 后留 1 个空格，再写 `弹幕`。
 pub(crate) const TITLE_TEXT: &str = " 弹幕";
+/// Input 分隔行标签；`┣` 后留 1 个空格，再写 `输入`。
+pub(crate) const INPUT_LABEL: &str = " 输入";
 /// 空态文案。
 pub(crate) const EMPTY_TEXT: &str = "暂无弹幕";
 /// 未读数最多显示到 99+。
@@ -227,7 +231,8 @@ pub(crate) fn message_window(total: usize, rows: usize, offset: usize) -> (usize
     (start, start + rows, rows)
 }
 
-/// 浮层区域：72×24 下为 x37,y2,32×18；小尺寸只收缩宽度 / 高度，不 panic。
+/// 浮层区域：72×24 下为 x36,y2,34×18；右缘与 Player 框右缘同列（x69），
+/// 内容区 x37..x68 共 32 列。小尺寸只收缩宽度 / 高度，不 panic。
 ///
 /// 常规情况高度比视觉区少 1，避免盖住最下面的 Information 行；当视觉区只有
 /// 5 行（40×10）时用满 5 行，保证 1 行消息 + 三行 Input 仍然存在。
@@ -253,7 +258,7 @@ pub(crate) fn area(layout: &LiveLayout) -> Option<Rect> {
         return None;
     }
     Some(Rect::new(
-        visual.right().saturating_sub(width),
+        layout.player.right().saturating_sub(width),
         visual.y,
         width,
         height,
@@ -308,7 +313,8 @@ pub(crate) fn handle_key(app: &mut App, code: KeyCode) -> bool {
 
 /// 绘制浮层：铺底 → 边框 / 分隔线 → 标题与同接 → 换行消息 → 输入行。
 ///
-/// 边框角按卡面 T-0100b2 §0：左上 `┌`、右上 `┘`、左下 `└`、右下 `┐`。
+/// 边框按卡面 T-0100b3 §0：顶行 `┏ ━ ┛`、底行 `┗ ━ ┓`、Input 分隔 `┣ 输入 ━`
+/// 全部用粗线；消息行右侧完全开口，Input 行右端只有一条浅色内竖线。
 pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAudio) {
     if area.width < 8 || area.height < CHROME_ROWS {
         return;
@@ -324,39 +330,47 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
 
     let border = Style::default().fg(palette.line_strong).bg(bg);
     let right = area.right().saturating_sub(1);
-    // 左右竖边覆盖消息区与输入区。
+    // 只画左竖边；消息行右侧保持空白，Input 行右端稍后补浅色内竖线。
     for y in area.y.saturating_add(1)..area.bottom() {
-        frame.buffer_mut().set_string(area.x, y, "│", border);
-        frame.buffer_mut().set_string(right, y, "│", border);
+        frame.buffer_mut().set_string(area.x, y, "┃", border);
     }
 
-    // 顶边：卡面写的是左上 ┌ / 右上 ┘。
-    frame.buffer_mut().set_string(area.x, area.y, "┌", border);
-    frame.buffer_mut().set_string(right, area.y, "┘", border);
-    let top_fill = "─".repeat(usize::from(area.width.saturating_sub(2)));
+    // 横向粗线；上下各 1 个转角，分隔线没有右端。
+    let horizontal = "━".repeat(usize::from(area.width.saturating_sub(2)));
+
+    // 顶边：`┏` + `━` + `┛`。
+    frame.buffer_mut().set_string(area.x, area.y, "┏", border);
+    frame.buffer_mut().set_string(right, area.y, "┛", border);
     frame
         .buffer_mut()
-        .set_string(area.x.saturating_add(1), area.y, &top_fill, border);
+        .set_string(area.x.saturating_add(1), area.y, &horizontal, border);
 
-    // 底边：左下 └ / 右下 ┐。
+    // 底边：`┗` + `━` + `┓`。
     let bottom = area.bottom().saturating_sub(1);
-    frame.buffer_mut().set_string(area.x, bottom, "└", border);
-    frame.buffer_mut().set_string(right, bottom, "┐", border);
+    frame.buffer_mut().set_string(area.x, bottom, "┗", border);
+    frame.buffer_mut().set_string(right, bottom, "┓", border);
     frame
         .buffer_mut()
-        .set_string(area.x.saturating_add(1), bottom, &top_fill, border);
+        .set_string(area.x.saturating_add(1), bottom, &horizontal, border);
 
-    // Input 分隔线。
+    // Input 分隔线：`┣ 输入 ━`，右端不画 `┫`。
     let separator_y = area.y.saturating_add(area.height).saturating_sub(3);
     frame
         .buffer_mut()
-        .set_string(area.x, separator_y, "├", border);
+        .set_string(area.x, separator_y, "┣", border);
     frame
         .buffer_mut()
-        .set_string(right, separator_y, "┤", border);
-    frame
-        .buffer_mut()
-        .set_string(area.x.saturating_add(1), separator_y, &top_fill, border);
+        .set_string(area.x.saturating_add(1), separator_y, &horizontal, border);
+    // 标签与标题同风格：`┣` 后 1 空格 + accent + BOLD，横线在标签处让位。
+    frame.buffer_mut().set_string(
+        area.x.saturating_add(1),
+        separator_y,
+        INPUT_LABEL,
+        Style::default()
+            .fg(palette.accent)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+    );
 
     draw_title(frame, area, app, player);
 
@@ -375,6 +389,20 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
         height: 1,
     };
     crate::chat_input::draw_input(frame, input_area, app);
+    // Input 行提示符是 ASCII `>`（x37），x38 留空、x39 起是输入内容；
+    // 右端 x69 补一条浅色内竖线，与消息行的完全开口区分。
+    frame.buffer_mut().set_string(
+        input_area.x,
+        input_area.y,
+        ">",
+        Style::default().fg(palette.accent).bg(bg),
+    );
+    frame.buffer_mut().set_string(
+        right,
+        input_area.y,
+        "│",
+        Style::default().fg(palette.faint).bg(bg),
+    );
 }
 
 fn draw_title(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAudio) {
@@ -894,7 +922,10 @@ mod tests {
     fn overlay_geometry_matches_the_card() {
         let layout = crate::live_page::layout(Rect::new(0, 0, 72, 24));
         let overlay = area(&layout).expect("overlay");
-        assert_eq!(overlay, Rect::new(37, 2, 32, 18));
+        assert_eq!(overlay, Rect::new(36, 2, 34, 18));
+        // 内容区 32 列，消息 14 行（18 - 4 行框架）。
+        assert_eq!(overlay.width - 2, 32);
+        assert_eq!(overlay.height - CHROME_ROWS, 14);
         // 信息行 y20 不在浮层内。
         assert_eq!(overlay.bottom(), 20);
         assert_eq!(layout.info_y, 20);
@@ -902,12 +933,12 @@ mod tests {
         // 60×20 仍让出 Information 行；40×10 用满 5 行换取 1 行消息。
         let medium = crate::live_page::layout(Rect::new(0, 0, 60, 20));
         let medium_overlay = area(&medium).expect("60×20 overlay");
-        assert_eq!(medium_overlay, Rect::new(25, 2, 32, 14));
+        assert_eq!(medium_overlay, Rect::new(24, 2, 34, 14));
         assert!(medium_overlay.bottom() <= medium.info_y);
 
         let small = crate::live_page::layout(Rect::new(0, 0, 40, 10));
         let small_overlay = area(&small).expect("40×10 overlay");
-        assert_eq!(small_overlay, Rect::new(11, 2, 26, 5));
+        assert_eq!(small_overlay, Rect::new(12, 2, 26, 5));
         assert_eq!(small_overlay.bottom(), small.info_y + 1);
         assert_eq!(small_overlay.height - CHROME_ROWS, 1, "至少 1 行消息");
 

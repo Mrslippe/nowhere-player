@@ -173,7 +173,7 @@ pub(crate) fn pitch_fill(spectrum: &[f32], cells: usize) -> usize {
 /// 绘制 Live 页：独占屏幕，不渲染 Browse/List。
 ///
 /// 视觉区始终按完整宽度绘制（72×24 下 66×19）；弹幕浮层只是叠在右侧
-/// 32×18 的一块覆盖层，不再压缩左侧频谱（T-0100b2）。
+/// 34×18 的一块覆盖层，不再压缩左侧频谱（T-0100b2 / T-0100b3）。
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &App, player: &TuiAudio) {
     let layout = layout(frame.area());
     if layout.outer.width < 8 || layout.outer.height < 4 {
@@ -801,7 +801,7 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         // 自己的行：用户名与正文都是 accent + BOLD。
-        for x in [38, 42] {
+        for x in [37, 41] {
             assert_eq!(buffer[(x, 14)].fg, app.palette.accent, "x {x}");
             assert!(
                 buffer[(x, 14)].modifier.contains(Modifier::BOLD),
@@ -809,7 +809,7 @@ mod tests {
             );
         }
         // 别人的正文保持普通 fg；无 uid 不误判。
-        for (y, x) in [(15, 44), (16, 44)] {
+        for (y, x) in [(15, 43), (16, 43)] {
             assert_eq!(buffer[(x, y)].fg, app.palette.fg, "{x},{y}");
             assert!(!buffer[(x, y)].modifier.contains(Modifier::BOLD), "{x},{y}");
         }
@@ -848,20 +848,20 @@ mod tests {
         let audio = live_audio();
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
-        // 浮层 Input 行 y18：x38 提示符，x40 起是 30 格内容区。
-        assert_eq!(buffer[(37, 18)].symbol(), "│");
-        assert_eq!(buffer[(38, 18)].symbol(), "›");
-        assert_eq!(buffer[(40, 18)].symbol(), "你");
-        assert_eq!(buffer[(42, 18)].symbol(), "好");
-        assert_eq!(buffer[(44, 18)].symbol(), " ");
-        assert_eq!(buffer[(44, 18)].bg, app.palette.fg, "cursor after CJK");
-        assert_eq!(buffer[(68, 18)].symbol(), "│");
+        // 浮层 Input 行 y18：x37 `>` 提示符，x39 起是 30 格内容区。
+        assert_eq!(buffer[(36, 18)].symbol(), "┃");
+        assert_eq!(buffer[(37, 18)].symbol(), ">");
+        assert_eq!(buffer[(39, 18)].symbol(), "你");
+        assert_eq!(buffer[(41, 18)].symbol(), "好");
+        assert_eq!(buffer[(43, 18)].symbol(), " ");
+        assert_eq!(buffer[(43, 18)].bg, app.palette.fg, "cursor after CJK");
+        assert_eq!(buffer[(69, 18)].symbol(), "│");
 
         app.move_live_chat_cursor(false);
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(42, 18)].symbol(), "好");
-        assert_eq!(buffer[(42, 18)].bg, app.palette.fg, "cursor on a wide char");
+        assert_eq!(buffer[(41, 18)].symbol(), "好");
+        assert_eq!(buffer[(41, 18)].bg, app.palette.fg, "cursor on a wide char");
     }
 
     #[test]
@@ -874,14 +874,14 @@ mod tests {
         let audio = live_audio();
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
-        // 光标仍落在 Input 内，右侧边框保持完整。
-        let cursor_cells: Vec<u16> = (38..68)
+        // 光标仍落在 Input 内；右侧只有 x69 的浅色内竖线。
+        let cursor_cells: Vec<u16> = (37..69)
             .filter(|x| buffer[(*x, 18)].bg == app.palette.fg)
             .collect();
         assert_eq!(cursor_cells.len(), 1, "{cursor_cells:?}");
-        assert!(cursor_cells[0] < 68);
-        assert_eq!(buffer[(68, 18)].symbol(), "│");
-        assert_eq!(buffer[(67, 18)].symbol(), " ");
+        assert_eq!(cursor_cells[0], 67);
+        assert_eq!(buffer[(69, 18)].symbol(), "│");
+        assert_eq!(buffer[(68, 18)].symbol(), " ");
     }
 
     #[test]
@@ -988,7 +988,7 @@ mod tests {
     fn danmaku_overlay_covers_the_right_side_without_shrinking_the_spectrum() {
         let layout = layout(Rect::new(0, 0, 72, 24));
         let overlay = danmaku_overlay::area(&layout).expect("overlay area");
-        assert_eq!(overlay, Rect::new(37, 2, 32, 18));
+        assert_eq!(overlay, Rect::new(36, 2, 34, 18));
         assert_eq!(layout.info_y, 20);
         assert_eq!(overlay.bottom(), layout.info_y, "Info y20 不被覆盖");
 
@@ -996,26 +996,39 @@ mod tests {
         let app = overlay_app(&audio);
         let terminal = draw_live(72, 24, &app, &audio);
         let buffer = terminal.backend().buffer();
-        // 卡面边框角：左上 ┌ / 右上 ┘ / 左下 └ / 右下 ┐。
-        assert_eq!(buffer[(37, 2)].symbol(), "┌");
-        assert_eq!(buffer[(68, 2)].symbol(), "┘");
-        assert_eq!(buffer[(37, 19)].symbol(), "└");
-        assert_eq!(buffer[(68, 19)].symbol(), "┐");
-        for y in 3..17 {
-            assert_eq!(buffer[(37, y)].symbol(), "│", "left border y {y}");
-            assert_eq!(buffer[(68, y)].symbol(), "│", "right border y {y}");
+        // 粗线框：左上 ┏ / 右上 ┛ / 左下 ┗ / 右下 ┓。
+        assert_eq!(buffer[(36, 2)].symbol(), "┏");
+        assert_eq!(buffer[(69, 2)].symbol(), "┛");
+        assert_eq!(buffer[(36, 19)].symbol(), "┗");
+        assert_eq!(buffer[(69, 19)].symbol(), "┓");
+        // 左缘 ┃ 贯穿消息区与 Input；右侧只在上下角与 Input 行内收口。
+        for y in 3..19 {
+            let left = if y == 17 { "┣" } else { "┃" };
+            assert_eq!(buffer[(36, y)].symbol(), left, "left border y {y}");
+            let right = if y == 18 { "│" } else { " " };
+            assert_eq!(buffer[(69, y)].symbol(), right, "right side y {y}");
+            if y == 18 {
+                assert_eq!(buffer[(69, y)].fg, app.palette.faint, "Input 内竖线是浅色");
+            }
         }
-        // Input 分隔线 y17、输入行 y18。
-        assert_eq!(buffer[(37, 17)].symbol(), "├");
-        assert_eq!(buffer[(68, 17)].symbol(), "┤");
-        assert_eq!(buffer[(37, 18)].symbol(), "│");
-        assert_eq!(buffer[(68, 18)].symbol(), "│");
+        // Input 分隔线 y17：┣ x36、" 输入" x37..41、━ x42..68，无右端。
+        assert_eq!(buffer[(36, 17)].symbol(), "┣");
+        assert_eq!(buffer[(37, 17)].symbol(), " ");
+        assert_eq!(buffer[(38, 17)].symbol(), "输");
+        assert_eq!(buffer[(40, 17)].symbol(), "入");
+        assert_eq!(buffer[(42, 17)].symbol(), "━");
+        assert_eq!(buffer[(69, 17)].symbol(), " ");
+        // Input 行 y18：x37 `>` 提示符，x38 留空，x69 浅色内竖线。
+        assert_eq!(buffer[(36, 18)].symbol(), "┃");
+        assert_eq!(buffer[(37, 18)].symbol(), ">");
+        assert_eq!(buffer[(38, 18)].symbol(), " ");
+        assert_eq!(buffer[(69, 18)].symbol(), "│");
 
-        // 视觉区仍完整绘制：x3..x36 是频谱，浮层只盖住右侧。
+        // 视觉区仍完整绘制：x3..x35 是频谱，浮层只盖住右侧。
         assert_eq!(buffer[(3, 2)].symbol(), "░");
-        assert_eq!(buffer[(36, 2)].symbol(), "░");
+        assert_eq!(buffer[(35, 2)].symbol(), "░");
         // 音高行 / 控制行仍在浮层下方。
-        assert_ne!(buffer[(37, 21)].symbol(), "│");
+        assert_ne!(buffer[(37, 21)].symbol(), "┃");
         assert_eq!(buffer[(68, 21)].symbol(), "2");
         assert_eq!(buffer[(2, 22)].symbol(), "┗");
         assert_eq!(buffer[(69, 22)].symbol(), "┛");
@@ -1034,12 +1047,12 @@ mod tests {
         let hidden_again = buffer_text(&draw_live(72, 24, &visible, &audio));
         assert_eq!(hidden, hidden_again, "d 关掉后必须回到隐藏态");
 
-        // 左侧 34 列频谱与整条信息行不因浮层出现而移动。
+        // 左侧 33 列频谱与整条信息行不因浮层出现而移动。
         visible.toggle_danmaku_overlay(0);
         let with_overlay = draw_live(72, 24, &visible, &audio);
         let hidden_terminal = draw_live(72, 24, &app, &audio);
         for y in 2..21 {
-            for x in 3..37 {
+            for x in 3..36 {
                 assert_eq!(
                     hidden_terminal.backend().buffer()[(x, y)].symbol(),
                     with_overlay.backend().buffer()[(x, y)].symbol(),
@@ -1070,7 +1083,7 @@ mod tests {
         assert!(compact(&title).contains("弹幕"), "{title:?}");
         assert!(compact(&title).contains("2000"), "{title:?}");
         assert!(!title.contains(placeholder));
-        assert_eq!(terminal.backend().buffer()[(37, 2)].symbol(), "┌");
+        assert_eq!(terminal.backend().buffer()[(36, 2)].symbol(), "┏");
         // d 打开但不聚焦：Input 行显示 `c` 提示。
         assert!(
             compact(&row(&terminal, 18)).contains("按c输入弹幕"),
@@ -1088,7 +1101,7 @@ mod tests {
         assert!(compact(&row(&terminal, 14)).contains("阿一:第一条"));
         assert!(compact(&row(&terminal, 15)).contains("阿二:第二条"));
         assert!(compact(&row(&terminal, 16)).contains("阿三:第三条"));
-        assert_eq!(terminal.backend().buffer()[(37, 16)].symbol(), "│");
+        assert_eq!(terminal.backend().buffer()[(36, 16)].symbol(), "┃");
     }
 
     #[test]
@@ -1161,7 +1174,7 @@ mod tests {
         assert!(!text.contains('…'), "长消息不应出现省略号");
         let mut message_text = String::new();
         for y in 3..17 {
-            for x in 38..68 {
+            for x in 37..69 {
                 message_text.push_str(terminal.backend().buffer()[(x, y)].symbol());
             }
         }
@@ -1174,7 +1187,8 @@ mod tests {
             "{flattened}"
         );
         for y in 3..17 {
-            assert_eq!(terminal.backend().buffer()[(68, y)].symbol(), "│", "y {y}");
+            assert_eq!(terminal.backend().buffer()[(36, y)].symbol(), "┃", "y {y}");
+            assert_eq!(terminal.backend().buffer()[(69, y)].symbol(), " ", "y {y}");
         }
         // 清理后的用户 / 文本按预期落在正文里。
         assert!(flattened.contains("坏用户:"));
@@ -1216,15 +1230,19 @@ mod tests {
             let terminal = draw_live(width, height, &app, &audio);
             let buffer = terminal.backend().buffer();
             let bottom = overlay.bottom().saturating_sub(1);
-            assert_eq!(buffer[(overlay.x, bottom)].symbol(), "└");
+            assert_eq!(buffer[(overlay.x, bottom)].symbol(), "┗");
             assert_eq!(
                 buffer[(overlay.right().saturating_sub(1), bottom)].symbol(),
-                "┐"
+                "┓"
             );
-            assert_eq!(buffer[(overlay.x, bottom.saturating_sub(2))].symbol(), "├");
+            assert_eq!(buffer[(overlay.x, bottom.saturating_sub(2))].symbol(), "┣");
             let input_y = bottom.saturating_sub(1);
-            assert_eq!(buffer[(overlay.x, input_y)].symbol(), "│");
-            assert_eq!(buffer[(overlay.x.saturating_add(1), input_y)].symbol(), "›");
+            assert_eq!(buffer[(overlay.x, input_y)].symbol(), "┃");
+            assert_eq!(
+                buffer[(overlay.right().saturating_sub(1), input_y)].symbol(),
+                "│"
+            );
+            assert_eq!(buffer[(overlay.x.saturating_add(1), input_y)].symbol(), ">");
             assert_eq!(
                 buffer[(overlay.x.saturating_add(3), input_y)].symbol(),
                 "你"
@@ -1249,7 +1267,7 @@ mod tests {
         assert!(app.danmaku_overlay_visible());
         assert!(app.live_chat_active());
         let terminal = draw_live(72, 24, &app, &audio);
-        assert_eq!(terminal.backend().buffer()[(38, 18)].symbol(), "›");
+        assert_eq!(terminal.backend().buffer()[(37, 18)].symbol(), ">");
 
         // 焦点存在时 d 是普通字符，不关闭浮层。
         crate::chat_input::handle_chat_key(KeyCode::Char('d'), &mut app, &audio);
@@ -1259,7 +1277,7 @@ mod tests {
             Some("d".to_owned())
         );
         let terminal = draw_live(72, 24, &app, &audio);
-        assert!(compact(&row(&terminal, 18)).contains("›d"));
+        assert!(compact(&row(&terminal, 18)).contains(">d"));
 
         // Esc：退出焦点，浮层保持打开。
         crate::chat_input::handle_chat_key(KeyCode::Esc, &mut app, &audio);

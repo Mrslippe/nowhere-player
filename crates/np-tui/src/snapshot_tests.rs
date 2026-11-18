@@ -525,3 +525,69 @@ fn golden_live_danmaku_echo_72x24() {
     app.sync_danmaku(audio.danmaku_received());
     snapshot_app("live_danmaku_echo_72x24.txt", 72, 24, &mut app, &audio);
 }
+
+/// 卡面 T-0100b3 §0：浮层 x36/w34、内容 32、右侧只在上下角与 Input 行收口。
+#[test]
+fn danmaku_overlay_frame_matches_the_strict_card() {
+    let audio = overlay_audio(&[("小明", "晚上好")]);
+    let mut app = overlay_app(&audio);
+    let mut terminal =
+        Terminal::new(ratatui::backend::TestBackend::new(72, 24)).expect("test terminal");
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    let symbol = |x: u16, y: u16| buffer[(x, y)].symbol();
+
+    // 顶边 y2：┏ x36，━ 填充，┛ x69；标题 `弹幕` 落在 37..41。
+    assert_eq!(symbol(36, 2), "┏");
+    assert_eq!(symbol(69, 2), "┛");
+    assert_eq!(symbol(37, 2), " ");
+    assert_eq!(symbol(38, 2), "弹");
+    assert_eq!(symbol(40, 2), "幕");
+    for x in 42..63 {
+        assert_eq!(symbol(x, 2), "━", "top fill x {x}");
+    }
+    // 同接数固定 4 位、两侧空格：x63..x68 是 ` 2000 `。
+    assert_eq!(symbol(63, 2), " ");
+    assert_eq!(symbol(64, 2), "2");
+    assert_eq!(symbol(67, 2), "0");
+    assert_eq!(symbol(68, 2), " ");
+
+    // 消息行 y3..y16：只有左竖线 ┃，右侧 x69 不画框。
+    for y in 3..17 {
+        assert_eq!(symbol(36, y), "┃", "left border y {y}");
+        assert_eq!(symbol(69, y), " ", "right side stays open y {y}");
+    }
+
+    // Input 分隔 y17：┣ x36 + " 输入" x37..41 + ━ 42..68，无右端。
+    assert_eq!(symbol(36, 17), "┣");
+    assert_eq!(symbol(37, 17), " ");
+    assert_eq!(symbol(38, 17), "输");
+    assert_eq!(symbol(40, 17), "入");
+    assert_eq!(buffer[(38, 17)].fg, app.palette.accent, "输入标签用 accent");
+    for x in 42..69 {
+        assert_eq!(symbol(x, 17), "━", "separator fill x {x}");
+    }
+    assert_eq!(symbol(69, 17), " ");
+
+    // Input y18：x37 `>` 提示符、x38 留空、x39..x68 内容、x69 浅色内竖线。
+    assert_eq!(symbol(36, 18), "┃");
+    assert_eq!(symbol(37, 18), ">");
+    assert_eq!(symbol(38, 18), " ");
+    assert_eq!(symbol(69, 18), "│");
+    assert_eq!(buffer[(69, 18)].fg, app.palette.faint, "Input 内竖线是浅色");
+
+    // 底边 y19：┗ x36，━ 37..68，┓ x69。
+    assert_eq!(symbol(36, 19), "┗");
+    assert_eq!(symbol(69, 19), "┓");
+    for x in 37..69 {
+        assert_eq!(symbol(x, 19), "━", "bottom fill x {x}");
+    }
+
+    // 内容区宽 32：x37 起是消息正文，x68 是最后一格。
+    assert_eq!(symbol(37, 16), "小");
+    assert_eq!(symbol(39, 16), "明");
+    assert_eq!(symbol(43, 16), "晚");
+    assert_eq!(symbol(47, 16), "好");
+}
