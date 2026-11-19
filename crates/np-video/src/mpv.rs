@@ -18,6 +18,7 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 /// mpv 参数。URL 不在其中；`--playlist=-` 让 mpv 从 stdin 读 URL。
 pub fn mpv_args(hwnd: usize, referer: &str, origin: &str) -> Vec<String> {
     vec![
+        "--no-config".to_owned(),
         format!("--wid={hwnd}"),
         "--no-audio".to_owned(),
         // 视频宽高比优先：窗口比例和视频不一致时，只在一侧留 letterbox。
@@ -106,12 +107,15 @@ fn executable_names(name: &str) -> Vec<String> {
 /// 启动 mpv 并把 URL 写进它的 stdin；stdout/stderr 不继承。
 pub fn spawn_mpv(program: &Path, hwnd: usize, request: &Request) -> Result<Child, String> {
     request.validate()?;
+    let log_path = std::env::temp_dir().join("nowhere-video-mpv.log");
+    let log_file = std::fs::File::create(&log_path)
+        .map_err(|error| format!("mpv 日志文件创建失败：{error}"))?;
     let mut command = Command::new(program);
     command
         .args(mpv_args(hwnd, &request.referer, &request.origin))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(log_file));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -181,7 +185,9 @@ mod tests {
     #[test]
     fn mpv_args_embed_the_window_and_disable_audio_and_osc() {
         let args = mpv_args(42, REFERER, ORIGIN);
-        assert_eq!(args[0], "--wid=42");
+        assert_eq!(args[0], "--no-config");
+        assert_eq!(args[1], "--wid=42");
+        assert_eq!(args[2], "--no-audio");
         assert!(args.iter().any(|arg| arg == "--no-audio"));
         assert!(
             args.iter().any(|arg| arg == "--keepaspect=yes"),
