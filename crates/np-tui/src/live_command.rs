@@ -4,6 +4,9 @@ use crate::audio::TuiAudio;
 
 /// 解析并启动 `live <room>`；返回要写入状态栏的文本。
 pub(crate) fn start_live_command(input: &str, player: &TuiAudio) -> Option<String> {
+    if let Some(status) = crate::mpv_command::run(input) {
+        return Some(status);
+    }
     let result = parse_live_command(input)?;
     Some(match result {
         Ok(room) => {

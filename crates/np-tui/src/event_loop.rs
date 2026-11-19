@@ -256,6 +256,13 @@ where
         if player.poll_login() {
             draw_needed = true;
         }
+        if let Some(result) = crate::mpv_install::poll() {
+            match result {
+                Ok(_) => app.set_status("mpv 安装完成，按 v 打开视频".to_owned()),
+                Err(error) => app.set_status(format!("mpv 安装失败：{error}")),
+            }
+            draw_needed = true;
+        }
         match player.handle_ended() {
             Ok(true) => {
                 app.refresh_queue_view(player, &**library);

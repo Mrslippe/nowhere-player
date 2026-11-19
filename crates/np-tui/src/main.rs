@@ -26,6 +26,8 @@ mod login;
 mod login_command;
 mod logo;
 mod model;
+mod mpv_command;
+mod mpv_install;
 mod osc;
 mod playback;
 mod player_bar;

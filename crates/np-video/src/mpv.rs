@@ -38,7 +38,21 @@ pub fn playlist_payload(url: &str) -> String {
     format!("{url}\n")
 }
 
-/// 选择 mpv：`NP_VIDEO_PLAYER` > PATH 里的 mpv。ffplay 不能嵌入，直接报错。
+/// 选择 mpv：`NP_VIDEO_PLAYER` > 应用托管安装 > PATH 里的 mpv。
+/// ffplay 不能嵌入，直接报错。
+/// 应用内 `/mpv` 下载器的固定安装位置。
+fn managed_mpv() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("APPDATA"))
+        .map(PathBuf::from)?;
+    let path = base
+        .join("NowherePlayer")
+        .join("mpv")
+        .join("current")
+        .join("mpv.exe");
+    path.is_file().then_some(path)
+}
+
 pub fn resolve_mpv(
     override_path: Option<&OsStr>,
     path_var: Option<&OsStr>,
@@ -64,8 +78,10 @@ pub fn resolve_mpv(
             return Ok(resolved);
         }
     }
-    find_in_path("mpv", path_var)
-        .ok_or_else(|| "未找到 mpv：请安装 mpv 或设置 NP_VIDEO_PLAYER".to_owned())
+    if let Some(path) = managed_mpv() {
+        return Ok(path);
+    }
+    find_in_path("mpv", path_var).ok_or_else(|| "未找到 mpv：在 TUI 输入 /mpv 下载".to_owned())
 }
 
 fn is_ffplay(path: &Path) -> bool {
