@@ -53,6 +53,13 @@ fn managed_mpv() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// 随发布包提供的 mpv：`np-video.exe` 同级的 `mpv/mpv.exe`。
+fn bundled_mpv() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.join("mpv").join("mpv.exe");
+    path.is_file().then_some(path)
+}
+
 pub fn resolve_mpv(
     override_path: Option<&OsStr>,
     path_var: Option<&OsStr>,
@@ -77,6 +84,9 @@ pub fn resolve_mpv(
             }
             return Ok(resolved);
         }
+    }
+    if let Some(path) = bundled_mpv() {
+        return Ok(path);
     }
     if let Some(path) = managed_mpv() {
         return Ok(path);
@@ -124,14 +134,15 @@ fn executable_names(name: &str) -> Vec<String> {
 pub fn spawn_mpv(program: &Path, hwnd: usize, request: &Request) -> Result<Child, String> {
     request.validate()?;
     let log_path = std::env::temp_dir().join("nowhere-video-mpv.log");
-    let log_file = std::fs::File::create(&log_path)
-        .map_err(|error| format!("mpv 日志文件创建失败：{error}"))?;
+    let stderr = std::fs::File::create(&log_path)
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
     let mut command = Command::new(program);
     command
         .args(mpv_args(hwnd, &request.referer, &request.origin))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(log_file));
+        .stderr(stderr);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

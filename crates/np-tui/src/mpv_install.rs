@@ -34,8 +34,18 @@ pub(crate) fn managed_mpv() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// 发布包自带的 mpv。
+pub(crate) fn bundled_mpv() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.join("mpv").join("mpv.exe");
+    path.is_file().then_some(path)
+}
+
 /// 启动后台下载；已有任务或已安装时直接返回。
 pub(crate) fn start() -> Result<(), String> {
+    if bundled_mpv().is_some() {
+        return Err("mpv 已随包提供，无需下载".to_owned());
+    }
     if managed_mpv().is_some() {
         return Err("mpv 已安装，无需重复下载".to_owned());
     }
