@@ -17,6 +17,8 @@ pub fn mpv_args(hwnd: usize, referer: &str, origin: &str) -> Vec<String> {
     vec![
         format!("--wid={hwnd}"),
         "--no-audio".to_owned(),
+        // 视频宽高比优先：窗口比例和视频不一致时，只在一侧留 letterbox。
+        "--keepaspect=yes".to_owned(),
         "--no-osc".to_owned(),
         "--no-osd-bar".to_owned(),
         "--force-window=no".to_owned(),
@@ -177,6 +179,10 @@ mod tests {
         let args = mpv_args(42, REFERER, ORIGIN);
         assert_eq!(args[0], "--wid=42");
         assert!(args.iter().any(|arg| arg == "--no-audio"));
+        assert!(
+            args.iter().any(|arg| arg == "--keepaspect=yes"),
+            "mpv must keep the video aspect ratio inside the resized child window"
+        );
         assert!(args.iter().any(|arg| arg == "--no-osc"));
         assert!(args.iter().any(|arg| arg == "--no-osd-bar"));
         assert!(args.iter().any(|arg| arg == "--force-window=no"));

@@ -54,6 +54,7 @@
 - T-0103：audio.rs 1770→157 行，拆为 live/danmaku/playback/auth/tests 模块
 - T-0104：直播画面 MVP，v 打开 mpv/ffplay 独立无声窗口
 - T-0105：np-video 自建 Win32 窗口、原生 frame、32px 悬浮标题栏、mpv 嵌入
+- T-0106：窗口客户区铺满、mpv 子窗口随 resize、顶部白线修复
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本

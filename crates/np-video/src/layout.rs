@@ -73,25 +73,65 @@ impl Rect {
 
 /// 窗口框（非客户区）在四个方向上的厚度，通常来自
 /// `SM_CXSIZEFRAME + SM_CXPADDEDBORDER`。
+///
+/// 客户区不再按它内缩；它只用于 `WM_NCHITTEST` 的 resize 命中。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameMetrics {
     pub x: i32,
     pub y: i32,
 }
 
-/// 普通状态下的客户区：只去掉 caption，保留可缩放边框。
-pub fn normal_client_rect(window: Rect, frame: FrameMetrics) -> Rect {
-    Rect::new(
-        window.left + frame.x,
-        window.top + frame.y,
-        window.right - frame.x,
-        window.bottom - frame.y,
-    )
+/// 普通状态下的客户区：**整个窗口矩形**。
+///
+/// caption 与可缩放边框都不再占客户区：DWM 阴影由
+/// `DwmExtendFrameIntoClientArea` 托住，边缘 resize 交给
+/// [`resize_edge`] + `WM_NCHITTEST`。
+pub fn normal_client_rect(window: Rect) -> Rect {
+    window
 }
 
 /// 最大化客户区：直接使用显示器工作区，避免 DWM 最大化边框把内容顶出屏幕。
 pub fn maximized_client_rect(work: Rect) -> Rect {
     work
+}
+
+/// 客户区边缘的 resize 命中结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// 客户区坐标是否落在可缩放边缘内。
+///
+/// `border` 是每侧厚度（通常为 `SM_CXSIZEFRAME + SM_CXPADDEDBORDER`）；
+/// 最大化时传 0，结果是 `None`——最大化窗口没有可拖拽边缘。
+pub fn resize_edge(x: i32, y: i32, width: i32, height: i32, border: i32) -> Option<ResizeEdge> {
+    let border = border.max(0);
+    if border == 0 || width <= 0 || height <= 0 {
+        return None;
+    }
+    let left = x < border;
+    let right = x >= width - border;
+    let top = y < border;
+    let bottom = y >= height - border;
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(ResizeEdge::TopLeft),
+        (_, true, true, _) => Some(ResizeEdge::TopRight),
+        (true, _, _, true) => Some(ResizeEdge::BottomLeft),
+        (_, true, _, true) => Some(ResizeEdge::BottomRight),
+        (true, _, _, _) => Some(ResizeEdge::Left),
+        (_, true, _, _) => Some(ResizeEdge::Right),
+        (_, _, true, _) => Some(ResizeEdge::Top),
+        (_, _, _, true) => Some(ResizeEdge::Bottom),
+        _ => None,
+    }
 }
 
 /// 视频子窗口始终占满客户区；显示 / 隐藏标题栏都不改变它。
@@ -455,18 +495,71 @@ mod tests {
     }
 
     #[test]
-    fn normal_client_keeps_the_native_resize_frame() {
+    fn normal_client_is_the_whole_window_rect() {
+        // T-0106：不再按 frame.x/frame.y 内缩，否则顶部会漏出 8px 原生 caption。
         let window = Rect::new(100, 100, 900, 700);
-        let client = normal_client_rect(window, FrameMetrics { x: 8, y: 8 });
-        assert_eq!(client, Rect::new(108, 108, 892, 692));
-        // caption 被去掉：客户区顶部只让出边框，不让出标题栏。
-        assert_eq!(client.top - window.top, 8);
+        assert_eq!(normal_client_rect(window), window);
+        assert_eq!(normal_client_rect(window).width(), 800);
+        assert_eq!(normal_client_rect(window).height(), 600);
+        // FrameMetrics 仍用于 hit test，但不再参与客户区计算。
+        let frame = FrameMetrics { x: 8, y: 8 };
+        assert_eq!(frame.x + frame.y, 16);
     }
 
     #[test]
     fn maximized_client_is_the_monitor_work_area() {
         let work = Rect::new(0, 0, 2560, 1400);
         assert_eq!(maximized_client_rect(work), work);
+    }
+
+    #[test]
+    fn resize_edge_hits_all_eight_borders_and_corners() {
+        let (width, height, border) = (800, 600, 8);
+        assert_eq!(
+            resize_edge(0, 300, width, height, border),
+            Some(ResizeEdge::Left)
+        );
+        assert_eq!(
+            resize_edge(799, 300, width, height, border),
+            Some(ResizeEdge::Right)
+        );
+        assert_eq!(
+            resize_edge(400, 0, width, height, border),
+            Some(ResizeEdge::Top)
+        );
+        assert_eq!(
+            resize_edge(400, 599, width, height, border),
+            Some(ResizeEdge::Bottom)
+        );
+        assert_eq!(
+            resize_edge(0, 0, width, height, border),
+            Some(ResizeEdge::TopLeft)
+        );
+        assert_eq!(
+            resize_edge(799, 0, width, height, border),
+            Some(ResizeEdge::TopRight)
+        );
+        assert_eq!(
+            resize_edge(0, 599, width, height, border),
+            Some(ResizeEdge::BottomLeft)
+        );
+        assert_eq!(
+            resize_edge(799, 599, width, height, border),
+            Some(ResizeEdge::BottomRight)
+        );
+        // 边界是半开区间：第 8 个像素起算客户区。
+        assert_eq!(resize_edge(8, 300, width, height, border), None);
+        assert_eq!(resize_edge(400, 8, width, height, border), None);
+        assert_eq!(resize_edge(400, 300, width, height, border), None);
+    }
+
+    #[test]
+    fn maximized_windows_have_no_resize_edges() {
+        // 最大化时 border=0；边缘不再返回 resize 命中。
+        assert_eq!(resize_edge(0, 0, 2560, 1400, 0), None);
+        assert_eq!(resize_edge(0, 700, 2560, 1400, 0), None);
+        // 退化尺寸不 panic。
+        assert_eq!(resize_edge(0, 0, 0, 0, 8), None);
     }
 
     #[test]

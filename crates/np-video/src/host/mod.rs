@@ -35,20 +35,22 @@ use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     FindWindowW, GA_ROOT, GWLP_USERDATA, GetAncestor, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    HICON, HTCAPTION, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HWND_TOP, IDC_ARROW, IsIconic,
-    IsZoomed, LoadCursorW, MINMAXINFO, MSG, NCCALCSIZE_PARAMS, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
-    WM_ENTERMENULOOP, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITMENULOOP, WM_EXITSIZEMOVE,
-    WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_NCCALCSIZE, WM_NCHITTEST,
-    WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE, WM_TIMER, WNDCLASSEXW, WNDPROC,
-    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WindowFromPoint,
+    HICON, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE, HTLEFT,
+    HTMAXBUTTON, HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, HTTRANSPARENT, HWND_TOP,
+    IDC_ARROW, IsIconic, IsZoomed, LoadCursorW, MINMAXINFO, MSG, NCCALCSIZE_PARAMS, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
+    WM_DPICHANGED, WM_ENTERMENULOOP, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITMENULOOP,
+    WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_NCCALCSIZE,
+    WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE, WM_TIMER, WNDCLASSEXW,
+    WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WindowFromPoint,
 };
 use windows::core::PCWSTR;
 
-use crate::layout::{self, Hit, TitlebarState};
+use crate::layout::{self, Hit, ResizeEdge, TitlebarState};
 use crate::mpv;
 use crate::protocol::{Event, Request};
 
@@ -395,6 +397,10 @@ impl Host {
             );
             let _ = InvalidateRect(Some(self.overlay), None, false);
         }
+        // surface 和 mpv 的 `--wid` 子窗口是父子关系：surface resize 后必须
+        // 把 mpv 子窗口也拉到客户区大小，否则视频按旧尺寸居中、四周出现黑边。
+        // mpv 还没创建子窗口时返回 false，下一次 WM_SIZE 会补上。
+        win::resize_mpv_child(self.surface, self.client_w, self.client_h);
     }
 
     fn show_titlebar(&self) {
@@ -578,14 +584,64 @@ fn with_host_ref<R>(hwnd: HWND, f: impl FnOnce(&Host) -> R) -> Option<R> {
     Some(f(&host))
 }
 
+/// 屏幕坐标是否落在宿主客户区的 resize 边缘内。
+///
+/// 宿主、surface、overlay 的客户区原点都在宿主客户区 (0,0)，所以同一个
+/// 判断可以给三个 window proc 共用。最大化 / 窗口数据尚未就绪时返回 `None`。
+fn resize_hit(hwnd: HWND, lparam: LPARAM) -> Option<ResizeEdge> {
+    let (host, dpi, width, height) = with_host_ref(hwnd, |host| {
+        (host.hwnd, host.dpi, host.client_w, host.client_h)
+    })?;
+    let mut point = POINT {
+        x: win::loword(lparam.0),
+        y: win::hiword(lparam.0),
+    };
+    // SAFETY: 屏幕坐标转窗口客户区坐标。
+    unsafe {
+        MapWindowPoints(None, Some(hwnd), std::slice::from_mut(&mut point));
+    }
+    // SAFETY: 纯查询。
+    if unsafe { IsZoomed(host) }.as_bool() {
+        return None;
+    }
+    layout::resize_edge(point.x, point.y, width, height, win::resize_border(dpi))
+}
+
+/// 把纯几何的 resize 方向映射成 Win32 命中码。
+fn edge_code(edge: ResizeEdge) -> isize {
+    let code = match edge {
+        ResizeEdge::Left => HTLEFT,
+        ResizeEdge::Right => HTRIGHT,
+        ResizeEdge::Top => HTTOP,
+        ResizeEdge::Bottom => HTBOTTOM,
+        ResizeEdge::TopLeft => HTTOPLEFT,
+        ResizeEdge::TopRight => HTTOPRIGHT,
+        ResizeEdge::BottomLeft => HTBOTTOMLEFT,
+        ResizeEdge::BottomRight => HTBOTTOMRIGHT,
+    };
+    code as isize
+}
+
 unsafe extern "system" fn surface_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: 所有参数来自系统；DefWindowProcW 是默认处理。
-    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    match message {
+        WM_NCHITTEST => {
+            // 客户区铺满整个窗口后，surface 会盖住边缘。它不是 disabled
+            // 窗口，会吃掉 WM_NCHITTEST，所以边缘必须返回 HTTRANSPARENT，
+            // 让同线程的宿主拿到并返回 HTLEFT/HTTOP 等（mpv 的 --wid 子窗口
+            // 是 disabled 的，本身不参与 hit test）。
+            if resize_hit(hwnd, lparam).is_some() {
+                return LRESULT(HTTRANSPARENT as isize);
+            }
+            LRESULT(HTCLIENT as isize)
+        }
+        // SAFETY: 所有参数来自系统；DefWindowProcW 是默认处理。
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
 }
 
 unsafe extern "system" fn host_proc(
@@ -600,7 +656,6 @@ unsafe extern "system" fn host_proc(
                 // 客户端区域查询：交给默认处理。
                 return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
             }
-            let dpi = with_host_ref(hwnd, |host| host.dpi).unwrap_or(96);
             // SAFETY: wParam=TRUE 时 lParam 指向 NCCALCSIZE_PARAMS。
             let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
             // SAFETY: 纯查询，无指针参数。
@@ -609,13 +664,21 @@ unsafe extern "system" fn host_proc(
                     params.rgrc[0] = win::to_rect(layout::maximized_client_rect(work));
                 }
             } else {
-                let frame = win::frame_metrics(dpi);
-                params.rgrc[0] = win::to_rect(layout::normal_client_rect(
-                    win::from_rect(params.rgrc[0]),
-                    frame,
-                ));
+                // 正常窗口：客户区 = 整个窗口矩形。原生 caption / 8px
+                // 边框不再占位，顶部白线因此消失；边缘 resize 由
+                // WM_NCHITTEST 恢复。
+                params.rgrc[0] =
+                    win::to_rect(layout::normal_client_rect(win::from_rect(params.rgrc[0])));
             }
             LRESULT(0)
+        }
+        WM_NCHITTEST => {
+            // 客户区 = 整个窗口后 DefWindowProc 会把边缘也判成 HTCLIENT，
+            // 这里显式恢复原生缩放 / 吸附的边缘命中。
+            match resize_hit(hwnd, lparam) {
+                Some(edge) => LRESULT(edge_code(edge)),
+                None => LRESULT(HTCLIENT as isize),
+            }
         }
         WM_GETMINMAXINFO => {
             let dpi = with_host_ref(hwnd, |host| host.dpi).unwrap_or(96);
@@ -783,6 +846,10 @@ unsafe extern "system" fn overlay_proc(
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_NCHITTEST => {
+            // 顶部 DWM/缩放边框优先还给宿主；overlay 不能把边缘 resize 吃掉。
+            if resize_hit(hwnd, lparam).is_some() {
+                return LRESULT(HTTRANSPARENT as isize);
+            }
             // 只有最大化按钮返回 HTMAXBUTTON（尽力支持 Win11 Snap Layouts）；
             // 其余区域保持 HTCLIENT，让 overlay 收到普通鼠标消息。
             let mut point = POINT {
@@ -918,5 +985,28 @@ mod tests {
         assert_ne!(surface.0 & WS_CLIPCHILDREN.0, 0);
         assert_ne!(host_style().0 & WS_CLIPCHILDREN.0, 0);
         assert_ne!(overlay_style().0 & WS_CLIPSIBLINGS.0, 0);
+    }
+
+    #[test]
+    fn host_keeps_native_resize_and_maximize_styles() {
+        use windows::Win32::UI::WindowsAndMessaging::{WS_MAXIMIZEBOX, WS_THICKFRAME};
+
+        // T-0106：客户区铺满整个窗口，但原生 THICKFRAME / MAXIMIZEBOX
+        // 必须保留，边缘缩放和 Aero Snap 靠它们 + WM_NCHITTEST。
+        let style = host_style();
+        assert_ne!(style.0 & WS_THICKFRAME.0, 0);
+        assert_ne!(style.0 & WS_MAXIMIZEBOX.0, 0);
+    }
+
+    #[test]
+    fn resize_edges_map_to_native_hit_codes() {
+        assert_eq!(edge_code(ResizeEdge::Left), HTLEFT as isize);
+        assert_eq!(edge_code(ResizeEdge::Right), HTRIGHT as isize);
+        assert_eq!(edge_code(ResizeEdge::Top), HTTOP as isize);
+        assert_eq!(edge_code(ResizeEdge::Bottom), HTBOTTOM as isize);
+        assert_eq!(edge_code(ResizeEdge::TopLeft), HTTOPLEFT as isize);
+        assert_eq!(edge_code(ResizeEdge::TopRight), HTTOPRIGHT as isize);
+        assert_eq!(edge_code(ResizeEdge::BottomLeft), HTBOTTOMLEFT as isize);
+        assert_eq!(edge_code(ResizeEdge::BottomRight), HTBOTTOMRIGHT as isize);
     }
 }
