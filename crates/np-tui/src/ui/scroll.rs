@@ -39,12 +39,14 @@ impl ScrollState {
         start..end
     }
 
-    /// 窗口上方是否还有内容（`↑` / `↕`）。
+    /// 窗口上方是否还有内容（仅测试辅助）。
+    #[cfg(test)]
     pub(crate) fn has_above(&self) -> bool {
         self.first > 0
     }
 
-    /// 窗口下方是否还有内容（`↓` / `↕`）。
+    /// 窗口下方是否还有内容（仅测试辅助）。
+    #[cfg(test)]
     pub(crate) fn has_below(&self, total: usize) -> bool {
         self.first.saturating_add(self.visible) < total
     }

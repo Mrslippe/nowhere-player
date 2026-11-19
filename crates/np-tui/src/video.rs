@@ -271,6 +271,7 @@ fn resolve_backend(
 pub(crate) struct VideoTarget {
     url: String,
     title: String,
+    quality_note: Option<String>,
 }
 
 fn sanitize_title(title: &str) -> String {
@@ -483,6 +484,7 @@ struct VideoState {
     host: Option<HostChild>,
     fetch_rx: Option<mpsc::Receiver<VideoFetch>>,
     note: Option<VideoNote>,
+    quality_note: Option<String>,
 }
 
 /// 直播画面控制器：放在 [`TuiAudio`] 里，跟随停播 / 换房 / 退出一起清理。
@@ -507,6 +509,7 @@ impl VideoController {
                 host: None,
                 fetch_rx: None,
                 note: None,
+                quality_note: None,
             }),
         }
     }
@@ -523,6 +526,7 @@ impl VideoController {
         state.phase = VideoPhase::Preparing;
         state.backend = Some(backend);
         state.note = None;
+        state.quality_note = None;
         state.external_child = None;
         state.host = None;
         let (tx, rx) = mpsc::channel();
@@ -565,41 +569,48 @@ impl VideoController {
         {
             state.fetch_rx = None;
             match result {
-                Ok(target) => match state.backend.clone() {
-                    Some(VideoBackend::Host { path }) => match spawn_host(&path, &target) {
-                        Ok(host) => {
-                            state.host = Some(host);
-                            state.phase = VideoPhase::Starting;
-                        }
-                        Err(error) => {
-                            state.phase = VideoPhase::Idle;
-                            state.backend = None;
-                            state.note = Some(VideoNote::new(format!("视频窗口启动失败：{error}")));
-                        }
-                    },
-                    Some(VideoBackend::External(program)) => {
-                        match player_command(&program, &target.url).spawn() {
-                            Ok(child) => {
-                                state.external_child = Some(child);
-                                state.phase = VideoPhase::Playing;
-                                state.note = Some(VideoNote::new(format!(
-                                    "视频已打开（{}，v 关闭）",
-                                    program.kind.title()
-                                )));
+                Ok(target) => {
+                    state.quality_note.clone_from(&target.quality_note);
+                    match state.backend.clone() {
+                        Some(VideoBackend::Host { path }) => match spawn_host(&path, &target) {
+                            Ok(host) => {
+                                state.host = Some(host);
+                                state.phase = VideoPhase::Starting;
                             }
                             Err(error) => {
                                 state.phase = VideoPhase::Idle;
                                 state.backend = None;
                                 state.note =
-                                    Some(VideoNote::new(format!("视频播放器启动失败：{error}")));
+                                    Some(VideoNote::new(format!("视频窗口启动失败：{error}")));
+                            }
+                        },
+                        Some(VideoBackend::External(program)) => {
+                            match player_command(&program, &target.url).spawn() {
+                                Ok(child) => {
+                                    state.external_child = Some(child);
+                                    state.phase = VideoPhase::Playing;
+                                    let quality =
+                                        target.quality_note.as_deref().unwrap_or("清晰度未知");
+                                    state.note = Some(VideoNote::new(format!(
+                                        "视频已打开（{}，{quality}，v 关闭）",
+                                        program.kind.title()
+                                    )));
+                                }
+                                Err(error) => {
+                                    state.phase = VideoPhase::Idle;
+                                    state.backend = None;
+                                    state.note = Some(VideoNote::new(format!(
+                                        "视频播放器启动失败：{error}"
+                                    )));
+                                }
                             }
                         }
+                        None => {
+                            state.phase = VideoPhase::Idle;
+                            state.note = Some(VideoNote::new("视频播放器丢失，请重新打开"));
+                        }
                     }
-                    None => {
-                        state.phase = VideoPhase::Idle;
-                        state.note = Some(VideoNote::new("视频播放器丢失，请重新打开"));
-                    }
-                },
+                }
                 Err(message) => {
                     state.phase = VideoPhase::Idle;
                     state.backend = None;
@@ -620,7 +631,9 @@ impl VideoController {
                 HostEvent::Ready => {
                     if state.phase == VideoPhase::Starting {
                         state.phase = VideoPhase::Playing;
-                        state.note = Some(VideoNote::new("视频已打开（v 关闭）"));
+                        let quality = state.quality_note.as_deref().unwrap_or("清晰度未知");
+                        state.note =
+                            Some(VideoNote::new(format!("视频已打开（{quality}，v 关闭）")));
                         changed = true;
                     }
                 }
@@ -784,6 +797,8 @@ fn target_from_parts(
     info: np_live::api::PlayInfo,
     room_title: Option<String>,
 ) -> Result<VideoTarget, String> {
+    let current_qn = info.current_qn;
+    let accept_qn = info.accept_qn.clone();
     let url = video_url_from_play_info(info)?;
     if url.is_empty()
         || !(url.starts_with("https://") || url.starts_with("http://"))
@@ -795,10 +810,24 @@ fn target_from_parts(
         .map(|title| sanitize_title(&title))
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| format!("直播 {room_id}"));
-    Ok(VideoTarget { url, title })
+    Ok(VideoTarget {
+        url,
+        title,
+        quality_note: quality_note(current_qn, &accept_qn),
+    })
 }
 
 /// 把 playurl 结果收敛成一条 FLV 地址；错误保持中文，不暴露 URL。
+/// 当前实际 qn 与“原画 10000”的差距；仅用于状态栏提示，不阻断播放。
+fn quality_note(current_qn: Option<u64>, accept_qn: &[u64]) -> Option<String> {
+    match current_qn {
+        Some(10000) => Some("原画 10000".to_owned()),
+        Some(qn) if accept_qn.contains(&10000) => Some(format!("当前 qn {qn}，原画需登录/权限")),
+        Some(qn) => Some(format!("当前 qn {qn}")),
+        None => None,
+    }
+}
+
 fn video_url_from_play_info(info: np_live::api::PlayInfo) -> Result<String, String> {
     if !info.is_live() {
         return Err("直播间未开播".to_owned());
@@ -1150,6 +1179,7 @@ mod tests {
         let target = VideoTarget {
             url: "https://example.invalid/live.flv?token=secret".to_owned(),
             title: "坏\n标题".to_owned(),
+            quality_note: None,
         };
         let request = host_request(&target).expect("request");
         let lines: Vec<&str> = request.lines().collect();
@@ -1163,6 +1193,7 @@ mod tests {
         let bad = VideoTarget {
             url: "https://example.invalid/live.flv\nX".to_owned(),
             title: String::new(),
+            quality_note: None,
         };
         assert!(host_request(&bad).unwrap_err().contains("地址"));
     }

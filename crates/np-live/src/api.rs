@@ -87,6 +87,10 @@ pub struct PlayInfo {
     pub flv_url: Option<String>,
     /// 服务端报告的 codec（只用于诊断，不能据此判断流内是否真有视频）。
     pub codec: Option<String>,
+    /// 服务端实际返回的清晰度档位（可能低于请求的 qn）。
+    pub current_qn: Option<u64>,
+    /// 服务端声明可用的清晰度档位。
+    pub accept_qn: Vec<u64>,
 }
 
 impl PlayInfo {
@@ -248,7 +252,12 @@ pub fn parse_play_info(body: &[u8], requested_room: u64) -> Result<PlayInfo, Liv
         room_id: data.room_id,
         live_status: data.live_status,
         flv_url: flv.as_ref().map(|candidate| candidate.url.clone()),
-        codec: flv.map(|candidate| candidate.codec),
+        codec: flv.as_ref().map(|candidate| candidate.codec.clone()),
+        current_qn: flv.as_ref().and_then(|candidate| candidate.current_qn),
+        accept_qn: flv
+            .as_ref()
+            .map(|candidate| candidate.accept_qn.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -336,6 +345,8 @@ fn find_flv(streams: &[StreamInfo]) -> Option<FlvCandidate> {
                 return Some(FlvCandidate {
                     url: join_url(&info.host, &codec.base_url, &info.extra),
                     codec: codec.codec_name.clone(),
+                    current_qn: codec.current_qn,
+                    accept_qn: codec.accept_qn.clone(),
                 });
             }
         }
@@ -420,6 +431,10 @@ struct CodecInfo {
     #[serde(default)]
     base_url: String,
     #[serde(default)]
+    current_qn: Option<u64>,
+    #[serde(default)]
+    accept_qn: Vec<u64>,
+    #[serde(default)]
     url_info: Vec<UrlInfo>,
 }
 
@@ -434,6 +449,8 @@ struct UrlInfo {
 struct FlvCandidate {
     url: String,
     codec: String,
+    current_qn: Option<u64>,
+    accept_qn: Vec<u64>,
 }
 
 #[derive(Debug, Deserialize)]
