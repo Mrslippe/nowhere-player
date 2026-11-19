@@ -1,4 +1,5 @@
 target/
+tools/mpv/
 node_modules/
 dist/
 *.log
