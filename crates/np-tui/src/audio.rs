@@ -17,7 +17,7 @@ use crate::model::TrackRef;
 use crate::playback::{PlaybackQueue, QueueItem, TrackKey};
 
 mod meta;
-use self::meta::{LIVE_META_REFRESH, LiveMeta};
+use self::meta::LiveMeta;
 
 /// 直播的 ring 窗口：比本地文件的 300 ms 更短，启动更快、更贴近 live edge。
 pub(crate) const LIVE_RING_MS: u32 = 150;
@@ -53,6 +53,8 @@ struct DanmakuSession {
 }
 
 type LiveMetaReply = (u64, LiveMeta);
+/// 同接刷新回传：generation + 本次同接数（失败为 `None`，显示 ` -- `）。
+type LiveOnlineReply = (u64, Option<u64>);
 
 pub(crate) fn reconnect_delay(attempt: u32) -> Duration {
     let index = usize::try_from(attempt.saturating_sub(1))
@@ -79,9 +81,15 @@ pub struct TuiAudio {
     live_room: Cell<u64>,
     live_note: RefCell<Option<String>>,
     live_meta: RefCell<Option<LiveMeta>>,
+    live_meta_generation: Cell<u64>,
     live_meta_rx: RefCell<Option<std::sync::mpsc::Receiver<LiveMetaReply>>>,
-    /// 下一次刷新房间信息（同接数）的时刻；`None` 表示当前没有直播。
+    /// 下一次刷新房间资料（主播 / 分区）的时刻；`None` 表示当前没有直播。
     live_meta_refresh_at: Cell<Option<Instant>>,
+    live_online: Cell<Option<u64>>,
+    live_online_generation: Cell<u64>,
+    live_online_rx: RefCell<Option<std::sync::mpsc::Receiver<LiveOnlineReply>>>,
+    /// 下一次刷新同接人数的时刻；与资料计时相互独立。
+    live_online_refresh_at: Cell<Option<Instant>>,
     live_buffer_target_ms: Cell<u64>,
     live_elapsed_override: Cell<Option<u64>>,
     live_metrics: RefCell<Option<np_live::LiveMetrics>>,
@@ -141,8 +149,13 @@ impl TuiAudio {
             live_room: Cell::new(0),
             live_note: RefCell::new(None),
             live_meta: RefCell::new(None),
+            live_meta_generation: Cell::new(0),
             live_meta_rx: RefCell::new(None),
             live_meta_refresh_at: Cell::new(None),
+            live_online: Cell::new(None),
+            live_online_generation: Cell::new(0),
+            live_online_rx: RefCell::new(None),
+            live_online_refresh_at: Cell::new(None),
             live_buffer_target_ms: Cell::new(crate::live_page::DEFAULT_LIVE_BUFFER_MS),
             live_elapsed_override: Cell::new(None),
             live_metrics: RefCell::new(None),
@@ -679,16 +692,12 @@ impl TuiAudio {
         self.live_note.borrow_mut().take();
         *self.live_metrics.borrow_mut() = None;
         *self.live_meta.borrow_mut() = None;
-        *self.live_meta_rx.borrow_mut() = None;
 
         // 声音与弹幕各自独立：弹幕线程失败只影响状态栏提示，不影响音频。
         self.start_danmaku(room_id, auth.clone());
 
-        // 主播名 / 分区与音频准备并行：多一条短请求，不拖慢起播。
-        // 同接数（online_rank）短周期变化，之后每 3s 重新拉一次（T-0101）。
-        self.spawn_live_meta(generation, room_id);
-        self.live_meta_refresh_at
-            .set(Some(Instant::now() + LIVE_META_REFRESH));
+        // 资料 30s、同接 3s 各自独立计时；起播时两路立即各拉一次（T-0102）。
+        self.begin_live_refresh(room_id);
 
         let cancel = Arc::new(AtomicBool::new(false));
         *self.live_cancel.borrow_mut() = Some(Arc::clone(&cancel));
@@ -707,6 +716,7 @@ impl TuiAudio {
         if let Err(error) = spawn {
             self.stop_danmaku();
             self.live_state.set(LiveState::Idle);
+            self.reset_live_refresh();
             *self.live_rx.borrow_mut() = None;
             *self.live_cancel.borrow_mut() = None;
             *self.title.borrow_mut() = "未播放".to_owned();
@@ -724,7 +734,9 @@ impl TuiAudio {
     /// 主线程每 tick 调用：接住准备结果并打开播放器。
     pub(crate) fn poll_live(&self) -> bool {
         self.refresh_live_meta_if_due();
-        let meta_changed = self.drain_live_meta();
+        self.refresh_live_online_if_due();
+        // 两路都 drain，不短路：一个失败不能饿死另一个。
+        let refresh_changed = self.drain_live_meta() | self.drain_live_online();
         let received = {
             let receiver = self.live_rx.borrow();
             match receiver.as_ref() {
@@ -743,10 +755,10 @@ impl TuiAudio {
             }
         };
         let Some((generation, result)) = received else {
-            return meta_changed;
+            return refresh_changed;
         };
         if generation != self.live_generation.get() {
-            return meta_changed;
+            return refresh_changed;
         }
         *self.live_rx.borrow_mut() = None;
         *self.live_cancel.borrow_mut() = None;
@@ -867,8 +879,6 @@ impl TuiAudio {
         *self.artist.borrow_mut() = "Nowhere Player".to_owned();
         self.live_room.set(0);
         *self.live_meta.borrow_mut() = None;
-        *self.live_meta_rx.borrow_mut() = None;
-        self.live_meta_refresh_at.set(None);
         self.reconnect_attempt.set(0);
         self.reconnect_at.set(None);
         true
@@ -880,8 +890,7 @@ impl TuiAudio {
             cancel.store(true, Ordering::Release);
         }
         *self.live_rx.borrow_mut() = None;
-        *self.live_meta_rx.borrow_mut() = None;
-        self.live_meta_refresh_at.set(None);
+        self.reset_live_refresh();
         *self.live_metrics.borrow_mut() = None;
         *self.live_control.borrow_mut() = None;
         self.reconnect_at.set(None);
@@ -1508,15 +1517,14 @@ impl TuiAudio {
             anchor: anchor.to_owned(),
             area: area.to_owned(),
             live_started_at: None,
-            online: Some(2000),
+            ruid: None,
         });
+        self.live_online.set(Some(2000));
     }
 
     /// 测试用：只改同接数，不动主播名 / 分区。
     pub(crate) fn live_online_for_test(&self, online: Option<u64>) {
-        if let Some(meta) = self.live_meta.borrow_mut().as_mut() {
-            meta.online = online;
-        }
+        self.live_online.set(online);
     }
 
     /// 测试用：直接设置登录态，避免读写真实 auth 文件。
