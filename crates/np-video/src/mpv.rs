@@ -11,6 +11,9 @@ use crate::protocol::Request;
 pub const PLAYER_ENV: &str = "NP_VIDEO_PLAYER";
 /// mpv 的 IPC 管道名；单实例宿主，固定名字即可。
 pub const IPC_PIPE: &str = r"\\.\pipe\nowhere-video";
+/// B站 CDN 对非浏览器 UA 可能直接拒绝，和音频链路保持一致。
+const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// mpv 参数。URL 不在其中；`--playlist=-` 让 mpv 从 stdin 读 URL。
 pub fn mpv_args(hwnd: usize, referer: &str, origin: &str) -> Vec<String> {
@@ -23,7 +26,8 @@ pub fn mpv_args(hwnd: usize, referer: &str, origin: &str) -> Vec<String> {
         "--no-osd-bar".to_owned(),
         "--force-window=no".to_owned(),
         format!("--input-ipc-server={IPC_PIPE}"),
-        format!("--http-header-fields=Referer: {referer},Origin: {origin}"),
+        format!("--user-agent={BROWSER_UA}"),
+        format!("--http-header-fields=Referer: {referer},Origin: {origin},Accept: */*"),
         "--playlist=-".to_owned(),
     ]
 }
@@ -191,8 +195,9 @@ mod tests {
                 .any(|arg| arg == r"--input-ipc-server=\\.\pipe\nowhere-video")
         );
         assert!(args.iter().any(|arg| {
-            arg == "--http-header-fields=Referer: https://live.bilibili.com/,Origin: https://live.bilibili.com"
+            arg == "--http-header-fields=Referer: https://live.bilibili.com/,Origin: https://live.bilibili.com,Accept: */*"
         }));
+        assert!(args.iter().any(|arg| arg.starts_with("--user-agent=")));
         assert_eq!(args.last().map(String::as_str), Some("--playlist=-"));
     }
 
