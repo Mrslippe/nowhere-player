@@ -720,6 +720,11 @@ unsafe extern "system" fn host_proc(
             let rect = unsafe { &mut *(lparam.0 as *mut RECT) };
             let next = layout::constrain_aspect(win::from_rect(*rect), wparam.0, min_w, min_h);
             *rect = win::to_rect(next);
+            // 有些合成/拖动路径不会在拖动中及时派发 WM_SIZE；直接按新矩形同步
+            // surface / overlay / mpv 子窗口，保证拖动时视频和标题栏跟手。
+            with_host_mut(hwnd, |host| {
+                host.resize_client(next.width(), next.height());
+            });
             // 返回 TRUE，允许 Windows 使用修正后的矩形。
             LRESULT(1)
         }
@@ -773,7 +778,11 @@ unsafe extern "system" fn host_proc(
             LRESULT(0)
         }
         WM_EXITSIZEMOVE | WM_EXITMENULOOP => {
-            with_host_mut(hwnd, |host| host.titlebar.set_interacting(false));
+            let (width, height) = win::client_size(hwnd);
+            with_host_mut(hwnd, |host| {
+                host.titlebar.set_interacting(false);
+                host.resize_client(width, height);
+            });
             LRESULT(0)
         }
         WM_NCLBUTTONDOWN => match wparam.0 as u32 {
