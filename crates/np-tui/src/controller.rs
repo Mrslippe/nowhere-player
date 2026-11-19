@@ -49,10 +49,12 @@ pub(crate) fn execute(
         Action::Enter => enter(app, player, library, search_tx, theme, settings),
         Action::Escape => {
             if player.is_live() {
-                // T-0101：Live 的 Esc 不再直接停播。`q` 的应用退出确认优先；
-                // 否则先收起浮层，没有浮层时第一次 Esc 进入退出确认，
-                // 确认态再按 Esc 取消。
-                if app.quit_armed {
+                // T-0101：Live 的 Esc 不再直接停播。T-0104 先关视频窗口，
+                // 再按原有顺序处理退出确认 / 浮层。
+                if player.video_is_active() {
+                    player.close_video();
+                    app.set_transient_status("视频已关闭");
+                } else if app.quit_armed {
                     app.quit_armed = false;
                     app.set_transient_status("已取消退出");
                 } else if app.live_exit_armed() {
@@ -146,6 +148,10 @@ pub(crate) fn execute(
             }
         }
         Action::OpenCommand => app.enter_command(),
+        Action::ToggleVideo => match player.toggle_video() {
+            Ok(note) => app.set_transient_status(note),
+            Err(message) => app.set_status(message),
+        },
         Action::LiveChat => {
             if player.is_live() {
                 app.sync_danmaku(player.danmaku_received());

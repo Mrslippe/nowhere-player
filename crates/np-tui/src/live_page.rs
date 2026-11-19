@@ -469,6 +469,11 @@ fn chat_hints(app: &App, paused: bool, player: &TuiAudio) -> String {
             None => STATUS_HINTS_PLAYING.to_owned(),
         }
     };
+    // T-0104：视频提示只在有视频/有一次性消息时出现，空闲态保持旧 golden 不变。
+    let base = match player.video_status_hint() {
+        Some(hint) => format!(" · {hint}{base}"),
+        None => base,
+    };
     match player.danmaku_link().hint() {
         Some(hint) => format!(" · {hint}{base}"),
         None => base,

@@ -1,7 +1,8 @@
 //! B 站直播 API：`getRoomPlayInfo`（默认 `only_audio=1`）与 `room get_info`。
 //!
 //! 默认请求 qn25000 HEVC 的 only_audio 流；`NP_LIVE_NORMAL=1` 时请求普通 FLV，
-//! 仍只解 type=8 音频。
+//! 仍只解 type=8 音频。`video_play_info_url` / [`fetch_video_play_info`] 走
+//! `only_audio=0` + H.264，只给 TUI 的直播画面取 FLV 地址（T-0104）。
 //!
 //! 只走 [`np_sources::Transport`]，测试注入夹具，不会触网。
 
@@ -131,14 +132,53 @@ pub fn fetch_play_info_with_auth(
     room_id: u64,
     auth: Option<&BiliAuth>,
 ) -> Result<PlayInfo, LiveError> {
-    validate_room(room_id)?;
     let url = play_info_url(room_id);
+    request_play_info(transport, room_id, auth, &url)
+}
+
+/// 直播画面的 playurl URL：`only_audio=0`，优先 H.264（`codec=0`）的 FLV。
+///
+/// T-0104：视频解码和窗口由外部播放器负责，TUI 只需要一条 FLV 地址。
+pub fn video_play_info_url(room_id: u64) -> String {
+    format!(
+        "{PLAY_INFO_URL}?room_id={room_id}&protocol=0&format=0&codec=0&qn=10000&platform=web&ptype=8&only_audio=0"
+    )
+}
+
+/// 取直播画面的 playurl（`only_audio=0`）；`flv_url` 为第一条 http FLV 流。
+///
+/// 调用方负责把 [`PlayInfo::live_status`] / `flv_url` 映射成
+/// [`LiveError::Offline`] / 中文的“没有可用 FLV 视频流”提示。
+pub fn fetch_video_play_info(
+    transport: &dyn Transport,
+    room_id: u64,
+) -> Result<PlayInfo, LiveError> {
+    fetch_video_play_info_with_auth(transport, room_id, None)
+}
+
+/// 带登录 cookie 请求视频 playurl；匿名时与 [`fetch_video_play_info`] 相同。
+pub fn fetch_video_play_info_with_auth(
+    transport: &dyn Transport,
+    room_id: u64,
+    auth: Option<&BiliAuth>,
+) -> Result<PlayInfo, LiveError> {
+    let url = video_play_info_url(room_id);
+    request_play_info(transport, room_id, auth, &url)
+}
+
+fn request_play_info(
+    transport: &dyn Transport,
+    room_id: u64,
+    auth: Option<&BiliAuth>,
+    url: &str,
+) -> Result<PlayInfo, LiveError> {
+    validate_room(room_id)?;
     let cookie = auth.map(BiliAuth::cookie_header).unwrap_or_default();
     let response = if cookie.is_empty() {
-        transport.get_with_headers(&url, &[("Referer", "https://live.bilibili.com/")])?
+        transport.get_with_headers(url, &[("Referer", "https://live.bilibili.com/")])?
     } else {
         transport.get_with_headers(
-            &url,
+            url,
             &[
                 ("Referer", "https://live.bilibili.com/"),
                 ("Cookie", &cookie),
@@ -519,6 +559,41 @@ mod tests {
         let url = play_info_url_with_audio_mode(21622811, false);
         assert!(!url.contains("only_audio=1"));
         assert!(url.contains("protocol=0"));
+    }
+
+    #[test]
+    fn video_play_info_url_requests_video_with_h264_flv() {
+        let url = video_play_info_url(21622811);
+        assert!(url.contains("room_id=21622811"));
+        assert!(url.contains("only_audio=0"));
+        assert!(!url.contains("only_audio=1"));
+        assert!(url.contains("protocol=0"));
+        assert!(url.contains("format=0"));
+        assert!(url.contains("codec=0"));
+        assert!(url.contains("qn=10000"));
+    }
+
+    #[test]
+    fn fetch_video_play_info_uses_the_video_url_and_parses_flv() {
+        let transport = RecordingTransport::new(LIVE);
+        let info = fetch_video_play_info(&transport, 21622811).unwrap();
+        assert!(info.is_live());
+        assert_eq!(info.room_id, 21622811);
+        assert!(info.flv_url.is_some());
+        let urls = transport.urls.lock().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].contains("only_audio=0"));
+        assert!(urls[0].contains("codec=0"));
+    }
+
+    #[test]
+    fn video_play_info_rejects_zero_room_before_any_request() {
+        let transport = RecordingTransport::new(LIVE);
+        assert!(matches!(
+            fetch_video_play_info(&transport, 0).unwrap_err(),
+            LiveError::InvalidRoom(_)
+        ));
+        assert!(transport.urls.lock().unwrap().is_empty());
     }
 
     #[test]

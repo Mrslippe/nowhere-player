@@ -10,6 +10,9 @@
 //!
 //! 目标缓冲的宿主入口是 [`set_target_buffer_ms`]：np-tui 在每次 `/live` 前用
 //! `live.buffer_ms` 的值调用；`NP_LIVE_TARGET_MS` 保留为调试覆盖。
+//!
+//! 直播画面（T-0104）只复用本 crate 的 API：`api::fetch_video_play_info` 用
+//! `only_audio=0` 取 FLV 视频地址，解码和窗口由外部 mpv/ffplay 负责。
 
 pub mod api;
 pub mod auth;

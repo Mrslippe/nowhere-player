@@ -2314,6 +2314,94 @@ fn escape_and_transport_actions_respect_live_mode() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn escape_closes_the_video_window_before_live_exit_confirmation() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-video-esc-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &*library, &settings);
+    audio.live_for_test(21622811, "BLAST");
+    audio.video_active_for_test();
+
+    crate::controller::execute(
+        Action::Escape,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(!audio.video_is_active(), "Esc must close the video first");
+    assert!(
+        !app.live_exit_armed(),
+        "Esc that closes video must not arm the live exit confirmation"
+    );
+    assert_eq!(app.status, "视频已关闭");
+    assert!(audio.is_live(), "closing video must not stop live audio");
+
+    // 视频已关，下一次 Esc 才进入 Live 退出确认。
+    crate::controller::execute(
+        Action::Escape,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(app.live_exit_armed());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn stop_and_restart_paths_close_the_video_window() {
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST");
+    audio.video_active_for_test();
+    assert!(audio.stop_live());
+    assert!(!audio.video_is_active(), "stop_live must close video");
+
+    // F5 / 换房都会先走 shutdown_live；这里不启动网络线程，只验清理路径。
+    audio.live_for_test(21622811, "BLAST");
+    audio.video_active_for_test();
+    audio.shutdown_live_for_test();
+    assert!(
+        !audio.video_is_active(),
+        "refresh/room switch must close video"
+    );
+    assert!(!audio.is_live());
+}
+
+#[test]
+fn live_status_bar_shows_a_video_hint_while_the_window_is_open() {
+    let audio = TuiAudio::empty();
+    audio.live_for_test(21622811, "BLAST");
+    audio.video_note_for_test("视频准备中…");
+    let mut app = App::new();
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    let compact: String = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(compact.contains("视频准备中"), "{compact}");
+}
+
 fn bili_auth_stub() -> np_live::BiliAuth {
     np_live::BiliAuth::new(
         vec![

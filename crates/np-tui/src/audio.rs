@@ -1,8 +1,8 @@
 //! TUI 的播放器适配：本地文件真正打开，队列保存可播放路径。
 //!
 //! 按职责拆分：直播状态与生命周期在 live，弹幕在 danmaku，队列与 PlayerApi 在
-//! playback，扫码登录与凭证在 auth，资料与同接在 meta。本模块只保留 TuiAudio
-//! 的字段、构造与必要的门面。
+//! playback，扫码登录与凭证在 auth，资料与同接在 meta，直播画面在 video。
+//! 本模块只保留 TuiAudio 的字段、构造与必要的门面。
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -21,12 +21,17 @@ mod danmaku;
 mod live;
 mod meta;
 mod playback;
+// `src/video.rs` 挂在 audio 下：任务卡只授权新增该文件，不授权改 main.rs 的
+// 模块声明，所以用 `#[path]` 明确指向顶层文件。
 #[cfg(test)]
 mod tests;
+#[path = "video.rs"]
+mod video;
 
 use self::live::{DanmakuSession, LivePreparation};
 pub(crate) use self::live::{LiveState, MAX_RECONNECT_ATTEMPTS, reconnect_delay};
 use self::meta::LiveMeta;
+use self::video::VideoController;
 
 /// 弹幕环形缓冲容量：只保留最近 500 条，供 Live 浮层读取。
 pub(crate) const DANMAKU_BUFFER_CAPACITY: usize = 500;
@@ -86,6 +91,7 @@ pub struct TuiAudio {
     chat_test_result: RefCell<Option<Result<(), String>>>,
     #[cfg(test)]
     chat_test_calls: Cell<u32>,
+    video: VideoController,
 }
 
 impl TuiAudio {
@@ -152,6 +158,7 @@ impl TuiAudio {
             chat_test_result: RefCell::new(None),
             #[cfg(test)]
             chat_test_calls: Cell::new(0),
+            video: VideoController::new(),
         }
     }
 }

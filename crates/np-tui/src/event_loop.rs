@@ -227,6 +227,10 @@ where
         if player.poll_live() {
             draw_needed = true;
         }
+        // 外部播放器窗口：接住取流结果，回收用户/播放器自己关掉的进程。
+        if player.poll_video() {
+            draw_needed = true;
+        }
         // 弹幕收包与状态提示独立于音频；每 tick 只做非阻塞 try_recv。
         if player.poll_danmaku() {
             draw_needed = true;
@@ -269,6 +273,7 @@ where
         }
         #[cfg(windows)]
         if app.poll_tray(player) {
+            player.close_video();
             return Ok(());
         }
         if app.poll_playlist_prepare(player, &**library) {
@@ -430,6 +435,7 @@ where
                                 continue;
                             }
                             if app.quit_armed {
+                                player.close_video();
                                 return Ok(());
                             }
                         }

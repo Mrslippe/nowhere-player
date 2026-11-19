@@ -438,6 +438,8 @@ impl TuiAudio {
 
     /// 取消准备、丢弃结果，但不重置标题等展示字段。
     pub(super) fn shutdown_live(&self) {
+        // 停播、换房、F5 和播本地文件都会经过这里；视频窗口不能留在桌面上。
+        self.close_video();
         if let Some(cancel) = self.live_cancel.borrow_mut().take() {
             cancel.store(true, Ordering::Release);
         }
@@ -522,6 +524,12 @@ impl TuiAudio {
         }
         self.start_live(room);
         true
+    }
+
+    /// 测试用：直接走 F5 / 换房共用的清理路径，不启动网络线程。
+    #[cfg(test)]
+    pub(crate) fn shutdown_live_for_test(&self) {
+        self.shutdown_live();
     }
 }
 
