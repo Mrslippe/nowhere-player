@@ -94,6 +94,13 @@ audio/tests.rs
 - [ ] clippy/fmt/check.ps1 全绿 `[数字]`
 - [ ] `git diff --stat` 仅移动/模块声明/导入 `[数字]`
 
-## 4. 回报
+## 4. 结果（2026-11-19）
+
+- audio.rs 1770 → 157；live 537 / danmaku 252 / playback 542 / auth 58 / tests 279。
+- 纯移动：106 个 fn 函数体 token 审计 missing/extra/differ = 0；结构体逐字节相同。
+- np-tui 259 tests；golden 零 diff；行数/卫生通过。
+- check-index 因 DES-016 索引过期失败，与拆分无关，主线已重生成。
+
+## 5. 回报
 
 STATUS/FILES/TESTS/LINES/RISKS。不提交。
