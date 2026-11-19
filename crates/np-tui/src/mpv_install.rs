@@ -79,28 +79,49 @@ fn install() -> Result<PathBuf, String> {
     std::fs::create_dir_all(parent).map_err(|error| format!("创建 mpv 目录失败：{error}"))?;
 
     let archive = parent.join(format!("mpv-{VERSION}.zip"));
-    let _ = std::fs::remove_file(&archive);
-    let download = Command::new("curl")
-        .args([
-            "-L",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--retry",
-            "3",
-            "--connect-timeout",
-            "15",
-            "--max-time",
-            "600",
-            "-o",
-        ])
-        .arg(&archive)
-        .arg(ARCHIVE)
-        .status()
-        .map_err(|error| format!("启动 curl 失败：{error}"))?;
-    if !download.success() {
+    let override_url = std::env::var("NP_MPV_URL").ok();
+    let sources: Vec<String> = if let Some(url) = override_url {
+        vec![url]
+    } else {
+        vec![
+            ARCHIVE.to_owned(),
+            // 官方 release 的二进制 CDN 在部分代理下会被 TLS 重置；
+            // 镜像只做传输，落盘仍按官方 SHA256 校验。
+            format!("https://ghfast.top/{ARCHIVE}"),
+        ]
+    };
+    let mut downloaded = false;
+    for source in &sources {
         let _ = std::fs::remove_file(&archive);
-        return Err(format!("mpv 下载失败（curl 退出码 {:?}）", download.code()));
+        let result = Command::new("curl")
+            .args([
+                "-L",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--retry",
+                "2",
+                "--connect-timeout",
+                "15",
+                "--max-time",
+                "300",
+                "-A",
+                "Mozilla/5.0",
+                "-o",
+            ])
+            .arg(&archive)
+            .arg(source)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if result.is_ok_and(|status| status.success()) && archive.is_file() {
+            downloaded = true;
+            break;
+        }
+    }
+    if !downloaded {
+        let _ = std::fs::remove_file(&archive);
+        return Err("mpv 下载失败：官方源和镜像均不可用".to_owned());
     }
 
     let actual = sha256(&archive)?;
