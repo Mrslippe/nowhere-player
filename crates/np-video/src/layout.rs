@@ -139,6 +139,58 @@ pub fn video_rect(width: i32, height: i32) -> Rect {
     Rect::new(0, 0, width.max(0), height.max(0))
 }
 
+/// 16:9 窗口比例约束。
+///
+/// `edge` 使用 Win32 `WM_SIZING` 的 WMSZ_* 数值：
+/// 1=左、2=右、3=上、4=左上、5=右上、6=下、7=左下、8=右下。
+///
+/// 水平拖动以宽度为准调高度；垂直拖动以高度为准调宽度；四角也走宽度基准。
+/// 对边保持不动，避免窗口在拖动时整体漂移。
+pub fn constrain_aspect(mut rect: Rect, edge: usize, min_w: i32, min_h: i32) -> Rect {
+    let min_w = min_w.max(1);
+    let min_h = min_h.max(1);
+    let top_edge = matches!(edge, 3 | 4 | 5);
+    let vertical = matches!(edge, 3 | 6);
+    let left_edge = matches!(edge, 1 | 4 | 7);
+
+    if vertical {
+        let mut height = rect.height().max(min_h);
+        let mut width = ((height as i64 * 16 + 8) / 9) as i32;
+        if width < min_w {
+            width = min_w;
+            height = ((width as i64 * 9 + 8) / 16) as i32;
+        }
+        if left_edge {
+            rect.left = rect.right - width;
+        } else {
+            rect.right = rect.left + width;
+        }
+        if top_edge {
+            rect.top = rect.bottom - height;
+        } else {
+            rect.bottom = rect.top + height;
+        }
+    } else {
+        let mut width = rect.width().max(min_w);
+        let mut height = ((width as i64 * 9 + 8) / 16) as i32;
+        if height < min_h {
+            height = min_h;
+            width = ((height as i64 * 16 + 8) / 9) as i32;
+        }
+        if left_edge {
+            rect.left = rect.right - width;
+        } else {
+            rect.right = rect.left + width;
+        }
+        if top_edge {
+            rect.top = rect.bottom - height;
+        } else {
+            rect.bottom = rect.top + height;
+        }
+    }
+    rect
+}
+
 /// 标题栏 overlay 的 Rect：只有顶部 32px（按 DPI 缩放）。
 pub fn overlay_rect(width: i32, dpi: u32) -> Rect {
     Rect::new(0, 0, width.max(0), titlebar_height(dpi))

@@ -44,9 +44,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY,
     WM_DPICHANGED, WM_ENTERMENULOOP, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITMENULOOP,
     WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_NCCALCSIZE,
-    WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE, WM_TIMER, WNDCLASSEXW,
-    WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
-    WindowFromPoint,
+    WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE, WM_SIZING, WM_TIMER,
+    WNDCLASSEXW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE, WindowFromPoint,
 };
 use windows::core::PCWSTR;
 
@@ -709,6 +709,19 @@ unsafe extern "system" fn host_proc(
                 );
             }
             LRESULT(0)
+        }
+        WM_SIZING => {
+            if unsafe { IsZoomed(hwnd) }.as_bool() {
+                return LRESULT(0);
+            }
+            let dpi = with_host_ref(hwnd, |host| host.dpi).unwrap_or(96);
+            let (min_w, min_h) = layout::min_track_size(dpi);
+            // SAFETY: WM_SIZING 的 lParam 指向可写的窗口 RECT。
+            let rect = unsafe { &mut *(lparam.0 as *mut RECT) };
+            let next = layout::constrain_aspect(win::from_rect(*rect), wparam.0, min_w, min_h);
+            *rect = win::to_rect(next);
+            // 返回 TRUE，允许 Windows 使用修正后的矩形。
+            LRESULT(1)
         }
         WM_SIZE => {
             if wparam.0 == 0 {
