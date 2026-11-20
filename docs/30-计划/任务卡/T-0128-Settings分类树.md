@@ -46,6 +46,7 @@ crates/np-tui/src/app.rs
 crates/np-tui/src/render.rs
 crates/np-tui/src/tests.rs
 crates/np-tui/src/snapshot_tests.rs
+crates/np-tui/tests/golden/settings_72x24.txt
 docs/10-设计/TUI交互模型.md
 docs/30-计划/任务卡/T-0128-Settings分类树.md（仅结果段）
 ```
