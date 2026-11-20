@@ -75,6 +75,12 @@
 - T-0120：标题栏/控制条 160/140ms 滑入滑出；控制条只在底部 40dp 热区呼出
 - T-0121：视频画质默认请求 4K（20000），AVC+HEVC 取最高可用；菜单列出全部 accept_qn
 - T-0122：Inno Setup per-user 安装器 + winget/Scoop 清单生成器；安装器未签名
+- T-0123：主题色谱统一为语义 `PaletteToken`；`rgba()` / 8 位 hex alpha 按实际主题背景合成
+- T-0124：启动页 30fps LOGO 浮动/摇摆/呼吸；Windows 内存合成 UI 音效（可关）
+- T-0125：`Ctrl+F` 专注模式；`tui.focusMode` 运行期生效；开机自启幂等与失败提示
+- T-0126：Player 视觉样式扩到 7 种；`f` 轮换；`ui.visual` 持久化
+- T-0127：Browse 直播页（房间号输入 + 主播名历史）；`/live` 与页面共享历史
+- T-0128：Settings 分类树（可折叠，分类根 Enter 展开/折叠）
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本
