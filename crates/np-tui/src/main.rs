@@ -21,6 +21,8 @@ mod keymap;
 mod launcher;
 mod layout;
 mod live_command;
+mod live_entry;
+mod live_history;
 mod live_page;
 mod logging;
 mod login;
@@ -102,6 +104,19 @@ fn visual_from_env(value: &str) -> Option<VisualMode> {
     }
 }
 
+/// `NP_TUI_VIEW` 的短名解析：`live` 对应 Browse 树里的「直播」页。
+fn view_from_env(value: &str) -> Option<BrowseKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "search" => Some(BrowseKind::Search),
+        "live" => Some(BrowseKind::Live),
+        "queue" => Some(BrowseKind::Queue),
+        "playlist" | "playlists" => Some(BrowseKind::PlaylistRoot),
+        "library" => Some(BrowseKind::Library),
+        "settings" => Some(BrowseKind::Settings),
+        _ => None,
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let selftest = std::env::var("NP_TUI_SELFTEST")
         .ok()
@@ -150,6 +165,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_bool("startup.enabled")
         .and_then(|enabled| startup::set_enabled(enabled).err());
     let theme_api = TuiThemeApi::new(config_dir.join("themes"));
+    // `Paths` 会拿走 config_dir：直播历史路径必须在移动前克隆出来。
+    let live_history_path = config_dir.join("live_history.json");
     let library = Arc::new(LibraryHandle::with_paths(Paths {
         config_dir,
         cache_dir,
@@ -192,6 +209,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(error) = startup_error {
         app.set_status(format!("自启设置失败：{error}"));
     }
+    let (live_entry, live_warning) = crate::live_entry::LiveEntry::load(Some(live_history_path));
+    app.live_entry = live_entry;
+    if let Some(warning) = live_warning {
+        app.set_status(warning);
+    }
     #[cfg(windows)]
     {
         let (tray_tx, tray_rx) = std::sync::mpsc::channel();
@@ -214,20 +236,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.theme_id().as_deref().unwrap_or("milkgreen"),
     );
     app.load_views(&player, &*library, &settings);
-    if let Ok(view) = std::env::var("NP_TUI_VIEW") {
-        let wanted = match view.trim().to_ascii_lowercase().as_str() {
-            "search" => Some(BrowseKind::Search),
-            "queue" => Some(BrowseKind::Queue),
-            "playlist" | "playlists" => Some(BrowseKind::PlaylistRoot),
-            "library" => Some(BrowseKind::Library),
-            "settings" => Some(BrowseKind::Settings),
-            _ => None,
-        };
-        if let Some(wanted) = wanted
-            && let Some(index) = app.view_kind.iter().position(|kind| *kind == wanted)
-        {
-            app.view_index = index;
-        }
+    if let Ok(view) = std::env::var("NP_TUI_VIEW")
+        && let Some(wanted) = view_from_env(&view)
+        && let Some(index) = app.view_kind.iter().position(|kind| *kind == wanted)
+    {
+        app.view_index = index;
     }
     app.visual_mode =
         startup_visual_mode(&settings, std::env::var("NP_TUI_VISUAL").ok().as_deref());

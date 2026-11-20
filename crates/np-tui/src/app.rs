@@ -100,6 +100,7 @@ pub(crate) struct App {
     pub(crate) chat_notice: Option<String>,
     pub(crate) chat_notice_expires_at: Option<Instant>,
     pub(crate) danmaku_overlay: crate::danmaku_overlay::DanmakuOverlay,
+    pub(crate) live_entry: crate::live_entry::LiveEntry,
 }
 
 impl App {
@@ -165,6 +166,7 @@ impl App {
             chat_notice: None,
             chat_notice_expires_at: None,
             danmaku_overlay: crate::danmaku_overlay::DanmakuOverlay::default(),
+            live_entry: crate::live_entry::LiveEntry::default(),
         }
     }
     pub(crate) fn input_text(&self) -> String {
@@ -304,13 +306,8 @@ impl App {
         let library_view = library_view(library);
         let queue = queue_view(player, library);
         self.queue_marker = player.queue_list().ok().and_then(|view| view.index);
-        let search = ViewData {
-            title: "搜索".to_owned(),
-            columns: Vec::new(),
-            rows: Vec::new(),
-            refs: Vec::new(),
-            durations: Vec::new(),
-        };
+        let search = ViewData::titled("搜索");
+        let live = ViewData::titled("直播");
         let settings_page = settings_page(settings);
         self.settings_fields = settings_page.fields;
         self.settings_editor = SettingsEditor::new();
@@ -340,6 +337,7 @@ impl App {
         for (view, kind) in [
             (library_view, BrowseKind::Library),
             (search, BrowseKind::Search),
+            (live, BrowseKind::Live),
             (queue, BrowseKind::Queue),
             (settings_view, BrowseKind::Settings),
         ] {
@@ -642,7 +640,7 @@ impl App {
         let Some(kind) = self.view_kind.get(self.view_index) else {
             return Err("当前没有列表".to_owned());
         };
-        if matches!(kind, BrowseKind::PlaylistRoot | BrowseKind::Settings) {
+        if !kind.is_song_list() {
             return Err("当前列表不是歌曲列表".to_owned());
         }
         let Some(view) = self.selected_view() else {
@@ -747,7 +745,7 @@ impl App {
         let Some(kind) = self.view_kind.get(self.view_index).cloned() else {
             return Err("当前没有列表".to_owned());
         };
-        if matches!(kind, BrowseKind::PlaylistRoot | BrowseKind::Settings) {
+        if !kind.is_song_list() {
             return Err("当前列表不是歌曲列表".to_owned());
         }
         let Some(view) = self.selected_view() else {
@@ -1314,7 +1312,8 @@ impl App {
         self.history_cursor = None;
         self.set_status(format!("执行：{input}"));
         if let Some(status) = crate::live_command::start_live_command(&input, player) {
-            self.set_status(status);
+            let warning = self.live_entry.record_command(&input);
+            self.set_status(warning.unwrap_or(status));
             return;
         }
         if let Some(status) = crate::login_command::run(&input, player) {

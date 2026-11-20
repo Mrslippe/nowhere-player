@@ -9,12 +9,15 @@ pub(crate) fn start_live_command(input: &str, player: &TuiAudio) -> Option<Strin
     }
     let result = parse_live_command(input)?;
     Some(match result {
-        Ok(room) => {
-            player.start_live(room);
-            format!("直播准备中：房间 {room}")
-        }
+        Ok(room) => start_live(player, room),
         Err(message) => message,
     })
+}
+
+/// 统一开播入口：`/live` 命令与 Browse 直播页都走这里，只调播放器。
+pub(crate) fn start_live(player: &TuiAudio, room: u64) -> String {
+    player.start_live(room);
+    format!("直播准备中：房间 {room}")
 }
 
 /// 解析 `live <room>` / `:live <room>`。

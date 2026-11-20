@@ -227,6 +227,10 @@ where
         if player.poll_live() {
             draw_needed = true;
         }
+        // 主播名回填：Browse 直播页开播后，meta 一到就写进历史。
+        if crate::live_entry::poll_anchor(app, player) {
+            draw_needed = true;
+        }
         // 外部播放器窗口：接住取流结果，回收用户/播放器自己关掉的进程。
         if player.poll_video() {
             draw_needed = true;
@@ -415,6 +419,16 @@ where
                         draw_needed = true;
                         continue;
                     } else {
+                        // Browse 直播页的输入态：数字 / 历史 / Enter / Delete / Esc
+                        // 由 live_entry 独占，避免 `q` / `s` / `f` 误触全局键。
+                        if !player.is_live()
+                            && app.focus == Focus::List
+                            && matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Live))
+                            && crate::live_entry::handle_key(key.code, key.modifiers, app, player)
+                        {
+                            draw_needed = true;
+                            continue;
+                        }
                         app.clear_chat_notice();
                         if key.code == KeyCode::Enter {
                             if app.pending_add.is_some() {

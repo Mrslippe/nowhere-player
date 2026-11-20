@@ -133,8 +133,16 @@ pub(crate) enum BrowseKind {
     Playlist(String),
     Library,
     Search,
+    Live,
     Queue,
     Settings,
+}
+
+impl BrowseKind {
+    /// 能选歌行的列表；PlayList 根、设置页和直播页不吃 `a` / `r`。
+    pub(crate) fn is_song_list(&self) -> bool {
+        !matches!(self, Self::PlaylistRoot | Self::Settings | Self::Live)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +165,16 @@ pub(crate) struct ViewData {
     pub(crate) rows: Vec<Vec<String>>,
     pub(crate) refs: Vec<TrackRef>,
     pub(crate) durations: Vec<u64>,
+}
+
+impl ViewData {
+    /// 只有标题的空视图：搜索与直播页的初始态没有列 / 行 / 曲目引用。
+    pub(crate) fn titled(title: &str) -> Self {
+        Self {
+            title: title.to_owned(),
+            ..Self::default()
+        }
+    }
 }
 
 pub(crate) struct RemotePlayback {

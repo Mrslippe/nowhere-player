@@ -391,6 +391,8 @@ fn enter(
             }
         }
         Some(BrowseKind::Search) if app.filtered_rows().is_empty() => {}
+        // Live 页的 Enter 由 live_entry 输入态消费；这里只兜底，绝不落到播放。
+        Some(BrowseKind::Live) => {}
         Some(BrowseKind::Settings) => {
             if let Err(error) =
                 crate::settings_editor::begin_settings_edit(app, player, settings, theme)

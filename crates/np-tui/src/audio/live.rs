@@ -59,7 +59,7 @@ impl TuiAudio {
         self.live_state.get()
     }
 
-    #[cfg(test)]
+    /// 当前（或最近一次尝试的）直播房间号；停播后归 0。
     pub(crate) fn live_room(&self) -> u64 {
         self.live_room.get()
     }
@@ -155,15 +155,20 @@ impl TuiAudio {
         self.live_state.get() == LiveState::Playing
     }
 
-    /// Player 上边左侧的主播名；资料未到时回退到房间号。
-    pub(crate) fn live_anchor(&self) -> String {
-        let anchor = self
-            .live_meta
+    /// 真实主播名；资料未到或为空时 `None`。
+    ///
+    /// Browse 直播页只用它回填历史，回退文案留给 [`live_anchor`](Self::live_anchor)。
+    pub(crate) fn live_anchor_name(&self) -> Option<String> {
+        self.live_meta
             .borrow()
             .as_ref()
             .map(|meta| meta.anchor.trim().to_owned())
-            .unwrap_or_default();
-        if !anchor.is_empty() {
+            .filter(|anchor| !anchor.is_empty())
+    }
+
+    /// Player 上边左侧的主播名；资料未到时回退到房间号。
+    pub(crate) fn live_anchor(&self) -> String {
+        if let Some(anchor) = self.live_anchor_name() {
             return anchor;
         }
         let room = self.live_room.get();

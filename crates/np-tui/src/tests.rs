@@ -1016,6 +1016,60 @@ fn load_views_keeps_search_node_and_playlist_first() {
 }
 
 #[test]
+fn load_views_puts_live_between_search_and_queue() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-load-views-live-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    });
+    let settings = np_app::SettingsHandle::load(config);
+    let audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &library, &settings);
+
+    let index_of = |kind: BrowseKind| {
+        app.view_kind
+            .iter()
+            .position(|current| *current == kind)
+            .unwrap_or_else(|| panic!("缺少 {kind:?}"))
+    };
+    let search = index_of(BrowseKind::Search);
+    let live = index_of(BrowseKind::Live);
+    let queue = index_of(BrowseKind::Queue);
+    assert_eq!(live, search + 1, "直播必须在搜索之后");
+    assert_eq!(queue, live + 1, "队列必须紧跟直播之后");
+    let view = &app.views[live];
+    assert_eq!(view.title, "直播");
+    assert!(view.columns.is_empty());
+    assert!(view.rows.is_empty());
+    assert!(view.refs.is_empty());
+    assert!(view.durations.is_empty());
+    assert_eq!(app.view_depth[live], 0);
+    // `NP_TUI_VIEW=live` 与 Browse 树用同一套 view_kind 查找。
+    let wanted = crate::view_from_env("live").expect("live 必须可解析");
+    assert_eq!(wanted, BrowseKind::Live);
+    assert_eq!(
+        app.view_kind.iter().position(|kind| *kind == wanted),
+        Some(live)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn np_tui_view_env_accepts_live_with_case_and_spaces() {
+    assert_eq!(crate::view_from_env("live"), Some(BrowseKind::Live));
+    assert_eq!(crate::view_from_env(" LIVE "), Some(BrowseKind::Live));
+    assert_eq!(crate::view_from_env("bogus"), None);
+}
+
+#[test]
 fn more_than_five_playlists_start_collapsed() {
     use np_app::LibraryApi;
 
@@ -2706,6 +2760,125 @@ fn live_player_bar_shows_live_instead_of_zero_time() {
     assert!(
         !text.contains("00:00 / 00:00"),
         "live must not render a zero position/duration"
+    );
+}
+
+#[test]
+fn live_anchor_name_returns_the_real_meta_name_only() {
+    let audio = TuiAudio::empty();
+    assert_eq!(audio.live_anchor_name(), None);
+    assert_eq!(audio.live_anchor(), "直播");
+    audio.live_for_test(21622811, "BLAST");
+    assert_eq!(audio.live_anchor_name(), None, "没资料时不能回填假名");
+    assert_eq!(audio.live_anchor(), "房间 21622811");
+    audio.live_meta_for_test(" 测试主播 ", "游戏赛事");
+    assert_eq!(audio.live_anchor_name().as_deref(), Some("测试主播"));
+    assert_eq!(audio.live_anchor(), "测试主播");
+
+    let blank = TuiAudio::empty();
+    blank.live_for_test(1234, "BLAST");
+    blank.live_meta_for_test("   ", "");
+    assert_eq!(blank.live_anchor_name(), None);
+    assert_eq!(blank.live_anchor(), "房间 1234");
+}
+
+fn live_entry_app() -> App {
+    let mut app = App::new();
+    app.views = vec![ViewData::titled("直播")];
+    app.view_kind = vec![BrowseKind::Live];
+    app.view_depth = vec![0];
+    app.focus = Focus::List;
+    app
+}
+
+#[test]
+fn live_page_draws_room_input_and_three_history_rows_on_72x24() {
+    let mut app = live_entry_app();
+    app.live_entry.history.record(21622811, "测试主播");
+    app.live_entry.history.record(1234, "");
+    app.live_entry.history.record(8, "");
+    app.live_entry.selected = Some(0);
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    let compact = |value: &str| -> String {
+        value
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    };
+    assert!(compact(&text).contains("RoomID"), "缺少输入框：{text}");
+
+    // 宽字符的续格在缓冲区里是空格：按“去掉空白”的行做定位。
+    let row_with = |needle: &str| -> u16 {
+        let area = terminal.backend().buffer().area;
+        (area.y..area.bottom())
+            .find(|y| compact(&row_text(&terminal, *y)).contains(needle))
+            .unwrap_or_else(|| panic!("row containing {needle:?} not found"))
+    };
+    let selected_row = row_with("►房间8");
+    let second_row = row_with("房间1234");
+    let third_row = row_with("测试主播·21622811");
+    assert_eq!(second_row, selected_row + 1, "历史必须按最近使用排序");
+    assert_eq!(third_row, second_row + 1);
+    let input_row = row_with("RoomID");
+    assert!(input_row < selected_row, "历史必须在输入框下方");
+    // 72×24 下列表内区 7 行：输入框 3 行 + 历史 3 行，全部落在内区之内。
+    let [top, _, _] = layout_areas(ratatui::layout::Rect::new(0, 0, 72, 24));
+    assert!(
+        third_row < top.bottom().saturating_sub(1),
+        "历史越界写到 List 内区之外：{third_row}"
+    );
+    assert!(!row_text(&terminal, third_row + 1).contains('·'));
+    // List 边框标题与状态栏提示都接到 Live。
+    assert!(row_text(&terminal, 1).contains(" Live "));
+    let status_row = compact(&row_text(&terminal, 23));
+    assert!(status_row.contains("输入房间号"), "{status_row}");
+    assert!(status_row.contains("Enter开始"), "{status_row}");
+    assert!(status_row.contains("Delete删除"), "{status_row}");
+}
+
+#[test]
+fn enter_on_live_page_does_not_start_playback() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-live-enter-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = TuiAudio::empty();
+    let mut app = live_entry_app();
+    crate::controller::execute(
+        Action::Enter,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.focus, Focus::List, "Live 的 Enter 不能把焦点带走");
+    assert_eq!(app.status, "就绪", "Live 的 Enter 不能落到 play_selected");
+    assert!(!audio.is_live());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_page_is_not_a_song_list() {
+    let mut app = live_entry_app();
+    assert_eq!(app.arm_remove().unwrap_err(), "当前列表不是歌曲列表");
+    assert_eq!(
+        app.begin_add_to_playlist().unwrap_err(),
+        "当前列表不是歌曲列表"
     );
 }
 

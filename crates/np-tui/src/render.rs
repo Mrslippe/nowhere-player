@@ -233,6 +233,14 @@ fn base_status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ],
         },
         Some(BrowseKind::Search) => vec![(enter, "进入"), (tab, "平台")],
+        Some(BrowseKind::Live) if list => vec![
+            ("", "输入房间号"),
+            (enter, "开始"),
+            ("↑↓", "历史"),
+            ("Delete", "删除"),
+            (esc, "返回"),
+        ],
+        Some(BrowseKind::Live) => vec![(enter, "进入"), ("↑↓", "选择")],
         Some(BrowseKind::Settings) if list => vec![(enter, "编辑"), (reset, "重置"), (esc, "返回")],
         Some(BrowseKind::Settings) => vec![(enter, "进入"), ("↑↓", "选择")],
         None if list => vec![("↑↓", "选择"), (esc, "返回")],
@@ -503,6 +511,11 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         draw_playlist_input(frame, inner, app);
         return;
     }
+    // 直播页在搜索空态之前：它有自己的输入框 + 历史，不走 SearchDisplay。
+    if matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Live)) {
+        crate::live_entry::draw(frame, inner, app);
+        return;
+    }
     if let Some(display) = app.search_display() {
         draw_search_state(frame, inner, app, display);
         return;
@@ -591,6 +604,7 @@ fn list_title(app: &App) -> String {
         Some(BrowseKind::Playlist(name)) => name.clone(),
         Some(BrowseKind::Library) => "Library".to_owned(),
         Some(BrowseKind::Search) => "Search".to_owned(),
+        Some(BrowseKind::Live) => "Live".to_owned(),
         Some(BrowseKind::Queue) => "Queue".to_owned(),
         Some(BrowseKind::Settings) => "Settings".to_owned(),
         None => "List".to_owned(),
