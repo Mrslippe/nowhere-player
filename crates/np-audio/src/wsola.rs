@@ -1,11 +1,12 @@
-//! WSOLA 追帧：保持音高的 1.00–1.10 倍速时间缩放（T-0093）。
+//! WSOLA 追帧：保持音高的 0.60–1.30 倍速时间缩放（T-0108）。
 //!
-//! 分析窗 20ms、合成 hop 10ms；每帧在新的名义位置 ±5ms 内做归一化互相关，
+//! 分析窗 20ms、合成 hop 10ms；每帧在新的名义位置 ±搜索半径内做归一化互相关，
 //! 让相邻帧的波形相位对齐，再做 Hann 窗重叠相加。窗口权重单独累加并在输出时
 //! 归一化，因此合成 hop 不恰好是半个窗时也不会起伏或削波。
 //!
-//! 直播只往「变快」方向用（1.00–1.10），不降速。1.00x 时输出与输入逐样本
-//! 一致，只多约一个分析窗的延迟；因此播放链路可以常开，不必在 1.00x 切换。
+//! 直播按浏览器追帧脚本的策略使用：缓冲高时加速，缓冲极低时减速。1.00x 时
+//! 输出与输入逐样本一致，只多约一个分析窗的延迟；因此播放链路可以常开，
+//! 不必在 1.00x 切换。
 
 use std::collections::VecDeque;
 
@@ -13,12 +14,14 @@ use std::collections::VecDeque;
 pub const WINDOW_MS: u32 = 20;
 /// 合成 hop 长度（毫秒）。
 pub const HOP_MS: u32 = 10;
-/// 相位搜索半径（毫秒）。
+/// 相位搜索基础半径（毫秒）。
 pub const TOLERANCE_MS: u32 = 5;
-/// 最小速度（不降速）。
-pub const MIN_SPEED: f32 = 1.0;
-/// 最大速度。
-pub const MAX_SPEED: f32 = 1.10;
+/// 正常速度。
+pub const NORMAL_SPEED: f32 = 1.0;
+/// 最低速度：再低时 20ms 窗无法重叠（0.1x 需要 100ms 合成 hop）。
+pub const MIN_SPEED: f32 = 0.6;
+/// 最高速度（浏览器脚本最高档 1.3x）。
+pub const MAX_SPEED: f32 = 1.30;
 
 /// 一路 PCM 的流式 WSOLA 变速器。
 ///
@@ -69,7 +72,7 @@ impl WsolaTempo {
             window,
             hop,
             tolerance,
-            speed: MIN_SPEED,
+            speed: NORMAL_SPEED,
             analysis: 0,
             synthesis: 0,
             last_analysis: None,
@@ -104,7 +107,7 @@ impl WsolaTempo {
         self.speed = if speed.is_finite() {
             speed.clamp(MIN_SPEED, MAX_SPEED)
         } else {
-            MIN_SPEED
+            NORMAL_SPEED
         };
     }
 
@@ -126,7 +129,7 @@ impl WsolaTempo {
         self.last_analysis = None;
         self.started = false;
         self.finished = false;
-        self.speed = MIN_SPEED;
+        self.speed = NORMAL_SPEED;
     }
 
     /// 追加交错 PCM；长度必须是通道数的整数倍。
@@ -153,7 +156,11 @@ impl WsolaTempo {
         if self.finished {
             return;
         }
-        self.generate();
+        // 收尾时不再等待减速 lookahead，否则最后一帧（尤其网络错误时）
+        // 会因为没有额外的搜索输入而永远留在缓冲区。
+        while self.input_end() >= self.analysis + self.window as u64 {
+            self.emit_frame();
+        }
         self.flush_ready(self.weight_len());
         self.finished = true;
     }
@@ -164,7 +171,18 @@ impl WsolaTempo {
     }
 
     fn speed_is_one(&self) -> bool {
-        (self.speed - MIN_SPEED).abs() < f32::EPSILON
+        (self.speed - NORMAL_SPEED).abs() < f32::EPSILON
+    }
+
+    /// 相位搜索半径：加速时名义位置需要往左找，减速时需要往右找。
+    ///
+    /// 偏移量 `hop / speed - hop` 在 0.6x 时约 6.7ms，固定 ±5ms 不够；
+    /// 动态扩到 12ms 上限，仍远小于 20ms 窗。
+    fn search_radius(&self) -> usize {
+        let needed = (self.hop as f32 * (1.0 / self.speed - 1.0)).abs().ceil() as usize;
+        let padded = needed.saturating_add(self.hop / 4);
+        let cap = ms_to_frames(self.sample_rate, 12);
+        padded.max(self.tolerance).min(cap)
     }
 
     /// 合成 hop：分析 hop 固定 10ms，输出侧按速度缩短。
@@ -187,9 +205,14 @@ impl WsolaTempo {
 
     fn generate(&mut self) {
         loop {
-            // 只要够一个分析窗就合成一帧；相位搜索自己会按可用输入缩短。
-            // 这样流结束时不会把最后 20ms 永远留在输入缓冲里。
-            let need = self.analysis + self.window as u64;
+            // 加速时相位只往左找；减速时新帧的起点可能比名义位置更靠右，
+            // 必须多等一个搜索半径，否则 +offset 的候选永远被 available 拒绝。
+            let lookahead = if self.speed < NORMAL_SPEED {
+                self.search_radius() as u64
+            } else {
+                0
+            };
+            let need = self.analysis + self.window as u64 + lookahead;
             if self.input_end() < need {
                 break;
             }
@@ -245,7 +268,7 @@ impl WsolaTempo {
 
         let mut best_score = f64::NEG_INFINITY;
         let mut best_delta = 0i64;
-        let tolerance = self.tolerance as i64;
+        let tolerance = self.search_radius() as i64;
         // 先试 0，再向两侧展开：同分时保持 0，1.00x 才能逐样本还原。
         for step in 0..=tolerance {
             let candidates: [i64; 2] = if step == 0 { [0, 0] } else { [-step, step] };
@@ -423,7 +446,7 @@ mod tests {
         tempo.set_speed(0.5);
         assert_eq!(tempo.speed(), MIN_SPEED);
         tempo.set_speed(f32::NAN);
-        assert_eq!(tempo.speed(), MIN_SPEED);
+        assert_eq!(tempo.speed(), NORMAL_SPEED);
     }
 
     #[test]
@@ -454,6 +477,46 @@ mod tests {
         assert!(
             (0.88..=0.93).contains(&ratio),
             "1.10x should keep about 91% of the frames, got {ratio}"
+        );
+        let frequency = estimated_frequency(&output, 2);
+        assert!(
+            (frequency - TONE_HZ).abs() < 5.0,
+            "pitch should stay near 1kHz, got {frequency:.1}Hz"
+        );
+        let peak = output
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak <= 0.61, "overlap-add must not clip, peak {peak}");
+    }
+
+    #[test]
+    fn tempo_130_keeps_pitch_without_clipping() {
+        let input = sine(RATE as usize, 1, 0.6);
+        let output = stretch(&input, 1, 1.30, 1024);
+        let ratio = output.len() as f64 / input.len() as f64;
+        assert!(
+            (0.72..=0.81).contains(&ratio),
+            "1.30x should keep about 77% of the frames, got {ratio}"
+        );
+        let frequency = estimated_frequency(&output, 1);
+        assert!(
+            (frequency - TONE_HZ).abs() < 5.0,
+            "pitch should stay near 1kHz, got {frequency:.1}Hz"
+        );
+        let peak = output
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak <= 0.61, "overlap-add must not clip, peak {peak}");
+    }
+
+    #[test]
+    fn tempo_060_slows_down_without_gaps_or_pitch_shift() {
+        let input = sine(RATE as usize / 2, 2, 0.6);
+        let output = stretch(&input, 2, 0.60, 1024);
+        let ratio = output.len() as f64 / input.len() as f64;
+        assert!(
+            (1.60..=1.72).contains(&ratio),
+            "0.60x should keep about 167% of the frames, got {ratio}"
         );
         let frequency = estimated_frequency(&output, 2);
         assert!(

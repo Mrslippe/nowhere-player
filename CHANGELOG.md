@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 2026-11-21：初始化 GitHub 仓库；开源许可改为 MIT；忽略 `release/`、`tokens.txt` 等本地产物。
+
 ### Added
 
 - 72×24 默认窗口与三区域布局（Browse/List、Player、Controller）
@@ -55,6 +59,22 @@
 - T-0104：直播画面 MVP，v 打开 mpv/ffplay 独立无声窗口
 - T-0105：np-video 自建 Win32 窗口、原生 frame、32px 悬浮标题栏、mpv 嵌入
 - T-0106：窗口客户区铺满、mpv 子窗口随 resize、顶部白线修复
+- T-0107：`log` 文件日志（`logs/nowhere.log` 4MB×5、`np-video.log`、`mpv.log`、`NP_LOG`/`NP_LOG_DIR`、panic backtrace）
+- T-0108：WSOLA 改为脚本式追帧（1.1/1.2/1.3，低速 0.6 下限，取消硬丢帧）
+- T-0109：视频模式 mpv 同出音视频；TUI 音频静音保留；mpv IPC 音量/暂停；协议 v2
+- T-0110：`live.buffer_ms` 改为高水位；启动只等 700ms 安全垫，低缓冲阈值改为 `min(600ms,target/2)`
+- T-0111：`r`/F5 改为本地裁掉旧帧，从最新缓冲前 300ms 起播，不再重连
+- T-0112：视频宿主 mpv 缓存遥测（`mpv-cache cache_ms/playback/speed`），只读不改 speed
+- T-0113：视频宿主 mpv 缓存上限 1.5s（`--cache-secs=1.5`）
+- T-0114：视频宿主 mpv speed 追帧（target `live.buffer_ms`，1.1/1.2/1.3/0.6 档，音高修正）
+- T-0115：直播启动安全垫 700 → 850ms
+- T-0116：视频底部悬浮控制条（暂停/刷新/音量/静音/cache）
+- T-0117：视频清晰度菜单与同进程 `loadfile replace` 无缝切换
+- T-0118：视频控制条/标题栏跟随 TUI 主题（九个颜色，运行期切换）
+- T-0119：控制条图标 Fluent 主选、MDL2/细线回退（`NP_VIDEO_ICON_STYLE`）
+- T-0120：标题栏/控制条 160/140ms 滑入滑出；控制条只在底部 40dp 热区呼出
+- T-0121：视频画质默认请求 4K（20000），AVC+HEVC 取最高可用；菜单列出全部 accept_qn
+- T-0122：Inno Setup per-user 安装器 + winget/Scoop 清单生成器；安装器未签名
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关
 - 状态栏收敛并高亮状态消息；右侧留白改为紧跟文本

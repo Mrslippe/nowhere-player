@@ -2,7 +2,8 @@
 //!
 //! 默认请求 qn25000 HEVC 的 only_audio 流；`NP_LIVE_NORMAL=1` 时请求普通 FLV，
 //! 仍只解 type=8 音频。`video_play_info_url` / [`fetch_video_play_info`] 走
-//! `only_audio=0` + H.264，只给 TUI 的直播画面取 FLV 地址（T-0104）。
+//! `only_audio=0` + `codec=0,1`（AVC + HEVC），只给 TUI 的直播画面取 FLV 地址
+//! （T-0104 / T-0121）。
 //!
 //! 只走 [`np_sources::Transport`]，测试注入夹具，不会触网。
 
@@ -83,13 +84,13 @@ pub struct PlayInfo {
     pub room_id: u64,
     /// `1` 表示直播中。
     pub live_status: i64,
-    /// 第一个 `http_stream/flv` 的完整 URL；离线时为 `None`。
+    /// 最高 `current_qn` 候选的完整 URL；离线时为 `None`。
     pub flv_url: Option<String>,
-    /// 服务端报告的 codec（只用于诊断，不能据此判断流内是否真有视频）。
+    /// 所选候选报告的 codec（`avc` / `hevc`，只用于诊断）。
     pub codec: Option<String>,
-    /// 服务端实际返回的清晰度档位（可能低于请求的 qn）。
+    /// 所选候选实际返回的清晰度档位（可能低于请求的 qn）。
     pub current_qn: Option<u64>,
-    /// 服务端声明可用的清晰度档位。
+    /// 所有 FLV 候选的 `accept_qn` 并集：去重、降序。
     pub accept_qn: Vec<u64>,
 }
 
@@ -140,12 +141,24 @@ pub fn fetch_play_info_with_auth(
     request_play_info(transport, room_id, auth, &url)
 }
 
-/// 直播画面的 playurl URL：`only_audio=0`，优先 H.264（`codec=0`）的 FLV。
+/// 视频 playurl 默认请求的清晰度：4K（20000）。服务端按权限回退到 2K/原画。
+pub const DEFAULT_VIDEO_QN: u64 = 20_000;
+
+/// 直播画面的 playurl URL：`only_audio=0`，同时请求 AVC + HEVC（`codec=0,1`）。
 ///
 /// T-0104：视频解码和窗口由外部播放器负责，TUI 只需要一条 FLV 地址。
 pub fn video_play_info_url(room_id: u64) -> String {
+    video_play_info_url_with_qn(room_id, DEFAULT_VIDEO_QN)
+}
+
+/// 按清晰度档位请求视频 playurl；`qn` 是 B 站清晰度编号（如 20000/10000/400）。
+///
+/// T-0117：清晰度切换由 TUI 按当前 qn 重取 URL，再交给 np-video 的 mpv
+/// 执行 `loadfile ... replace`，不重建窗口。
+/// T-0121：`codec=0,1` 同时要 AVC 与 HEVC——2K/4K 可能只出现在 HEVC 流里。
+pub fn video_play_info_url_with_qn(room_id: u64, qn: u64) -> String {
     format!(
-        "{PLAY_INFO_URL}?room_id={room_id}&protocol=0&format=0&codec=0&qn=10000&platform=web&ptype=8&only_audio=0"
+        "{PLAY_INFO_URL}?room_id={room_id}&protocol=0&format=0&codec=0,1&qn={qn}&platform=web&ptype=8&only_audio=0"
     )
 }
 
@@ -166,7 +179,17 @@ pub fn fetch_video_play_info_with_auth(
     room_id: u64,
     auth: Option<&BiliAuth>,
 ) -> Result<PlayInfo, LiveError> {
-    let url = video_play_info_url(room_id);
+    fetch_video_play_info_with_auth_qn(transport, room_id, auth, DEFAULT_VIDEO_QN)
+}
+
+/// 带登录 cookie 按 qn 请求视频 playurl；T-0117 清晰度切换的取流入口。
+pub fn fetch_video_play_info_with_auth_qn(
+    transport: &dyn Transport,
+    room_id: u64,
+    auth: Option<&BiliAuth>,
+    qn: u64,
+) -> Result<PlayInfo, LiveError> {
+    let url = video_play_info_url_with_qn(room_id, qn);
     request_play_info(transport, room_id, auth, &url)
 }
 
@@ -235,6 +258,9 @@ pub fn fetch_online_count(
 }
 
 /// 解析 `getRoomPlayInfo` 响应。
+///
+/// T-0121：视频档位不再取第一条 FLV。遍历所有 `http_stream/flv` codec，选
+/// `current_qn` 最大的候选（同 qn 优先 HEVC），`accept_qn` 取并集降序。
 pub fn parse_play_info(body: &[u8], requested_room: u64) -> Result<PlayInfo, LiveError> {
     let envelope: Envelope<PlayData> = serde_json::from_slice(body)
         .map_err(|error| LiveError::BadStream(format!("playinfo JSON 解析失败：{error}")))?;
@@ -242,22 +268,21 @@ pub fn parse_play_info(body: &[u8], requested_room: u64) -> Result<PlayInfo, Liv
     let data = envelope
         .data
         .ok_or_else(|| LiveError::BadStream("playinfo 响应缺少 data".to_owned()))?;
-    let flv = data
+    let candidates = data
         .playurl_info
         .as_ref()
         .and_then(|info| info.playurl.as_ref())
-        .and_then(|playurl| find_flv(&playurl.stream));
+        .map(|playurl| collect_flv_candidates(&playurl.stream))
+        .unwrap_or_default();
+    let best = pick_best_flv(&candidates);
     Ok(PlayInfo {
         requested_room,
         room_id: data.room_id,
         live_status: data.live_status,
-        flv_url: flv.as_ref().map(|candidate| candidate.url.clone()),
-        codec: flv.as_ref().map(|candidate| candidate.codec.clone()),
-        current_qn: flv.as_ref().and_then(|candidate| candidate.current_qn),
-        accept_qn: flv
-            .as_ref()
-            .map(|candidate| candidate.accept_qn.clone())
-            .unwrap_or_default(),
+        flv_url: best.map(|candidate| candidate.url.clone()),
+        codec: best.map(|candidate| candidate.codec.clone()),
+        current_qn: best.and_then(|candidate| candidate.current_qn),
+        accept_qn: union_accept_qn(&candidates),
     })
 }
 
@@ -326,7 +351,9 @@ fn validate_room(room_id: u64) -> Result<(), LiveError> {
     Ok(())
 }
 
-fn find_flv(streams: &[StreamInfo]) -> Option<FlvCandidate> {
+/// 收集所有可用的 `http_stream/flv` 候选；host / base_url 为空的丢弃。
+fn collect_flv_candidates(streams: &[StreamInfo]) -> Vec<FlvCandidate> {
+    let mut candidates = Vec::new();
     for stream in streams {
         if stream.protocol_name != "http_stream" {
             continue;
@@ -342,7 +369,7 @@ fn find_flv(streams: &[StreamInfo]) -> Option<FlvCandidate> {
                 if info.host.is_empty() || codec.base_url.is_empty() {
                     continue;
                 }
-                return Some(FlvCandidate {
+                candidates.push(FlvCandidate {
                     url: join_url(&info.host, &codec.base_url, &info.extra),
                     codec: codec.codec_name.clone(),
                     current_qn: codec.current_qn,
@@ -351,7 +378,41 @@ fn find_flv(streams: &[StreamInfo]) -> Option<FlvCandidate> {
             }
         }
     }
-    None
+    candidates
+}
+
+/// 选出 `current_qn` 最高的候选；同 qn 优先 HEVC（高帧率档多在 HEVC）。
+fn pick_best_flv(candidates: &[FlvCandidate]) -> Option<&FlvCandidate> {
+    let mut best: Option<&FlvCandidate> = None;
+    for candidate in candidates {
+        if best.is_none_or(|current| candidate_rank(candidate) > candidate_rank(current)) {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+/// 候选排序键：`current_qn` 升序，HEVC 在同 qn 里更大。
+fn candidate_rank(candidate: &FlvCandidate) -> (u64, bool) {
+    (
+        candidate.current_qn.unwrap_or(0),
+        candidate.codec.eq_ignore_ascii_case("hevc"),
+    )
+}
+
+/// 所有候选 `accept_qn` 的并集：去重、降序。
+fn union_accept_qn(candidates: &[FlvCandidate]) -> Vec<u64> {
+    let mut union: Vec<u64> = Vec::new();
+    for qn in candidates
+        .iter()
+        .flat_map(|candidate| candidate.accept_qn.iter())
+    {
+        if !union.contains(qn) {
+            union.push(*qn);
+        }
+    }
+    union.sort_unstable_by(|left, right| right.cmp(left));
+    union
 }
 
 fn join_url(host: &str, base_url: &str, extra: &str) -> String {
@@ -539,6 +600,23 @@ mod tests {
     const ERROR: &str = include_str!("../fixtures/error_playinfo.json");
     const ROOM: &str = include_str!("../fixtures/room_info.json");
 
+    /// 多 codec：AVC current=10000、HEVC current=15000，accept_qn 有重叠。
+    const MULTI_CODEC: &str = r#"{"code":0,"data":{"room_id":21622811,"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_stream","format":[{"format_name":"flv","codec":[
+        {"codec_name":"avc","current_qn":10000,"accept_qn":[10000,400,250],"base_url":"/avc/stream.flv?","url_info":[{"host":"https://avc.invalid","extra":"token=a"}]},
+        {"codec_name":"hevc","current_qn":15000,"accept_qn":[15000,10000,400,250,80],"base_url":"/hevc/stream.flv?","url_info":[{"host":"https://hevc.invalid","extra":"token=h"}]}
+    ]}]}]}}}}"#;
+
+    /// 同 qn 的两路 codec：AVC 在前，HEVC 在后。
+    const TIE_CODEC: &str = r#"{"code":0,"data":{"room_id":21622811,"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_stream","format":[{"format_name":"flv","codec":[
+        {"codec_name":"avc","current_qn":15000,"accept_qn":[15000,10000],"base_url":"/avc/stream.flv?","url_info":[{"host":"https://avc.invalid"}]},
+        {"codec_name":"hevc","current_qn":15000,"accept_qn":[10000,400,15000],"base_url":"/hevc/stream.flv?","url_info":[{"host":"https://hevc.invalid"}]}
+    ]}]}]}}}}"#;
+
+    /// 请求 20000，服务端按权限只给 15000。
+    const FALLBACK_CODEC: &str = r#"{"code":0,"data":{"room_id":21622811,"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_stream","format":[{"format_name":"flv","codec":[
+        {"codec_name":"hevc","current_qn":15000,"accept_qn":[15000,10000],"base_url":"/hevc/stream.flv?","url_info":[{"host":"https://hevc.invalid","extra":"token=h"}]}
+    ]}]}]}}}}"#;
+
     struct RecordingTransport {
         body: &'static str,
         urls: Mutex<Vec<String>>,
@@ -579,15 +657,50 @@ mod tests {
     }
 
     #[test]
-    fn video_play_info_url_requests_video_with_h264_flv() {
+    fn video_play_info_url_requests_both_codecs_at_the_top_quality() {
         let url = video_play_info_url(21622811);
         assert!(url.contains("room_id=21622811"));
         assert!(url.contains("only_audio=0"));
         assert!(!url.contains("only_audio=1"));
         assert!(url.contains("protocol=0"));
         assert!(url.contains("format=0"));
-        assert!(url.contains("codec=0"));
-        assert!(url.contains("qn=10000"));
+        assert!(url.contains("codec=0,1"));
+        assert!(url.contains("qn=20000"));
+    }
+
+    #[test]
+    fn video_quality_switch_requests_the_selected_qn_with_both_codecs() {
+        let url = video_play_info_url_with_qn(21622811, 15_000);
+        assert!(url.contains("qn=15000"), "{url}");
+        assert!(url.contains("codec=0,1"), "{url}");
+        assert!(url.contains("only_audio=0"), "{url}");
+    }
+
+    #[test]
+    fn video_play_info_url_accepts_every_qn() {
+        for qn in [20_000u64, 15_000, 10_000, 400, 250, 150] {
+            let url = video_play_info_url_with_qn(21622811, qn);
+            assert!(url.contains(&format!("qn={qn}")), "{url}");
+            assert!(url.contains("codec=0,1"), "{url}");
+            assert!(url.contains("only_audio=0"));
+        }
+        // 默认入口请求最高常规档 4K，服务端按权限回退。
+        assert_eq!(
+            video_play_info_url(21622811),
+            video_play_info_url_with_qn(21622811, DEFAULT_VIDEO_QN)
+        );
+    }
+
+    #[test]
+    fn fetch_video_play_info_with_qn_uses_the_requested_qn() {
+        let transport = RecordingTransport::new(LIVE);
+        let info = fetch_video_play_info_with_auth_qn(&transport, 21622811, None, 400).unwrap();
+        assert!(info.is_live());
+        let urls = transport.urls.lock().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].contains("qn=400"), "{}", urls[0]);
+        assert!(urls[0].contains("codec=0,1"), "{}", urls[0]);
+        assert!(urls[0].contains("only_audio=0"));
     }
 
     #[test]
@@ -600,7 +713,58 @@ mod tests {
         let urls = transport.urls.lock().unwrap();
         assert_eq!(urls.len(), 1);
         assert!(urls[0].contains("only_audio=0"));
-        assert!(urls[0].contains("codec=0"));
+        assert!(urls[0].contains("codec=0,1"));
+        assert!(urls[0].contains("qn=20000"));
+    }
+
+    #[test]
+    fn fetch_video_play_info_defaults_to_20000_and_keeps_the_server_fallback() {
+        let transport = RecordingTransport::new(FALLBACK_CODEC);
+        let info = fetch_video_play_info(&transport, 21622811).unwrap();
+        assert_eq!(DEFAULT_VIDEO_QN, 20_000);
+        // 请求 4K，服务端只给 2K：current_qn 以响应为准，不是请求值。
+        assert_eq!(info.current_qn, Some(15_000));
+        assert_eq!(info.accept_qn, vec![15_000, 10_000]);
+        let urls = transport.urls.lock().unwrap();
+        assert!(urls[0].contains("qn=20000"), "{}", urls[0]);
+        assert!(urls[0].contains("codec=0,1"), "{}", urls[0]);
+    }
+
+    #[test]
+    fn parse_play_info_picks_the_highest_current_qn_and_returns_hevc() {
+        let info = parse_play_info(MULTI_CODEC.as_bytes(), 21622811).unwrap();
+        // AVC current=10000 / HEVC current=15000 → 选 HEVC。
+        assert_eq!(info.codec.as_deref(), Some("hevc"));
+        assert_eq!(info.current_qn, Some(15_000));
+        assert_eq!(
+            info.flv_url.as_deref(),
+            Some("https://hevc.invalid/hevc/stream.flv?token=h")
+        );
+        // union 去重降序：两路 accept_qn 合并，15000 在最前。
+        assert_eq!(info.accept_qn, vec![15_000, 10_000, 400, 250, 80]);
+    }
+
+    #[test]
+    fn parse_play_info_prefers_hevc_when_current_qn_ties() {
+        let info = parse_play_info(TIE_CODEC.as_bytes(), 21622811).unwrap();
+        // AVC 在前、同 qn 的 HEVC 在后 → 仍选 HEVC。
+        assert_eq!(info.codec.as_deref(), Some("hevc"));
+        assert_eq!(info.current_qn, Some(15_000));
+        assert!(info.flv_url.unwrap().starts_with("https://hevc.invalid/"));
+        // 并集跨候选去重：15000 / 10000 / 400。
+        assert_eq!(info.accept_qn, vec![15_000, 10_000, 400]);
+    }
+
+    #[test]
+    fn parse_play_info_skips_candidates_without_host_or_base_url() {
+        let body = r#"{"code":0,"data":{"room_id":1,"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_stream","format":[{"format_name":"flv","codec":[
+            {"codec_name":"avc","current_qn":20000,"accept_qn":[20000],"base_url":"","url_info":[{"host":"https://empty.invalid"}]},
+            {"codec_name":"hevc","current_qn":15000,"accept_qn":[15000],"base_url":"/ok.flv?","url_info":[{"host":"https://ok.invalid","extra":"x=1"}]}
+        ]}]}]}}}}"#;
+        let info = parse_play_info(body.as_bytes(), 1).unwrap();
+        assert_eq!(info.codec.as_deref(), Some("hevc"));
+        assert_eq!(info.current_qn, Some(15_000));
+        assert_eq!(info.accept_qn, vec![15_000]);
     }
 
     #[test]

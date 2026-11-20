@@ -4,10 +4,10 @@
 //! `symphonia` 的 `AacDecoder`（ASC 作为 `extra_data`），中间只有 [`FrameQueue`]。
 //! 因此缓冲是显式、可观测的：
 //!
-//! - 启动等到约一个目标缓冲（默认 900ms），再从最新帧截到目标，避免把 CDN 初始 GOP 全部播完；
-//! - 运行期解码出的 PCM 过 WSOLA：`buffer > target+100ms` 1.05x、`> target+300ms` 1.10x，
-//!   回到 target 恢复 1.00x；只加速不减速，音高不变；
-//! - `buffer > target+500ms` 仍按 AAC 帧边界硬丢旧帧兜底；
+//! - 启动等到约一个安全垫（默认 min(target,850ms)），再从最新帧截到安全垫，避免把 CDN 初始 GOP 全部播完；
+//! - 运行期解码出的 PCM 过 WSOLA：`buffer > target` 1.10x、`> target+1s` 1.20x、
+//!   `> target+2s` 1.30x；`buffer < min(600ms,target/2)` 降到 0.60x；
+//! - **不做运行期硬丢帧**；队列满时生产者等待，靠 1.30x 追回；
 //! - 队列有数据时持续解码喂 ring；只有队列（和 WSOLA 尾部）都空才补静音并记录 underrun；
 //! - 暂停时保留 Player/解码器，网络线程继续读；缓存超过 30s 丢新帧；
 //! - 恢复后先播暂停缓存，播到缓存尾再恢复目标缓冲控制器追 live。
@@ -36,12 +36,24 @@ use crate::queue::{
     BufferController, Control, FrameQueue, QUEUE_CAPACITY_FRAMES, target_buffer_ms,
 };
 
-/// 启动最多等这么久攒够目标缓冲；超时就用手上已有的帧开始播。
+/// 启动最多等这么久攒够安全垫；超时就用手上已有的帧开始播。
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
+/// 启动安全垫上限：网络按秒级块到达时，850ms 比 target 1000ms 少约 150ms 固定延迟；
+/// 700ms 对约 1 秒一块的源流偏薄（T-0110 真机启动即 underrun）。
+const STARTUP_SAFETY_MS: u64 = 850;
+/// 启动后等待初始 GOP 到齐的 settle 窗口；防止 850ms 起播后立刻被 3s 突发灌满。
+const STARTUP_SETTLE_MS: u64 = 200;
+/// 本地 `r` 刷新保留的尾部音频：从最新缓冲前 300ms 起播。
+const REFRESH_KEEP_MS: u64 = 300;
 /// AAC-LC 每个 raw frame 固定 1024 个采样。
 const AAC_FRAME_SAMPLES: u64 = 1024;
 /// 连续解码失败这么多次就认定流不可解，交给 TUI 停播；单帧损坏不致命。
 const MAX_CONSECUTIVE_DECODE_ERRORS: u32 = 30;
+
+/// 启动垫：`min(target, STARTUP_SAFETY_MS)`，target 更小时不强行垫到 850。
+fn startup_ms(target_ms: u64) -> u64 {
+    target_ms.min(STARTUP_SAFETY_MS)
+}
 
 /// 直接解码 AAC 的直播 source。
 pub(crate) struct LiveAudioSource {
@@ -84,8 +96,13 @@ impl LiveAudioSource {
             .map_err(LiveError::Io)?;
 
         let target_ms = target_buffer_ms();
+        let startup_ms = startup_ms(target_ms);
+        log::info!(
+            target: "live",
+            "event=open target_ms={target_ms} startup_ms={startup_ms}"
+        );
         let deadline = Instant::now() + STARTUP_TIMEOUT;
-        queue.wait_span(target_ms, deadline);
+        queue.wait_span(startup_ms, deadline);
 
         if queue.len() == 0 {
             queue.stop();
@@ -95,14 +112,32 @@ impl LiveAudioSource {
             return Err(LiveError::BadStream(message));
         }
 
-        // 启动裁剪：只保留最新的一个目标缓冲，不把 CDN 初始突发全部播一遍。
+        // 初始 GOP 可能在达到安全垫之后才到齐；等一个短 settle 再裁一次，
+        // 否则 Player 一打开就会被几秒突发灌满，1.3x 要很久才追回来。
+        let settle_until = Instant::now() + Duration::from_millis(STARTUP_SETTLE_MS);
+        while !queue.is_done() && Instant::now() < settle_until {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let before_settle = queue.buffer_ms();
+
+        // 启动裁剪：只保留安全垫，不把 CDN 初始 GOP 全部播一遍；target 是运行期高水位。
         let newest = queue.newest_pts().unwrap_or_default();
         let front = queue.front_pts().unwrap_or_default();
-        if newest.saturating_sub(front) > target_ms {
-            let threshold = newest.saturating_sub(target_ms);
+        if newest.saturating_sub(front) > startup_ms {
+            let threshold = newest.saturating_sub(startup_ms);
             queue.drop_below(threshold);
         }
         metrics.set_buffer(queue.buffer_ms());
+        log::info!(
+            target: "live",
+            "event=started target_ms={} startup_ms={} settle_ms={} before={} buffer_ms={} frames={}",
+            target_ms,
+            startup_ms,
+            STARTUP_SETTLE_MS,
+            before_settle,
+            queue.buffer_ms(),
+            queue.len()
+        );
 
         Ok((
             Self {
@@ -121,7 +156,7 @@ impl LiveAudioSource {
         ))
     }
 
-    /// 250ms 控制周期：超上限丢旧帧；低于下限由 `note_starved` 记录。
+    /// 100ms 控制周期：只调整 WSOLA 速度；低于下限由 `note_starved` 记录。
     fn update_control(&mut self) {
         let now = Instant::now();
         let buffer = self.queue.buffer_ms();
@@ -139,21 +174,55 @@ impl LiveAudioSource {
         if !self.controller.due(now) {
             return;
         }
-        match self.controller.tick(now, buffer) {
-            Control::DropTo(target) => {
-                let Some(newest) = self.queue.newest_pts() else {
-                    return;
-                };
-                let threshold = newest.saturating_sub(target);
-                let dropped = self.queue.drop_below(threshold);
-                if dropped > 0 {
-                    self.metrics.note_drop(dropped as u64);
-                }
-                // 丢弃的是压缩帧，解码器状态（重叠窗）保留即可，与 spike 一致。
-                self.metrics.set_buffer(self.queue.buffer_ms());
-            }
-            Control::Recovered | Control::Idle => {}
+        let before = self.controller.speed();
+        let action = self.controller.tick(now, buffer);
+        let after = self.controller.speed();
+        if (after - before).abs() > 0.001 {
+            log::info!(
+                target: "live",
+                "event=speed from={before:.2} to={after:.2} buffer_ms={buffer} target_ms={}",
+                self.controller.target_ms()
+            );
         }
+        match action {
+            Control::Recovered => {
+                log::info!(
+                    target: "live",
+                    "event=recovered buffer_ms={} speed={after:.2}",
+                    self.queue.buffer_ms()
+                );
+            }
+            Control::Idle => {}
+        }
+    }
+
+    /// 本地 `r` 刷新：丢掉队头旧帧，只保留最新缓冲前 300ms。
+    fn refresh_to_latest(&mut self) {
+        let Some(newest) = self.queue.newest_pts() else {
+            self.tempo.reset();
+            self.decoder.reset();
+            self.decoded.clear();
+            self.replay_until_pts = None;
+            self.metrics.set_buffer(0);
+            log::info!(target: "live", "event=refresh dropped=0 buffer_ms=0");
+            return;
+        };
+        let threshold = newest.saturating_sub(REFRESH_KEEP_MS);
+        let dropped = self.queue.drop_below(threshold);
+        // 丢掉旧帧后解码器/WSOLA 的重叠窗不再连续，重置避免爆音和旧相位。
+        self.tempo.reset();
+        self.decoder.reset();
+        self.decoded.clear();
+        self.consecutive_decode_errors = 0;
+        self.replay_until_pts = None;
+        self.metrics.set_buffer(self.queue.buffer_ms());
+        log::info!(
+            target: "live",
+            "event=refresh dropped={} keep_ms={} buffer_ms={}",
+            dropped,
+            REFRESH_KEEP_MS,
+            self.queue.buffer_ms()
+        );
     }
 
     fn decode_frame(&mut self, frame: AacFrame) -> Result<(), AudioError> {
@@ -183,6 +252,11 @@ impl LiveAudioSource {
             Err(error) => {
                 self.metrics.note_decode_error();
                 self.consecutive_decode_errors += 1;
+                log::warn!(
+                    target: "live",
+                    "event=decode_error count={} error={error}",
+                    self.consecutive_decode_errors
+                );
                 if self.consecutive_decode_errors >= MAX_CONSECUTIVE_DECODE_ERRORS {
                     return Err(AudioError::Decode(format!(
                         "直播 AAC 连续解码失败：{error}"
@@ -197,6 +271,12 @@ impl LiveAudioSource {
     fn fill_silence(&mut self, out: &mut [f32], channels: usize, written: usize) -> usize {
         if self.controller.note_starved() {
             self.metrics.note_underrun();
+            log::warn!(
+                target: "live",
+                "event=underrun buffer_ms={} queue_empty={}",
+                self.queue.buffer_ms(),
+                self.metrics.queue_empty_events()
+            );
         }
         let remaining_frames = out.len() / channels - written;
         let silence_ms = (remaining_frames as u64 * 1_000) / u64::from(self.format.sample_rate);
@@ -233,6 +313,10 @@ impl AudioSource for LiveAudioSource {
         if self.control.take_replay() {
             self.replay_until_pts = self.queue.newest_pts();
         }
+        // 本地刷新要在 replay 之后处理，清掉刚设置的 replay 边界。
+        if self.control.take_refresh() {
+            self.refresh_to_latest();
+        }
         let mut written = 0;
         loop {
             // 先交出 WSOLA 已合成好的样本。
@@ -253,10 +337,18 @@ impl AudioSource for LiveAudioSource {
             // 绝不能阻塞 decode 线程去等回填，否则 cpal 会先 underrun。
             let Some(frame) = self.queue.pop() else {
                 if self.queue.is_done() {
-                    // 网络错误要尽快冒泡，不能为了 WSOLA 尾巴把错误藏起来。
+                    // 网络错误要尽快冒泡，但不能把已经解码、卡在 WSOLA
+                    // 分析窗里的最后一帧直接吞掉。
                     if let Some(error) = self.queue.error() {
                         self.metrics.set_buffer(0);
                         if written == 0 {
+                            self.tempo.finish();
+                            let samples = self
+                                .tempo
+                                .take(&mut out[written * channels..max_frames * channels]);
+                            if samples > 0 {
+                                return Ok(samples / channels);
+                            }
                             return Err(AudioError::Decode(format!("直播流中断：{error}")));
                         }
                         return Ok(written);
@@ -480,18 +572,59 @@ mod tests {
     }
 
     #[test]
-    fn startup_keeps_about_the_target_buffer() {
-        let (_source, metrics) = open_source(flv_stream(&fixture_frames()));
+    fn refresh_drops_to_the_latest_300ms() {
+        let control = LiveControl::default();
+        let (mut source, _metrics) = LiveAudioSource::open(
+            Box::new(Cursor::new(flv_stream(&fixture_frames()))),
+            control.clone(),
+        )
+        .expect("open");
+        control.request_refresh();
+        let mut out = vec![0.0f32; 1024 * 2];
+        let read = source.read_frames(&mut out).expect("refresh read");
+        assert!(read > 0);
+        assert!(
+            source.queue.buffer_ms() <= 500,
+            "refresh should keep about 300ms, got {}ms",
+            source.queue.buffer_ms()
+        );
+    }
+
+    #[test]
+    fn startup_pad_is_capped_by_target() {
+        // 目标 ≥ 850：垫到 850；目标更小则等于 target，不硬拉高。
+        assert_eq!(startup_ms(900), 850);
+        assert_eq!(startup_ms(1_500), 850);
+        assert_eq!(startup_ms(850), 850);
+        assert_eq!(startup_ms(500), 500);
+        assert_eq!(startup_ms(0), 0);
+    }
+
+    #[test]
+    fn startup_keeps_only_the_safety_margin() {
+        let frames = fixture_frames();
+        // 闸门放在 60 帧（约 1.24s），保证启动后确实按 850ms 裁掉多余缓冲。
+        let gate_at = flv_stream(&frames[..60]).len();
+        let gate = Arc::new(AtomicBool::new(false));
+        let reader = GateReader {
+            data: Cursor::new(flv_stream(&frames)),
+            gate_at,
+            gate: gate.clone(),
+        };
+        let (source, metrics) =
+            LiveAudioSource::open(Box::new(reader), LiveControl::default()).expect("open");
         let buffer = metrics.buffer_ms();
         assert!(
-            (1_300..=2_200).contains(&buffer),
-            "startup buffer {buffer}ms should be about {TARGET_BUFFER_MS}ms"
+            (830..=1_000).contains(&buffer),
+            "startup buffer {buffer}ms should be about 850ms safety margin"
         );
         assert_eq!(
             metrics.drop_events(),
             0,
             "startup trim is not a runtime drop"
         );
+        gate.store(true, Ordering::Release);
+        drop(source);
     }
 
     #[test]
@@ -503,10 +636,10 @@ mod tests {
         assert!(!source.is_seekable());
 
         let (frames, rms, _samples) = read_until_done(&mut source);
-        // 启动截到约 1500ms，后面可能还有网络线程继续灌进来的帧。
+        // 启动只保留约 850ms 安全垫；夹具后续帧仍会继续解码。
         assert!(
-            frames > 40_000,
-            "expected about a second of PCM, got {frames} frames"
+            frames > 30_000,
+            "expected at least the safety margin of PCM, got {frames} frames"
         );
         assert!(rms > 1e-4, "decoded PCM is silent (rms {rms})");
         assert_eq!(metrics.decode_errors(), 0);
@@ -526,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_drops_back_to_target_above_the_maximum() {
+    fn excess_buffer_speeds_up_without_dropping_frames() {
         let frames = fixture_frames();
         let mut burst = frames.clone();
         burst.extend(frames.iter().cloned());
@@ -542,14 +675,10 @@ mod tests {
 
         let (mut source, metrics) = LiveAudioSource::open(Box::new(reader), LiveControl::default())
             .expect("open gated source");
-        // 闸门前的 60 帧全部到队（启动裁剪只保留最新约 1500ms）。
         wait_until(
             || source.queue.newest_pts().unwrap_or(0) >= 59 * PTS_STEP_MS,
             Duration::from_secs(2),
         );
-        let newest_before_gate = source.queue.newest_pts().unwrap();
-        assert!(newest_before_gate < 60 * PTS_STEP_MS);
-
         gate.store(true, Ordering::Release);
         wait_until(
             || source.queue.newest_pts().unwrap_or(0) >= 150 * PTS_STEP_MS,
@@ -559,13 +688,13 @@ mod tests {
         let mut out = vec![0.0f32; 1024 * 2];
         let read = source.read_frames(&mut out).expect("decode");
         assert!(read > 0);
-        assert_eq!(metrics.drop_events(), 1, "one drop to target");
-        assert!(metrics.dropped_frames() >= 60);
-        let buffer = metrics.buffer_ms();
+        assert_eq!(metrics.drop_events(), 0, "runtime must not drop frames");
         assert!(
-            (1_300..=1_900).contains(&buffer),
-            "buffer after drop {buffer}ms"
+            source.controller.speed() >= 1.10,
+            "buffer above target must engage WSOLA, speed={}",
+            source.controller.speed()
         );
+        assert!(metrics.buffer_ms() > TARGET_BUFFER_MS);
     }
 
     #[test]

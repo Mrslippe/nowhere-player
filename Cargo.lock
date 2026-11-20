@@ -2002,6 +2002,7 @@ version = "0.1.0"
 dependencies = [
  "brotli",
  "flate2",
+ "log",
  "np-audio",
  "np-sources",
  "serde",
@@ -2033,6 +2034,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "global-hotkey",
+ "log",
  "np-app",
  "np-audio",
  "np-core",
@@ -2048,6 +2050,7 @@ dependencies = [
 name = "np-video"
 version = "0.1.0"
 dependencies = [
+ "log",
  "windows",
 ]
 

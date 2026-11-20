@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 np-audio = { path = "../np-audio" }
 np-sources = { path = "../np-sources" }
+log = { version = "0.4", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 symphonia = { version = "0.6.1", features = ["all"] }

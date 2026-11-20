@@ -2,8 +2,10 @@ target/
 tools/mpv/
 node_modules/
 dist/
+release/
 *.log
 /tmp/
 .env
 .DS_Store
 Thumbs.db
+/tokens.txt

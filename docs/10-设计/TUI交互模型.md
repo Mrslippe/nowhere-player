@@ -320,5 +320,5 @@ KeyEvent + InputContext
 
 - TUI-only 入口：`/live <room>` / `live <room>`，由 `np-tui` 在 `np-core` 解析前拦截；不进入命令注册表。
 - 直播独占：开始直播停止当前播放，但**不清空队列**；`next/prev/seek` 禁用，`Esc` 停止，直播结束不自动下一首。
-- Player 时间区显示 `LIVE`；暂停时 `LIVE PAUSED <ms>ms`，继续缓存；断流时 `LIVE RECONNECTING n/6`；`F5` 立即刷新；直播 ring 150ms，普通文件仍 300ms。
+- Player 时间区显示 `LIVE`；暂停时 `LIVE PAUSED <ms>ms`，继续缓存；断流时 `LIVE RECONNECTING n/6`；`r`/F5 本地裁到最新 300ms；直播 ring 150ms，普通文件仍 300ms。
 - B1 不做断线重连、Live 页、弹幕；这些留 B2/B3。

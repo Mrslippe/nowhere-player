@@ -55,6 +55,7 @@ pub fn prepare_auth(
     if room_id == 0 {
         return Err(LiveError::InvalidRoom("房间号必须是正整数".to_owned()));
     }
+    log::info!(target: "live", "event=prepare room={room_id}");
     ensure_not_cancelled(cancel)?;
 
     // 诊断：直接使用浏览器同一条 FLV URL，跳过 playurl 选择。
@@ -90,6 +91,14 @@ pub fn prepare_auth(
     }
 
     let play_info = api::fetch_play_info_with_auth(transport, room_id, auth)?;
+    log::info!(
+        target: "live",
+        "event=playurl room={} current_qn={:?} accept_qn={:?} codec={:?}",
+        play_info.room_id,
+        play_info.current_qn,
+        play_info.accept_qn,
+        play_info.codec
+    );
     ensure_not_cancelled(cancel)?;
     if !play_info.is_live() {
         return Err(LiveError::Offline);

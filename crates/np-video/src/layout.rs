@@ -1,11 +1,13 @@
 //! 纯几何 / 命中 / 悬浮状态。
 //!
 //! 这里不碰 Win32：标题栏高度、按钮 Rect、hit-test 和 hover 状态机都可以在
-//! 无窗口的单元测试里验证。两条硬约束在类型层面也是固定的：
+//! 无窗口的单元测试里验证。三条硬约束在类型层面也是固定的：
 //!
 //! 1. 隐藏后的热区高度就是 [`titlebar_height`]（32px @ 96 DPI），不是 4px；
 //! 2. [`video_rect`] 只由客户区尺寸决定，没有“标题栏是否可见”参数，显示 /
-//!    隐藏标题栏不会改变视频子窗口的 Rect。
+//!    隐藏标题栏不会改变视频子窗口的 Rect；
+//! 3. 控制条隐藏时只有底部 40dp 的 [`control_hotzone_rect`] 能呼出，鼠标在
+//!    窗口中间不再让控制条常驻。
 
 use std::time::{Duration, Instant};
 
@@ -149,7 +151,7 @@ pub fn video_rect(width: i32, height: i32) -> Rect {
 pub fn constrain_aspect(mut rect: Rect, edge: usize, min_w: i32, min_h: i32) -> Rect {
     let min_w = min_w.max(1);
     let min_h = min_h.max(1);
-    let top_edge = matches!(edge, 3 | 4 | 5);
+    let top_edge = matches!(edge, 3..=5);
     let vertical = matches!(edge, 3 | 6);
     let left_edge = matches!(edge, 1 | 4 | 7);
 
@@ -373,6 +375,436 @@ impl TitlebarState {
     }
 }
 
+/// 底部控制条高度（96 DPI 逻辑像素）。
+pub const CONTROL_BAR_HEIGHT_DP: i32 = 40;
+/// 控制条距离客户区左右 / 底边的间距。
+pub const CONTROL_BAR_MARGIN_DP: i32 = 12;
+/// 鼠标离开客户区后控制条的收起延时。
+pub const CONTROL_HIDE_DELAY: Duration = Duration::from_millis(2_000);
+/// 控制条按钮边长。
+const CONTROL_BUTTON_DP: i32 = 28;
+/// 音量滑杆宽度。
+const CONTROL_SLIDER_DP: i32 = 80;
+/// 控制条水平内边距。
+const CONTROL_PADDING_DP: i32 = 10;
+/// 控件间距。
+const CONTROL_GAP_DP: i32 = 6;
+/// 清晰度按钮宽度。
+const CONTROL_QUALITY_DP: i32 = 56;
+/// 右侧 cache 小字宽度。
+const CONTROL_CACHE_DP: i32 = 52;
+
+/// 底部控制条热区高度（96 DPI 逻辑像素）：与控制条等高，不是 16px。
+pub const CONTROL_HOTZONE_HEIGHT_DP: i32 = CONTROL_BAR_HEIGHT_DP;
+
+/// 控制条高度（按 DPI 缩放）。
+pub fn control_bar_height(dpi: u32) -> i32 {
+    scale_dp(CONTROL_BAR_HEIGHT_DP, dpi).max(1)
+}
+
+/// 底部悬浮控制条的 Rect：盖在视频上，距底边 / 左右各 12px。
+///
+/// 与 [`video_rect`] 一样只看客户区尺寸：显示 / 隐藏控制条绝不 resize 视频。
+pub fn control_bar_rect(width: i32, height: i32, dpi: u32) -> Rect {
+    let width = width.max(0);
+    let height = height.max(0);
+    let margin = scale_dp(CONTROL_BAR_MARGIN_DP, dpi).max(0);
+    let left = margin.min(width);
+    let right = (width - margin).max(left);
+    let bottom = (height - margin).max(0);
+    let top = (bottom - control_bar_height(dpi)).max(0);
+    Rect::new(left, top, right, bottom)
+}
+
+/// 底部控制条热区：窗口最底部 40dp（与控制条等高），横向覆盖整个客户区。
+/// 控制条隐藏时只有这块区域能把它呼出。
+///
+/// 和控制条 / 视频一样，热区只由客户区尺寸与 DPI 决定；显示 / 隐藏 overlay
+/// 不改变它。窗口过小时退化成零宽 / 零高，命中自然失效，不会 panic。
+pub fn control_hotzone_rect(width: i32, height: i32, dpi: u32) -> Rect {
+    let width = width.max(0);
+    let client_h = height.max(0);
+    let hotzone_height = scale_dp(CONTROL_HOTZONE_HEIGHT_DP, dpi).max(1);
+    Rect::new(0, (client_h - hotzone_height).max(0), width, client_h)
+}
+
+/// 控制条内部各控件的 Rect（客户区坐标）。
+///
+/// 顺序从左到右：播放 / 暂停、刷新、静音、音量滑杆；右侧是清晰度与 cache。
+/// 窗口过小时矩形会退化成 0 宽，命中测试自然失效，不会 panic。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlLayout {
+    pub bar: Rect,
+    pub play_pause: Rect,
+    pub refresh: Rect,
+    pub mute: Rect,
+    pub slider: Rect,
+    pub quality: Rect,
+    pub cache: Rect,
+}
+
+fn control_slot(left: i32, top: i32, width: i32, height: i32, bar: Rect) -> Rect {
+    let left = left.clamp(bar.left, bar.right);
+    let right = (left + width.max(0)).min(bar.right);
+    Rect::new(left, top, right, top + height)
+}
+
+/// 计算控制条内部布局；绘制与命中测试共用，保证两边永远一致。
+pub fn control_layout(width: i32, height: i32, dpi: u32) -> ControlLayout {
+    let bar = control_bar_rect(width, height, dpi);
+    let padding = scale_dp(CONTROL_PADDING_DP, dpi).max(2);
+    let gap = scale_dp(CONTROL_GAP_DP, dpi).max(1);
+    let button = scale_dp(CONTROL_BUTTON_DP, dpi)
+        .max(1)
+        .min(bar.height().max(1));
+    let top = bar.top + (bar.height() - button) / 2;
+
+    let play_pause = control_slot(bar.left + padding, top, button, button, bar);
+    let refresh = control_slot(play_pause.right + gap, top, button, button, bar);
+    let mute = control_slot(refresh.right + gap, top, button, button, bar);
+
+    let cache_right = (bar.right - padding).max(bar.left);
+    let cache_left = (cache_right - scale_dp(CONTROL_CACHE_DP, dpi)).max(bar.left);
+    let quality_right = (cache_left - gap).max(bar.left);
+    let quality_left = (quality_right - scale_dp(CONTROL_QUALITY_DP, dpi)).max(bar.left);
+    let slider_left = mute.right + gap;
+    let slider_right =
+        (slider_left + scale_dp(CONTROL_SLIDER_DP, dpi)).min((quality_left - gap).max(bar.left));
+    let slider = Rect::new(
+        slider_left.clamp(bar.left, bar.right),
+        top,
+        slider_right.max(slider_left).clamp(bar.left, bar.right),
+        top + button,
+    );
+
+    ControlLayout {
+        bar,
+        play_pause,
+        refresh,
+        mute,
+        slider,
+        quality: Rect::new(quality_left, top, quality_right, top + button),
+        cache: Rect::new(cache_left, top, cache_right, top + button),
+    }
+}
+
+/// 控制条命中结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlHit {
+    PlayPause,
+    Refresh,
+    Mute,
+    /// 落在音量滑杆上；具体音量由 [`slider_volume`] 按 x 计算。
+    Volume,
+    Quality,
+}
+
+/// 鼠标是否落在控制条上（用于 hover / 拖动判定）。
+pub fn control_bar_contains(x: i32, y: i32, width: i32, height: i32, dpi: u32) -> bool {
+    control_bar_rect(width, height, dpi).contains(x, y)
+}
+
+/// 控制条命中测试；落在控制条空白处返回 `None`。
+pub fn control_hit(x: i32, y: i32, width: i32, height: i32, dpi: u32) -> Option<ControlHit> {
+    let layout = control_layout(width, height, dpi);
+    if !layout.bar.contains(x, y) {
+        return None;
+    }
+    if layout.play_pause.contains(x, y) {
+        Some(ControlHit::PlayPause)
+    } else if layout.refresh.contains(x, y) {
+        Some(ControlHit::Refresh)
+    } else if layout.mute.contains(x, y) {
+        Some(ControlHit::Mute)
+    } else if layout.slider.contains(x, y) {
+        Some(ControlHit::Volume)
+    } else if layout.quality.contains(x, y) {
+        Some(ControlHit::Quality)
+    } else {
+        None
+    }
+}
+
+/// 滑杆 x 坐标对应的音量 0–100；滑杆退化时返回 0。
+pub fn slider_volume(x: i32, width: i32, height: i32, dpi: u32) -> u8 {
+    let slider = control_layout(width, height, dpi).slider;
+    if slider.width() <= 0 {
+        return 0;
+    }
+    let ratio = (f64::from(x - slider.left) / f64::from(slider.width())).clamp(0.0, 1.0);
+    (ratio * 100.0).round() as u8
+}
+
+/// 一次控制条可见性更新结果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControlBarUpdate {
+    pub visibility_changed: bool,
+}
+
+/// 底部控制条状态机：隐藏时只有底部 40dp 热区能呼出；显示后鼠标在控制条
+/// 本身或热区内保持，离开这两块区域 2 秒后收起——鼠标仍在窗口中间也一样。
+///
+/// 拖动滑杆 / 弹出菜单期间 [`Self::set_interacting`] 为 true，不会收起。
+#[derive(Debug)]
+pub struct ControlBarState {
+    visible: bool,
+    hide_at: Option<Instant>,
+    interacting: bool,
+}
+
+impl Default for ControlBarState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ControlBarState {
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            hide_at: None,
+            interacting: false,
+        }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_interacting(&mut self, interacting: bool) {
+        self.interacting = interacting;
+        if interacting {
+            self.hide_at = None;
+        }
+    }
+
+    /// 每个定时器 tick 调用；`cursor` 是客户区坐标，鼠标不在窗口内时 `None`。
+    ///
+    /// 隐藏时只认 [`control_hotzone_rect`]；显示时认控制条本体或热区。其余
+    /// 位置（包括窗口中间）不阻止 2 秒收起计时。
+    pub fn update(
+        &mut self,
+        cursor: Option<(i32, i32)>,
+        now: Instant,
+        width: i32,
+        height: i32,
+        dpi: u32,
+    ) -> ControlBarUpdate {
+        let previous = self.visible;
+        let (on_bar, on_hotzone) = match cursor {
+            Some((x, y)) => (
+                control_bar_contains(x, y, width, height, dpi),
+                control_hotzone_rect(width, height, dpi).contains(x, y),
+            ),
+            None => (false, false),
+        };
+        let inside = if self.visible {
+            on_bar || on_hotzone
+        } else {
+            // 控制条隐藏时它并不在屏幕上，只有底部热区能呼出。
+            on_hotzone
+        };
+        if inside {
+            self.hide_at = None;
+            self.visible = true;
+        } else if self.visible {
+            if self.interacting {
+                self.hide_at = None;
+            } else {
+                let deadline = *self.hide_at.get_or_insert(now + CONTROL_HIDE_DELAY);
+                if now >= deadline {
+                    self.visible = false;
+                    self.hide_at = None;
+                }
+            }
+        } else {
+            self.hide_at = None;
+        }
+        ControlBarUpdate {
+            visibility_changed: previous != self.visible,
+        }
+    }
+}
+
+/// overlay 滑入 / 滑出的缓动方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Easing {
+    /// 先快后慢；呼出用。
+    EaseOut,
+    /// 先慢后快；收起用。
+    EaseIn,
+}
+
+/// `ease-out-cubic`：起步快、临近终点变慢。输入先夹到 `0..=1`。
+pub fn ease_out_cubic(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// `ease-in-cubic`：起步慢、临近终点加快。输入先夹到 `0..=1`。
+pub fn ease_in_cubic(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t.powi(3)
+}
+
+/// overlay 滑入 / 滑出的纯时间状态：只记录 `from` / `to` / 时长 / 起点 /
+/// 缓动方向，偏移由 [`Self::offset`] 按 `now` 计算，方便在无窗口的单元测试
+/// 里验证插值与结束。
+///
+/// 这里只算位置，不碰 Win32，也没有 alpha 概念：overlay 始终不透明，滑入
+/// 滑出只改变它在客户区里的 y。
+#[derive(Debug, Clone, Copy)]
+pub struct SlideAnimation {
+    from: i32,
+    to: i32,
+    duration: Duration,
+    start: Instant,
+    easing: Easing,
+}
+
+impl SlideAnimation {
+    /// 呼出动画：指定时长、`ease-out`。
+    pub fn new(from: i32, to: i32, duration: Duration, now: Instant) -> Self {
+        Self::with_easing(from, to, duration, now, Easing::EaseOut)
+    }
+
+    /// 指定缓动方向；收起用 [`Easing::EaseIn`]。
+    pub fn with_easing(
+        from: i32,
+        to: i32,
+        duration: Duration,
+        now: Instant,
+        easing: Easing,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            duration,
+            start: now,
+            easing,
+        }
+    }
+
+    /// 当前偏移：起点前保持 `from`，结束后精确等于 `to`，不会过冲。
+    pub fn offset(&self, now: Instant) -> i32 {
+        if self.finished(now) {
+            return self.to;
+        }
+        let elapsed = now.saturating_duration_since(self.start);
+        if elapsed.is_zero() || self.duration.is_zero() {
+            return self.from;
+        }
+        let progress = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).clamp(0.0, 1.0);
+        let eased = match self.easing {
+            Easing::EaseOut => ease_out_cubic(progress),
+            Easing::EaseIn => ease_in_cubic(progress),
+        };
+        let distance = f64::from(self.to) - f64::from(self.from);
+        (f64::from(self.from) + distance * eased).round() as i32
+    }
+
+    /// 是否已到终点；零时长视为开始即结束。
+    pub fn finished(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.start) >= self.duration
+    }
+}
+
+/// 标题栏隐藏时的 y：整体滑出到客户区上方。
+pub fn titlebar_hidden_offset(dpi: u32) -> i32 {
+    -titlebar_height(dpi)
+}
+
+/// 标题栏显示时的 y：贴在客户区顶部。
+pub const fn titlebar_shown_offset() -> i32 {
+    0
+}
+
+/// 控制条隐藏时的 y：整体滑出到客户区下方。
+pub fn controls_hidden_offset(client_h: i32) -> i32 {
+    client_h.max(0)
+}
+
+/// 控制条显示时的 y：控制条 Rect 的顶边。
+pub fn controls_shown_offset(client_w: i32, client_h: i32, dpi: u32) -> i32 {
+    control_bar_rect(client_w, client_h, dpi).top
+}
+
+/// 一个 overlay 的滑动状态：隐藏 / 显示两个静止偏移，加上进行中的动画。
+///
+/// 只算几何与时间，不碰 Win32；宿主每 tick 用 [`Self::advance`] 的偏移决定
+/// `SetWindowPos`。这样“从当前偏移继续、不跳变”“resize 直接落位”都能在
+/// 无窗口的单元测试里验证。
+#[derive(Debug, Clone, Copy)]
+pub struct OverlaySlide {
+    hidden: i32,
+    shown: i32,
+    animation: Option<SlideAnimation>,
+}
+
+impl OverlaySlide {
+    pub fn new(hidden: i32, shown: i32) -> Self {
+        Self {
+            hidden,
+            shown,
+            animation: None,
+        }
+    }
+
+    pub fn hidden(&self) -> i32 {
+        self.hidden
+    }
+
+    pub fn shown(&self) -> i32 {
+        self.shown
+    }
+
+    /// 换新几何并停掉进行中的动画；返回此前是否有动画（用于判断停在半路）。
+    pub fn set_geometry(&mut self, hidden: i32, shown: i32) -> bool {
+        self.hidden = hidden;
+        self.shown = shown;
+        self.animation.take().is_some()
+    }
+
+    /// 立即停掉动画（关闭窗口 / 退出时用），保留几何。
+    pub fn stop(&mut self) {
+        self.animation = None;
+    }
+
+    fn current(&self, now: Instant, fallback: i32) -> i32 {
+        self.animation.map_or(fallback, |slide| slide.offset(now))
+    }
+
+    /// 呼出：从当前偏移续 `duration` 的 `ease-out`；返回起点 y。
+    pub fn begin_show(&mut self, now: Instant, duration: Duration) -> i32 {
+        let from = self.current(now, self.hidden);
+        self.animation = Some(SlideAnimation::new(from, self.shown, duration, now));
+        from
+    }
+
+    /// 收起：从当前偏移续 `duration` 的 `ease-in`，结束后停在 `hidden`。
+    pub fn begin_hide(&mut self, now: Instant, duration: Duration) {
+        let from = self.current(now, self.shown);
+        self.animation = Some(SlideAnimation::with_easing(
+            from,
+            self.hidden,
+            duration,
+            now,
+            Easing::EaseIn,
+        ));
+    }
+
+    /// 推进一帧：`None` = 没有动画；`Some((y, true))` 是最后一帧，随后静止。
+    pub fn advance(&mut self, now: Instant) -> Option<(i32, bool)> {
+        let slide = self.animation?;
+        let offset = slide.offset(now);
+        let finished = slide.finished(now);
+        if finished {
+            self.animation = None;
+        }
+        Some((offset, finished))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +826,452 @@ mod tests {
         assert_eq!(hit_test(10, 32, 800, 96, false), Hit::Client);
         assert_eq!(hit_test(10, 3, 800, 96, false), Hit::HotZone);
         assert_ne!(titlebar_height(96), 4);
+    }
+
+    #[test]
+    fn control_bar_is_40px_above_the_bottom_margin_and_never_moves_the_video() {
+        let bar = control_bar_rect(960, 540, 96);
+        assert_eq!(bar, Rect::new(12, 488, 948, 528));
+        assert_eq!(bar.height(), CONTROL_BAR_HEIGHT_DP);
+        assert_eq!(bar.bottom, 540 - 12);
+        // 硬约束：控制条出现 / 隐藏都不改变视频 Rect。
+        assert_eq!(video_rect(960, 540), Rect::new(0, 0, 960, 540));
+        // 高 DPI 按比例缩放。
+        assert_eq!(
+            control_bar_rect(1440, 810, 144),
+            Rect::new(18, 732, 1422, 792)
+        );
+    }
+
+    #[test]
+    fn tiny_clients_get_a_degenerate_bar_instead_of_panicking() {
+        for (width, height) in [(0, 0), (200, 200), (900, 30), (-5, -5)] {
+            let bar = control_bar_rect(width, height, 96);
+            assert!(bar.width() >= 0 && bar.height() >= 0, "{bar:?}");
+            assert!(bar.left >= 0 && bar.top >= 0, "{bar:?}");
+            let layout = control_layout(width, height, 96);
+            assert!(layout.slider.width() >= 0);
+            assert!(layout.quality.width() >= 0);
+        }
+    }
+
+    #[test]
+    fn controls_are_left_to_right_and_right_aligned_at_the_end() {
+        let layout = control_layout(960, 540, 96);
+        assert_eq!(layout.play_pause.width(), 28);
+        assert_eq!(layout.play_pause.left, 22);
+        assert_eq!(layout.play_pause.left, layout.bar.left + 10);
+        assert!(layout.play_pause.right < layout.refresh.left);
+        assert!(layout.refresh.right < layout.mute.left);
+        assert!(layout.mute.right < layout.slider.left);
+        assert_eq!(layout.slider.width(), 80);
+        assert!(layout.slider.right < layout.quality.left);
+        assert!(layout.quality.right < layout.cache.left);
+        assert_eq!(layout.cache.right, layout.bar.right - 10);
+        // 所有控件垂直居中。
+        assert_eq!(layout.play_pause.top, layout.bar.top + 6);
+        assert_eq!(layout.play_pause.height(), 28);
+    }
+
+    #[test]
+    fn control_hit_test_covers_every_control_and_nothing_outside() {
+        let (width, height, dpi) = (960, 540, 96);
+        let layout = control_layout(width, height, dpi);
+        let center = |rect: Rect| ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+
+        assert_eq!(
+            control_hit(
+                center(layout.play_pause).0,
+                center(layout.play_pause).1,
+                width,
+                height,
+                dpi
+            ),
+            Some(ControlHit::PlayPause)
+        );
+        assert_eq!(
+            control_hit(
+                center(layout.refresh).0,
+                center(layout.refresh).1,
+                width,
+                height,
+                dpi
+            ),
+            Some(ControlHit::Refresh)
+        );
+        assert_eq!(
+            control_hit(
+                center(layout.mute).0,
+                center(layout.mute).1,
+                width,
+                height,
+                dpi
+            ),
+            Some(ControlHit::Mute)
+        );
+        assert_eq!(
+            control_hit(
+                center(layout.slider).0,
+                center(layout.slider).1,
+                width,
+                height,
+                dpi
+            ),
+            Some(ControlHit::Volume)
+        );
+        assert_eq!(
+            control_hit(
+                center(layout.quality).0,
+                center(layout.quality).1,
+                width,
+                height,
+                dpi
+            ),
+            Some(ControlHit::Quality)
+        );
+        // 控制条之外的视频区域 / 标题栏 / 窗口外都不命中。
+        assert_eq!(control_hit(480, 200, width, height, dpi), None);
+        assert_eq!(control_hit(480, 10, width, height, dpi), None);
+        assert_eq!(control_hit(-1, 500, width, height, dpi), None);
+        // 控制条空白处（bar 两端）不命中具体控件。
+        assert_eq!(
+            control_hit(layout.bar.left + 1, layout.bar.top + 1, width, height, dpi),
+            None
+        );
+        assert!(control_bar_contains(480, 500, width, height, dpi));
+        assert!(!control_bar_contains(480, 10, width, height, dpi));
+    }
+
+    #[test]
+    fn slider_volume_maps_x_to_0_50_100_and_clamps() {
+        let layout = control_layout(960, 540, 96);
+        let slider = layout.slider;
+        assert_eq!(slider_volume(slider.left, 960, 540, 96), 0);
+        assert_eq!(
+            slider_volume(slider.left + slider.width() / 2, 960, 540, 96),
+            50
+        );
+        assert_eq!(slider_volume(slider.right - 1, 960, 540, 96), 99);
+        assert_eq!(slider_volume(slider.left - 40, 960, 540, 96), 0);
+        assert_eq!(slider_volume(slider.right + 40, 960, 540, 96), 100);
+    }
+
+    #[test]
+    fn control_hotzone_is_the_bottom_40dp_band_spanning_the_client() {
+        let hotzone = control_hotzone_rect(960, 540, 96);
+        // 底部 40dp，横向覆盖整个客户区；左右 12px 边距也属于热区。
+        assert_eq!(hotzone, Rect::new(0, 500, 960, 540));
+        assert_eq!(hotzone.height(), CONTROL_HOTZONE_HEIGHT_DP);
+        assert_eq!(hotzone.height(), control_bar_height(96));
+        assert_eq!(hotzone.height(), CONTROL_BAR_HEIGHT_DP);
+        assert_ne!(hotzone.height(), 16, "hotzone is 40dp, not the old 16px");
+        assert_eq!(hotzone.bottom, 540);
+        // 边界是半开区间：顶边算，底边外不算。
+        assert!(hotzone.contains(480, 500));
+        assert!(!hotzone.contains(480, 499));
+        assert!(!hotzone.contains(480, 540));
+        assert!(hotzone.contains(5, 520), "left margin is inside");
+        assert!(hotzone.contains(955, 520), "right margin is inside");
+        // 高 DPI 同比缩放。
+        let scaled = control_hotzone_rect(1440, 810, 144);
+        assert_eq!(scaled, Rect::new(0, 750, 1440, 810));
+        assert_eq!(scaled.height(), control_bar_height(144));
+        // 极小 / 退化客户区不 panic。
+        for (width, height) in [(0, 0), (200, 200), (-5, -5)] {
+            let rect = control_hotzone_rect(width, height, 96);
+            assert!(rect.width() >= 0 && rect.height() >= 0, "{rect:?}");
+        }
+    }
+
+    #[test]
+    fn hidden_control_bar_only_answers_the_bottom_hotzone() {
+        let now = Instant::now();
+        let mut state = ControlBarState::new();
+        assert!(!state.is_visible(), "control bar starts hidden");
+
+        // 鼠标在窗口中间：不再显示控制条。
+        let update = state.update(Some((480, 300)), now, 960, 540, 96);
+        assert!(!update.visibility_changed);
+        assert!(!state.is_visible());
+
+        // 窗口下部但不是底部 40dp 热区（这里在控制条 Rect 里）也不显示。
+        let update = state.update(Some((480, 495)), now, 960, 540, 96);
+        assert!(!update.visibility_changed);
+        assert!(!state.is_visible());
+
+        // 进入底部热区才显示；热区底边最后一个像素也算。
+        let update = state.update(Some((480, 539)), now, 960, 540, 96);
+        assert!(update.visibility_changed);
+        assert!(state.is_visible());
+    }
+
+    #[test]
+    fn shown_control_bar_holds_on_bar_or_hotzone_and_hides_two_seconds_after_middle() {
+        let now = Instant::now();
+        let mut state = ControlBarState::new();
+        state.update(Some((480, 520)), now, 960, 540, 96);
+        assert!(state.is_visible());
+
+        // 控制条本体（bar.top..hotzone.top）保持显示。
+        state.update(Some((480, 495)), now + Duration::from_secs(5), 960, 540, 96);
+        assert!(state.is_visible());
+
+        // 底部热区（含控制条下方 12dp 边距）也保持。
+        state.update(
+            Some((480, 530)),
+            now + Duration::from_secs(10),
+            960,
+            540,
+            96,
+        );
+        assert!(state.is_visible());
+
+        // 移到窗口中间：仍在窗口内，但 2 秒后收起。
+        let left_at = now + Duration::from_secs(11);
+        let update = state.update(Some((480, 300)), left_at, 960, 540, 96);
+        assert!(!update.visibility_changed);
+        assert!(state.is_visible());
+        let update = state.update(
+            Some((480, 300)),
+            left_at + CONTROL_HIDE_DELAY - Duration::from_millis(1),
+            960,
+            540,
+            96,
+        );
+        assert!(!update.visibility_changed);
+        assert!(state.is_visible(), "still visible before the 2s delay");
+        let update = state.update(Some((480, 300)), left_at + CONTROL_HIDE_DELAY, 960, 540, 96);
+        assert!(update.visibility_changed);
+        assert!(!state.is_visible());
+    }
+
+    #[test]
+    fn interacting_or_hovering_the_bar_stops_the_hide_timer() {
+        let now = Instant::now();
+        let mut state = ControlBarState::new();
+        state.update(Some((480, 500)), now, 960, 540, 96);
+        // 鼠标在控制条上始终显示（即使停留很久）。
+        state.update(
+            Some((480, 500)),
+            now + Duration::from_secs(30),
+            960,
+            540,
+            96,
+        );
+        assert!(state.is_visible());
+
+        // 拖动滑杆时鼠标移出窗口也不收起。
+        state.set_interacting(true);
+        state.update(None, now + Duration::from_secs(31), 960, 540, 96);
+        assert!(state.is_visible());
+        state.update(None, now + Duration::from_secs(60), 960, 540, 96);
+        assert!(state.is_visible());
+
+        state.set_interacting(false);
+        state.update(None, now + Duration::from_secs(61), 960, 540, 96);
+        assert!(state.is_visible(), "hide delay restarts after interaction");
+        state.update(
+            None,
+            now + Duration::from_secs(61) + CONTROL_HIDE_DELAY,
+            960,
+            540,
+            96,
+        );
+        assert!(!state.is_visible());
+    }
+
+    #[test]
+    fn slide_animation_interpolates_from_start_to_end() {
+        let now = Instant::now();
+        let duration = Duration::from_millis(160);
+        let slide = SlideAnimation::new(-32, 0, duration, now);
+        assert_eq!(slide.offset(now), -32, "starts at from");
+        assert!(!slide.finished(now));
+        assert!(slide.offset(now + duration / 2) > -32);
+        assert!(slide.offset(now + duration / 2) < 0);
+        assert_eq!(slide.offset(now + duration), 0, "ends exactly at to");
+        assert!(slide.finished(now + duration));
+        assert!(slide.finished(now + duration + Duration::from_millis(1)));
+        assert_eq!(
+            slide.offset(now + duration + Duration::from_millis(50)),
+            0,
+            "never overshoots the target"
+        );
+    }
+
+    #[test]
+    fn slide_animation_eases_out_on_show_and_in_on_hide() {
+        let now = Instant::now();
+        let duration = Duration::from_millis(160);
+        let show = SlideAnimation::new(-32, 0, duration, now);
+        // ease-out：一半时间已走过超过一半路程（-32..0 的中点本来是 -16）。
+        let half = show.offset(now + duration / 2);
+        assert!(half > -16, "ease-out should be past halfway: {half}");
+        assert!(half < 0);
+        let quarter = show.offset(now + duration / 4);
+        assert!(quarter > -32 && quarter < half, "starts fast: {quarter}");
+
+        let hide =
+            SlideAnimation::with_easing(0, -32, Duration::from_millis(140), now, Easing::EaseIn);
+        // ease-in：一半时间只走了不到一半路程。
+        let half = hide.offset(now + Duration::from_millis(70));
+        assert!(half > -16, "ease-in should lag at halfway: {half}");
+        assert!(half < 0);
+        // 反向：位置随时间单调变小，最后精确到终点。
+        assert!(hide.offset(now + Duration::from_millis(10)) > half);
+        assert_eq!(hide.offset(now + Duration::from_millis(140)), -32);
+    }
+
+    #[test]
+    fn slide_animation_restarts_from_the_current_offset_without_jumping() {
+        let now = Instant::now();
+        let duration = Duration::from_millis(160);
+        let show = SlideAnimation::new(-32, 0, duration, now);
+        let interrupted_at = now + Duration::from_millis(40);
+        let current = show.offset(interrupted_at);
+        assert!(current > -32);
+
+        // 收起途中再次呼出：新动画从当前偏移起步，第一帧不跳变。
+        let retry = SlideAnimation::new(current, 0, Duration::from_millis(160), interrupted_at);
+        assert_eq!(retry.offset(interrupted_at), current);
+        assert_eq!(retry.offset(interrupted_at), show.offset(interrupted_at));
+
+        // 呼出途中反向收起：同样从当前偏移开始。
+        let reverse = SlideAnimation::with_easing(
+            current,
+            -32,
+            Duration::from_millis(140),
+            interrupted_at,
+            Easing::EaseIn,
+        );
+        assert_eq!(reverse.offset(interrupted_at), current);
+    }
+
+    #[test]
+    fn slide_animation_handles_zero_duration_and_reverse_direction() {
+        let now = Instant::now();
+        // 零时长：开始即结束，直接落到终点。
+        let instant = SlideAnimation::new(10, 20, Duration::ZERO, now);
+        assert!(instant.finished(now));
+        assert_eq!(instant.offset(now), 20);
+
+        // 控制条方向：从 client_h 往上滑到 bar.top。
+        let slide = SlideAnimation::new(540, 488, Duration::from_millis(160), now);
+        let a = slide.offset(now + Duration::from_millis(20));
+        let b = slide.offset(now + Duration::from_millis(60));
+        assert!(a > b && b > 488, "{a} > {b} > 488");
+        assert_eq!(slide.offset(now + Duration::from_millis(160)), 488);
+    }
+
+    #[test]
+    fn overlay_slide_glides_from_hidden_to_shown_and_back() {
+        let now = Instant::now();
+        let mut slide = OverlaySlide::new(540, 488);
+        assert_eq!(slide.hidden(), 540);
+        assert_eq!(slide.shown(), 488);
+        // 隐藏静止时没有动画。
+        assert_eq!(slide.advance(now), None);
+
+        // 呼出：起点在 hidden，160ms 后落到 shown。
+        let from = slide.begin_show(now, Duration::from_millis(160));
+        assert_eq!(from, 540);
+        let (y, finished) = slide.advance(now).expect("just started");
+        assert!(!finished);
+        assert_eq!(y, 540);
+        let (y, finished) = slide
+            .advance(now + Duration::from_millis(160))
+            .expect("last frame");
+        assert!(finished);
+        assert_eq!(y, 488);
+        assert_eq!(
+            slide.advance(now + Duration::from_millis(161)),
+            None,
+            "animation cleared after the last frame"
+        );
+
+        // 收起：从 shown 滑回 hidden，140ms 后结束。
+        slide.begin_hide(now, Duration::from_millis(140));
+        let (y, finished) = slide.advance(now).expect("moving");
+        assert!(!finished);
+        assert_eq!(y, 488);
+        let (y, finished) = slide
+            .advance(now + Duration::from_millis(140))
+            .expect("last frame");
+        assert!(finished);
+        assert_eq!(y, 540);
+    }
+
+    #[test]
+    fn overlay_slide_reverses_from_the_current_offset_without_jumping() {
+        let now = Instant::now();
+        let mut slide = OverlaySlide::new(-32, 0);
+        slide.begin_show(now, Duration::from_millis(160));
+        let interrupted = now + Duration::from_millis(40);
+        let current = slide.advance(interrupted).expect("moving").0;
+        assert!(current > -32 && current < 0, "mid slide: {current}");
+
+        // 收起途中再次呼出：新动画从当前偏移出发，第一帧不跳变。
+        let from = slide.begin_show(interrupted, Duration::from_millis(160));
+        assert_eq!(from, current);
+
+        // 呼出途中反向收起：同样从当前偏移出发，最终回到 hidden。
+        slide.begin_hide(interrupted, Duration::from_millis(140));
+        let (y, finished) = slide.advance(interrupted).expect("moving");
+        assert!(!finished);
+        assert_eq!(y, current);
+        let (y, finished) = slide
+            .advance(interrupted + Duration::from_millis(140))
+            .expect("last frame");
+        assert!(finished);
+        assert_eq!(y, -32);
+    }
+
+    #[test]
+    fn overlay_slide_geometry_change_stops_animation_and_uses_the_new_geometry() {
+        let now = Instant::now();
+        let mut slide = OverlaySlide::new(0, 0);
+        assert!(!slide.set_geometry(10, 20), "idle slide");
+        slide.begin_show(now, Duration::from_millis(160));
+        assert!(slide.set_geometry(30, 40), "moving slide is stopped");
+        assert_eq!(slide.advance(now), None, "animation cleared");
+        assert_eq!(slide.hidden(), 30);
+        assert_eq!(slide.shown(), 40);
+        // 下一次呼出直接使用新几何。
+        assert_eq!(
+            slide.begin_show(now, Duration::from_millis(160)),
+            30,
+            "new hidden offset is the slide start"
+        );
+    }
+
+    #[test]
+    fn overlay_offsets_match_the_window_geometry() {
+        let (width, height, dpi) = (960, 540, 96);
+        assert_eq!(titlebar_hidden_offset(dpi), -titlebar_height(dpi));
+        assert_eq!(titlebar_shown_offset(), 0);
+        assert_eq!(controls_hidden_offset(height), height);
+        assert_eq!(
+            controls_shown_offset(width, height, dpi),
+            control_bar_rect(width, height, dpi).top
+        );
+        assert_eq!(controls_shown_offset(width, height, dpi), 488);
+        // 高 DPI 与退化客户区都不 panic。
+        assert_eq!(titlebar_hidden_offset(144), -48);
+        assert_eq!(titlebar_hidden_offset(0), -32);
+        assert_eq!(controls_hidden_offset(-5), 0);
+    }
+
+    #[test]
+    fn cubic_easing_endpoints_midpoints_and_clamping_are_stable() {
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+        assert!((ease_out_cubic(0.5) - 0.875).abs() < 1e-9);
+        assert_eq!(ease_in_cubic(0.0), 0.0);
+        assert_eq!(ease_in_cubic(1.0), 1.0);
+        assert!((ease_in_cubic(0.5) - 0.125).abs() < 1e-9);
+        // 越界输入被夹紧，不会让 overlay 飞出客户区。
+        assert_eq!(ease_out_cubic(-1.0), 0.0);
+        assert_eq!(ease_in_cubic(2.0), 1.0);
     }
 
     #[test]

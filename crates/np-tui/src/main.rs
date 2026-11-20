@@ -22,6 +22,7 @@ mod launcher;
 mod layout;
 mod live_command;
 mod live_page;
+mod logging;
 mod login;
 mod login_command;
 mod logo;
@@ -107,6 +108,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = dirs.config;
     let cache_dir = dirs.cache;
     let data_dir = dirs.data;
+    let log_dir = std::env::var_os("NP_LOG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("logs"));
+    let log_path = logging::init_from_env(&log_dir);
+    match &log_path {
+        Ok(path) => log::info!(
+            target: "app",
+            "version={} data_dir={} log={}",
+            env!("CARGO_PKG_VERSION"),
+            data_dir.display(),
+            path.display()
+        ),
+        Err(error) => eprintln!("np-tui 日志初始化失败：{error}"),
+    }
     let settings = SettingsHandle::load(config_dir.clone());
     if let Some(enabled) = settings.get_bool("startup.enabled") {
         let _ = startup::set_enabled(enabled);
@@ -163,6 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         osc::restore();
         eprintln!("np-tui panic: {info}");
     }));
+    logging::install_panic_hook();
     app.load_theme(
         &theme_api,
         settings.theme_id().as_deref().unwrap_or("milkgreen"),

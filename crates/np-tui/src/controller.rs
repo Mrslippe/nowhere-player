@@ -148,7 +148,7 @@ pub(crate) fn execute(
             }
         }
         Action::OpenCommand => app.enter_command(),
-        Action::ToggleVideo => match player.toggle_video() {
+        Action::ToggleVideo => match player.toggle_video_with_theme(&app.palette) {
             Ok(note) => app.set_transient_status(note),
             Err(message) => app.set_status(message),
         },

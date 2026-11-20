@@ -188,8 +188,11 @@ impl FlvFrameSource {
     pub(crate) fn next_frame(&mut self) -> Result<Option<AacFrame>, LiveError> {
         let started = Instant::now();
         let result = self.next_frame_inner();
-        self.metrics
-            .note_read_stall(started.elapsed().as_millis() as u64);
+        let elapsed = started.elapsed().as_millis() as u64;
+        self.metrics.note_read_stall(elapsed);
+        if elapsed >= 500 {
+            log::warn!(target: "live", "event=read_stall ms={elapsed}");
+        }
         result
     }
 

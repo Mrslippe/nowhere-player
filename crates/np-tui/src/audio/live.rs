@@ -66,7 +66,7 @@ impl TuiAudio {
 
     /// 直播队列里还没播的音频长度（毫秒）；非直播或还没接上时 `None`。
     ///
-    /// 目标 1500ms、上限 2000ms、下限 1200ms（T-0091 B1.2g）。
+    /// `live.buffer_ms` 是运行期高水位；启动只等 `min(target,850ms)` 安全垫（T-0115）。
     pub(crate) fn live_buffer_ms(&self) -> Option<u64> {
         if !self.is_live() {
             return None;
@@ -79,7 +79,8 @@ impl TuiAudio {
 
     /// 直播诊断标签：队列、under-run、ring under-run、drop、解码错误、读停顿。
     ///
-    /// 例：`LIVE 1500ms U:0 Q:0 R:0 D:0 E:0 F:0 S:0`；暂停时 `LIVE PAUSED`。
+    /// 例：`LIVE 1000ms U:0 Q:0 R:0 D:0 E:0 F:0 S:0`；暂停时 `LIVE PAUSED`；
+    /// 自建视频宿主打开时 `VIDEO`（声音由 mpv 出）。
     pub(crate) fn live_status_label(&self) -> Option<String> {
         if !self.is_live() {
             return None;
@@ -90,6 +91,16 @@ impl TuiAudio {
                 self.reconnect_attempt.get(),
                 MAX_RECONNECT_ATTEMPTS
             ));
+        }
+        if self.video_uses_mpv_audio() {
+            return Some(
+                if self.live_state.get() == LiveState::Paused {
+                    "VIDEO PAUSED"
+                } else {
+                    "VIDEO"
+                }
+                .to_owned(),
+            );
         }
         if self.live_state.get() == LiveState::Paused {
             return Some(match self.live_metrics.borrow().as_ref() {
@@ -237,6 +248,11 @@ impl TuiAudio {
         // 每次直播（含重连）前把 `live.buffer_ms` 写进 np-live 队列目标；
         // 设置里改值后对下一次直播生效（T-0093）。
         np_live::set_target_buffer_ms(self.live_buffer_target_ms.get());
+        log::info!(
+            target: "live",
+            "event=start room={room_id} target_ms={}",
+            self.live_buffer_target_ms.get()
+        );
         let auth = self.auth_for_live();
         *self.title.borrow_mut() = format!("直播 {room_id} 准备中…");
         *self.artist.borrow_mut() = "B站直播".to_owned();
@@ -330,6 +346,9 @@ impl TuiAudio {
                 match Player::open_source_with_ring(prepared.source, LIVE_RING_MS) {
                     Ok(player) => {
                         player.set_volume(self.volume.get());
+                        if self.video_uses_mpv_audio() {
+                            player.set_output_muted(true);
+                        }
                         let tap = player.sample_tap();
                         if let Err(error) = player.play() {
                             self.stop_danmaku();
@@ -346,6 +365,13 @@ impl TuiAudio {
                         self.live_state.set(LiveState::Playing);
                         *self.live_metrics.borrow_mut() = Some(metrics);
                         *self.live_control.borrow_mut() = Some(control);
+                        log::info!(
+                            target: "live",
+                            "event=playing room={} title={} reconnected={}",
+                            prepared.room_id,
+                            title,
+                            reconnected
+                        );
                         *self.title.borrow_mut() = title.clone();
                         *self.artist.borrow_mut() = "B站直播".to_owned();
                         *self.live_note.borrow_mut() = Some(if reconnected {
@@ -364,6 +390,12 @@ impl TuiAudio {
                 }
             }
             Err(failure) => {
+                log::warn!(
+                    target: "live",
+                    "event=prepare_failed retryable={} error={}",
+                    failure.retryable,
+                    failure.message
+                );
                 if failure.retryable && self.live_state.get() != LiveState::Idle {
                     self.begin_reconnect(Some(failure.message));
                 } else {
@@ -384,6 +416,12 @@ impl TuiAudio {
             return;
         }
         let attempt = self.reconnect_attempt.get().saturating_add(1);
+        log::warn!(
+            target: "live",
+            "event=reconnect attempt={} reason={}",
+            attempt,
+            reason.as_deref().unwrap_or("连接中断")
+        );
         if attempt > MAX_RECONNECT_ATTEMPTS {
             self.fail_live(format!(
                 "直播重连失败（已尝试 {MAX_RECONNECT_ATTEMPTS} 次）"
@@ -409,6 +447,7 @@ impl TuiAudio {
     }
 
     pub(super) fn fail_live(&self, note: String) {
+        log::error!(target: "live", "event=failed note={note}");
         self.stop_live();
         *self.live_note.borrow_mut() = Some(note);
     }
@@ -421,6 +460,7 @@ impl TuiAudio {
         if !self.is_live() {
             return false;
         }
+        log::info!(target: "live", "event=stop room={}", self.live_room.get());
         self.shutdown_live();
         *self.player.borrow_mut() = None;
         *self.tap.borrow_mut() = None;
@@ -461,6 +501,21 @@ impl TuiAudio {
         if self.live_state.get() != LiveState::Playing {
             return;
         }
+        log::info!(
+            target: "live",
+            "event=pause video={} room={}",
+            self.video_is_active(),
+            self.live_room.get()
+        );
+        if self.video_uses_mpv_audio() {
+            // 视频模式声音由 mpv 出；TUI 音频继续静音运行，保持缓冲新鲜。
+            self.video.set_paused(true);
+            self.playing.set(false);
+            self.duration_ms.set(None);
+            self.live_state.set(LiveState::Paused);
+            *self.live_note.borrow_mut() = Some("视频已暂停".to_owned());
+            return;
+        }
         if let Some(control) = self.live_control.borrow().as_ref() {
             control.pause();
         }
@@ -476,6 +531,19 @@ impl TuiAudio {
     /// 从暂停恢复：继续播暂停缓存；缓存播完后自动追 live。
     pub(super) fn resume_live(&self) {
         if self.live_state.get() != LiveState::Paused {
+            return;
+        }
+        log::info!(
+            target: "live",
+            "event=resume video={} room={}",
+            self.video_is_active(),
+            self.live_room.get()
+        );
+        if self.video_uses_mpv_audio() {
+            self.video.set_paused(false);
+            self.playing.set(true);
+            self.live_state.set(LiveState::Playing);
+            *self.live_note.borrow_mut() = Some("视频已继续".to_owned());
             return;
         }
         if let Some(control) = self.live_control.borrow().as_ref() {
@@ -513,7 +581,7 @@ impl TuiAudio {
         self.start_live(room);
     }
 
-    /// F5：丢弃暂停缓存，重新接 live edge。
+    /// `r` / F5：本地丢弃旧队列，从最新缓冲前 300ms 起播，不重连网络。
     pub(crate) fn refresh_live(&self) -> bool {
         if !self.is_live() {
             return false;
@@ -522,7 +590,32 @@ impl TuiAudio {
         if room == 0 {
             return false;
         }
-        self.start_live(room);
+        // 视频模式声音在 mpv；先关掉视频并恢复 TUI 音频，再本地刷新。
+        if self.video_is_active() {
+            let _ = self.toggle_video();
+        }
+        let player = self.player.borrow();
+        let control = self.live_control.borrow();
+        let (Some(player), Some(control)) = (player.as_ref(), control.as_ref()) else {
+            drop(player);
+            drop(control);
+            // 准备中 / 重连中没有可裁的队列，退回重新接流。
+            self.start_live(room);
+            return true;
+        };
+        if self.live_state.get() == LiveState::Paused {
+            if let Err(error) = player.play() {
+                *self.live_note.borrow_mut() = Some(format!("直播刷新失败：{error}"));
+                return false;
+            }
+            self.playing.set(true);
+            self.live_state.set(LiveState::Playing);
+        }
+        // resume 清暂停；request_refresh 让解码线程裁到最新 300ms。
+        control.resume();
+        control.request_refresh();
+        *self.live_note.borrow_mut() = Some("直播已跳到最新缓冲".to_owned());
+        log::info!(target: "live", "event=refresh_requested room={room}");
         true
     }
 

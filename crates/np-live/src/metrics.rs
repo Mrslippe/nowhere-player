@@ -140,13 +140,6 @@ impl LiveMetrics {
             .fetch_max(milliseconds, Ordering::Relaxed);
     }
 
-    pub(crate) fn note_drop(&self, frames: u64) {
-        self.counters.drop_events.fetch_add(1, Ordering::Relaxed);
-        self.counters
-            .dropped_frames
-            .fetch_add(frames, Ordering::Relaxed);
-    }
-
     pub(crate) fn note_underrun(&self) {
         self.counters.underruns.fetch_add(1, Ordering::Relaxed);
     }
@@ -177,7 +170,6 @@ mod tests {
         clone.set_buffer(900);
         clone.set_buffer(1_200);
         clone.set_buffer(700);
-        clone.note_drop(3);
         clone.note_underrun();
         clone.note_queue_empty();
         clone.note_fill_silence(21);
@@ -188,8 +180,8 @@ mod tests {
         assert_eq!(metrics.buffer_ms(), 700);
         assert_eq!(metrics.min_buffer_ms(), 700);
         assert_eq!(metrics.max_buffer_ms(), 1_200);
-        assert_eq!(metrics.dropped_frames(), 3);
-        assert_eq!(metrics.drop_events(), 1);
+        assert_eq!(metrics.dropped_frames(), 0);
+        assert_eq!(metrics.drop_events(), 0);
         assert_eq!(metrics.underruns(), 1);
         assert_eq!(metrics.queue_empty_events(), 1);
         assert_eq!(metrics.fill_silence_ms(), 21);

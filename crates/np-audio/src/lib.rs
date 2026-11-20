@@ -26,7 +26,10 @@ pub use sink::{
 pub use source::{AudioSource, FileSource};
 pub use tap::{SampleTapHandle, TAP_CAPACITY};
 pub use volume::{clamp_volume, gain_for_volume};
-pub use wsola::{MAX_SPEED as MAX_TEMPO_SPEED, MIN_SPEED as MIN_TEMPO_SPEED, WsolaTempo};
+pub use wsola::{
+    MAX_SPEED as MAX_TEMPO_SPEED, MIN_SPEED as MIN_TEMPO_SPEED, NORMAL_SPEED as NORMAL_TEMPO_SPEED,
+    WsolaTempo,
+};
 
 use std::path::Path;
 
@@ -103,6 +106,11 @@ impl Player {
     /// 设置音量（0.0–1.0，感知曲线 `gain = v^3`）。
     pub fn set_volume(&self, volume: f32) {
         self.engine.set_volume(volume);
+    }
+
+    /// 视频模式静音输出，但保留 sample tap 给可视化。
+    pub fn set_output_muted(&self, muted: bool) {
+        self.engine.set_output_muted(muted);
     }
 
     /// 当前播放位置（毫秒），以设备实际消费的样本数为准。

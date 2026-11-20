@@ -231,6 +231,8 @@ where
         if player.poll_video() {
             draw_needed = true;
         }
+        // 视频窗口主题跟随当前 TUI Palette；变化时只发 `theme ...`，不重启宿主。
+        player.sync_video_theme(&app.palette);
         // 弹幕收包与状态提示独立于音频；每 tick 只做非阻塞 try_recv。
         if player.poll_danmaku() {
             draw_needed = true;

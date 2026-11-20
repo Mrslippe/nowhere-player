@@ -18,6 +18,7 @@ pub(crate) const PAUSE_CAP_FRAMES: usize = 1_406;
 struct State {
     paused: AtomicBool,
     replay: AtomicBool,
+    refresh: AtomicBool,
     paused_dropped_frames: AtomicU64,
 }
 
@@ -48,6 +49,15 @@ impl LiveControl {
         self.state.replay.swap(false, Ordering::AcqRel)
     }
 
+    /// 本地刷新：丢弃旧队列，从最新缓冲前约 300ms 重新起播。
+    pub fn request_refresh(&self) {
+        self.state.refresh.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn take_refresh(&self) -> bool {
+        self.state.refresh.swap(false, Ordering::AcqRel)
+    }
+
     pub(crate) fn note_paused_drop(&self) {
         self.state
             .paused_dropped_frames
@@ -74,6 +84,9 @@ mod tests {
         assert!(!control.is_paused());
         assert!(control.take_replay());
         assert!(!control.take_replay());
+        control.request_refresh();
+        assert!(control.take_refresh());
+        assert!(!control.take_refresh());
         control.note_paused_drop();
         assert_eq!(control.paused_dropped_frames(), 1);
     }

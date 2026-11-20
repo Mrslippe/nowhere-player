@@ -2727,3 +2727,710 @@ fn live_chat_ignores_stale_generations() {
         "no local echo for stale result"
     );
 }
+
+/// T-0116 / T-0117：视频窗口控制条、清晰度菜单与无缝换流的单元测试。
+///
+/// 根模块测试与 `audio::video` 是兄弟模块，直接无法访问其私有类型；因此
+/// `video.rs` 提供 `#[cfg(test)]` 门面（只返回普通结构），这里只测行为。
+#[cfg(test)]
+mod video_window {
+    use crate::audio::TuiAudio;
+    use crate::theme::{Palette, VideoTheme};
+    use ratatui::style::Color;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::time::Duration;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("np-video-{tag}-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn fake_executable(name: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("{name}.exe")
+        }
+        #[cfg(not(windows))]
+        {
+            name.to_owned()
+        }
+    }
+
+    fn path_var(dir: &Path) -> std::ffi::OsString {
+        std::env::join_paths([dir]).expect("join path")
+    }
+
+    fn live_info() -> np_live::api::PlayInfo {
+        np_live::api::parse_play_info(
+            include_bytes!("../../np-live/fixtures/live_playinfo.json"),
+            21622811,
+        )
+        .expect("live fixture")
+    }
+
+    fn exit_child() -> Child {
+        #[cfg(windows)]
+        let mut command = {
+            let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+            let mut command = Command::new(shell);
+            command.args(["/C", "exit 0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "exit 0"]);
+            command
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fake exit process")
+    }
+
+    #[test]
+    fn mpv_args_disable_audio_and_carry_live_headers() {
+        let args = TuiAudio::video_player_args_for_test(true, "https://example.invalid/live.flv");
+        assert!(args.iter().any(|arg| arg == "--no-audio"));
+        assert!(args.iter().any(|arg| arg == "--force-window=yes"));
+        assert!(args.iter().any(|arg| arg == "--really-quiet"));
+        assert!(args.iter().any(|arg| {
+            arg == "--http-header-fields=Referer: https://live.bilibili.com/,Origin: https://live.bilibili.com"
+        }));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://example.invalid/live.flv")
+        );
+    }
+
+    #[test]
+    fn ffplay_args_disable_audio_and_use_crlf_headers() {
+        let args = TuiAudio::video_player_args_for_test(false, "https://example.invalid/live.flv");
+        assert_eq!(args[0], "-an");
+        assert_eq!(args[1], "-loglevel");
+        assert_eq!(args[2], "error");
+        assert_eq!(args[3], "-window_title");
+        assert_eq!(args[4], "NowhereLive");
+        assert_eq!(args[5], "-headers");
+        assert_eq!(
+            args[6],
+            "Referer: https://live.bilibili.com/\\r\\nOrigin: https://live.bilibili.com"
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://example.invalid/live.flv")
+        );
+        assert!(!args.iter().any(|arg| arg == "-vn" || arg == "-no-audio"));
+    }
+
+    #[test]
+    fn player_command_uses_the_selected_path_and_args() {
+        let (program, args) =
+            TuiAudio::video_player_command_for_test(true, "https://example.invalid/live.flv");
+        assert_eq!(program, PathBuf::from("fake-player"));
+        assert_eq!(
+            args,
+            TuiAudio::video_player_args_for_test(true, "https://example.invalid/live.flv")
+        );
+    }
+
+    #[test]
+    fn mpv_is_preferred_then_ffplay_falls_back() {
+        let dir = temp_dir("path-fallback");
+        std::fs::write(dir.join(fake_executable("ffplay")), b"").expect("ffplay");
+        let (ffplay, path) = TuiAudio::video_resolve_program_for_test(None, Some(&path_var(&dir)))
+            .expect("ffplay fallback");
+        assert!(ffplay);
+        assert_eq!(path, dir.join(fake_executable("ffplay")));
+
+        std::fs::write(dir.join(fake_executable("mpv")), b"").expect("mpv");
+        let (ffplay, path) = TuiAudio::video_resolve_program_for_test(None, Some(&path_var(&dir)))
+            .expect("mpv preferred");
+        assert!(!ffplay);
+        assert_eq!(path, dir.join(fake_executable("mpv")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn explicit_player_overrides_path_lookup() {
+        let dir = temp_dir("override");
+        let custom = dir.join(fake_executable("my-ffplay"));
+        std::fs::write(&custom, b"").expect("custom player");
+        let (ffplay, path) = TuiAudio::video_resolve_program_for_test(
+            Some(custom.as_os_str()),
+            Some(&path_var(&dir)),
+        )
+        .expect("override");
+        assert!(ffplay);
+        assert_eq!(path, custom);
+
+        // 纯命令名走 PATH，而不是当前目录。
+        let name = fake_executable("my-mpv");
+        std::fs::write(dir.join(&name), b"").expect("named player");
+        let (ffplay, path) = TuiAudio::video_resolve_program_for_test(
+            Some(OsStr::new(&name)),
+            Some(&path_var(&dir)),
+        )
+        .expect("path name");
+        assert!(!ffplay);
+        assert_eq!(path, dir.join(&name));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_player_returns_a_chinese_install_hint() {
+        let dir = temp_dir("missing");
+        let error =
+            TuiAudio::video_resolve_program_for_test(None, Some(&path_var(&dir))).unwrap_err();
+        assert!(error.contains("未找到视频播放器"), "{error}");
+        assert!(error.contains("mpv") && error.contains("ffplay"), "{error}");
+
+        let missing = dir.join(fake_executable("nope"));
+        let error = TuiAudio::video_resolve_program_for_test(
+            Some(missing.as_os_str()),
+            Some(&path_var(&dir)),
+        )
+        .unwrap_err();
+        assert!(error.contains("NP_VIDEO_PLAYER"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn host_resolution_prefers_env_then_sibling_then_path() {
+        let dir = temp_dir("hosts");
+        let exe_dir = dir.join("bin");
+        std::fs::create_dir_all(&exe_dir).expect("bin dir");
+        let sibling = exe_dir.join(TuiAudio::video_host_exe_for_test());
+        std::fs::write(&sibling, b"").expect("sibling host");
+        assert_eq!(
+            TuiAudio::video_resolve_host_for_test(None, Some(&exe_dir), Some(&path_var(&dir)))
+                .expect("sibling"),
+            Some(sibling.clone())
+        );
+
+        let override_path = dir.join(fake_executable("custom-video"));
+        std::fs::write(&override_path, b"").expect("override host");
+        assert_eq!(
+            TuiAudio::video_resolve_host_for_test(
+                Some(override_path.as_os_str()),
+                Some(&exe_dir),
+                Some(&path_var(&dir))
+            )
+            .expect("override"),
+            Some(override_path)
+        );
+
+        let missing = dir.join(fake_executable("nope"));
+        let error = TuiAudio::video_resolve_host_for_test(
+            Some(missing.as_os_str()),
+            Some(&exe_dir),
+            Some(&path_var(&dir)),
+        )
+        .unwrap_err();
+        assert!(error.contains("NP_VIDEO_HOST"), "{error}");
+
+        // sibling 不存在时走 PATH。
+        std::fs::remove_file(&sibling).expect("remove sibling");
+        let path_host = dir.join(fake_executable("np-video"));
+        std::fs::write(&path_host, b"").expect("path host");
+        assert_eq!(
+            TuiAudio::video_resolve_host_for_test(None, Some(&exe_dir), Some(&path_var(&dir)))
+                .expect("path"),
+            Some(path_host)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn backend_prefers_host_and_falls_back_to_external() {
+        let dir = temp_dir("backend");
+        std::fs::write(dir.join(fake_executable("mpv")), b"").expect("mpv");
+        let path = path_var(&dir);
+        let host = TuiAudio::video_resolve_backend_for_test(None, None, Some(&dir), Some(&path))
+            .expect("external");
+        assert!(!host);
+
+        #[cfg(windows)]
+        {
+            std::fs::write(dir.join(TuiAudio::video_host_exe_for_test()), b"").expect("host");
+            let host =
+                TuiAudio::video_resolve_backend_for_test(None, None, Some(&dir), Some(&path))
+                    .expect("host");
+            assert!(host);
+
+            // 只有 ffplay 时宿主无法嵌入，必须回退外部窗口。
+            std::fs::remove_file(dir.join(fake_executable("mpv"))).expect("remove mpv");
+            std::fs::write(dir.join(fake_executable("ffplay")), b"").expect("ffplay");
+            let host =
+                TuiAudio::video_resolve_backend_for_test(None, None, Some(&dir), Some(&path))
+                    .expect("ffplay fallback");
+            assert!(!host);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn host_request_is_line_based_and_sanitizes_the_title() {
+        let request = TuiAudio::video_host_request_for_test(
+            "https://example.invalid/live.flv?token=secret",
+            "坏\n标题",
+            &[],
+            None,
+            10_000,
+            65,
+            true,
+            1_200,
+            VideoTheme::default_dark(),
+        )
+        .expect("request");
+        let lines: Vec<&str> = request.lines().collect();
+        assert_eq!(lines.len(), 10);
+        assert_eq!(lines[0], "v2");
+        assert!(lines[1].starts_with("url https://example.invalid/live.flv"));
+        assert_eq!(lines[4], "title 坏 标题");
+        assert_eq!(lines[5], "volume 65");
+        assert_eq!(lines[6], "paused 1");
+        assert_eq!(lines[7], "buffer_ms 1200");
+        assert_eq!(
+            lines[8],
+            "theme #ffb454 #14171c #1a1e24 #e9e4da #a7a49e #7d7c78 #1e2023 #ff8b7d #0d0f12"
+        );
+        assert_eq!(lines[9], "end");
+        assert!(!request.contains("\n\n"));
+        // 主题行不含 URL / Cookie / 标题。
+        assert!(!lines[8].contains("http") && !lines[8].contains("token="));
+
+        assert!(
+            TuiAudio::video_host_request_for_test(
+                "https://example.invalid/live.flv\nX",
+                "",
+                &[],
+                None,
+                10_000,
+                65,
+                true,
+                1_200,
+                VideoTheme::default_dark(),
+            )
+            .unwrap_err()
+            .contains("地址")
+        );
+    }
+
+    #[test]
+    fn host_request_carries_the_quality_menu_and_current_qn() {
+        let qualities = vec![
+            (10_000u64, "原画".to_owned()),
+            (400, "蓝光".to_owned()),
+            (250, "超清".to_owned()),
+        ];
+        let request = TuiAudio::video_host_request_for_test(
+            "https://example.invalid/live.flv",
+            "房间",
+            &qualities,
+            Some(250),
+            10_000,
+            100,
+            false,
+            900,
+            VideoTheme::default_dark(),
+        )
+        .expect("request");
+        let lines: Vec<&str> = request.lines().collect();
+        assert_eq!(lines.len(), 14);
+        assert!(lines[8].starts_with("theme #"));
+        assert_eq!(lines[9], "quality 10000 原画");
+        assert_eq!(lines[10], "quality 400 蓝光");
+        assert_eq!(lines[11], "quality 250 超清");
+        assert_eq!(lines[12], "current_qn 250");
+        assert_eq!(lines[13], "end");
+
+        // 标签里的控制字符不能注入协议行。
+        let hostile = vec![(400u64, "蓝\n光".to_owned())];
+        let request = TuiAudio::video_host_request_for_test(
+            "https://example.invalid/live.flv",
+            "房间",
+            &hostile,
+            Some(250),
+            10_000,
+            100,
+            false,
+            900,
+            VideoTheme::default_dark(),
+        )
+        .expect("sanitized");
+        let lines: Vec<&str> = request.lines().collect();
+        assert_eq!(lines[9], "quality 400 蓝 光");
+        assert_eq!(lines[10], "current_qn 250");
+    }
+
+    #[test]
+    fn load_line_rejects_urls_that_could_break_the_protocol() {
+        assert_eq!(
+            TuiAudio::video_load_line_for_test("https://example.invalid/live.flv?token=x"),
+            Some("load https://example.invalid/live.flv?token=x\n".to_owned())
+        );
+        for bad in [
+            "",
+            "https://e.invalid/a\nb",
+            "https://e.invalid/a b",
+            "#comment",
+            "ftp://e.invalid/x",
+        ] {
+            assert!(TuiAudio::video_load_line_for_test(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn target_uses_room_title_or_live_fallback() {
+        let (url, title, _, _, _, requested_qn) = TuiAudio::video_target_from_parts_for_test(
+            21622811,
+            live_info(),
+            Some("BLAST 直播".to_owned()),
+            10_000,
+        )
+        .expect("target");
+        assert_eq!(title, "BLAST 直播");
+        assert!(url.starts_with("http"));
+        assert_eq!(requested_qn, 10_000);
+
+        let (_, title, _, _, _, _) = TuiAudio::video_target_from_parts_for_test(
+            21622811,
+            live_info(),
+            Some("  ".to_owned()),
+            10_000,
+        )
+        .expect("fallback title");
+        assert_eq!(title, "直播 21622811");
+
+        let offline = np_live::api::parse_play_info(
+            include_bytes!("../../np-live/fixtures/offline_playinfo.json"),
+            510,
+        )
+        .expect("offline fixture");
+        assert_eq!(
+            TuiAudio::video_target_from_parts_for_test(510, offline, None, 10_000).unwrap_err(),
+            "直播间未开播"
+        );
+    }
+
+    #[test]
+    fn target_maps_accept_qn_to_menu_options() {
+        let (_, _, quality_note, qualities, current_qn, requested_qn) =
+            TuiAudio::video_target_from_parts_for_test(21622811, live_info(), None, 10_000)
+                .expect("quality target");
+        // fixture：accept_qn = [10000,400,250]，current_qn = 250。
+        assert_eq!(
+            qualities,
+            vec![
+                (10_000, "原画".to_owned()),
+                (400, "蓝光".to_owned()),
+                (250, "超清".to_owned())
+            ]
+        );
+        assert_eq!(current_qn, Some(250));
+        assert_eq!(requested_qn, 10_000);
+        let note = quality_note.expect("note");
+        assert!(note.contains("超清 250"), "{note}");
+
+        // 空 accept_qn 时至少保留当前请求档位。
+        let mut empty = live_info();
+        empty.accept_qn.clear();
+        let (_, _, _, qualities, _, _) =
+            TuiAudio::video_target_from_parts_for_test(21622811, empty, None, 400)
+                .expect("fallback option");
+        assert_eq!(qualities, vec![(400, "蓝光".to_owned())]);
+    }
+
+    /// 多 codec playurl：AVC current=10000、HEVC current=15000，union 含 20000。
+    const MULTI_CODEC_PLAYINFO: &str = r#"{"code":0,"data":{"room_id":21622811,"live_status":1,"playurl_info":{"playurl":{"stream":[{"protocol_name":"http_stream","format":[{"format_name":"flv","codec":[
+        {"codec_name":"avc","current_qn":10000,"accept_qn":[10000,400,250,150,80],"base_url":"/avc/stream.flv?","url_info":[{"host":"https://avc.invalid"}]},
+        {"codec_name":"hevc","current_qn":15000,"accept_qn":[20000,15000,10000,400,250],"base_url":"/hevc/stream.flv?","url_info":[{"host":"https://hevc.invalid"}]}
+    ]}]}]}}}}"#;
+
+    #[test]
+    fn quality_menu_lists_every_accept_qn_highest_first() {
+        let info = np_live::api::parse_play_info(MULTI_CODEC_PLAYINFO.as_bytes(), 21622811)
+            .expect("multi codec fixture");
+        let (url, _, quality_note, qualities, current_qn, requested_qn) =
+            TuiAudio::video_target_from_parts_for_test(21622811, info, None, 20_000)
+                .expect("quality target");
+        assert!(url.starts_with("https://hevc.invalid/"));
+        assert_eq!(
+            qualities,
+            vec![
+                (20_000, "4K".to_owned()),
+                (15_000, "2K".to_owned()),
+                (10_000, "原画".to_owned()),
+                (400, "蓝光".to_owned()),
+                (250, "超清".to_owned()),
+                (150, "高清".to_owned()),
+                (80, "流畅".to_owned()),
+            ]
+        );
+        assert_eq!(current_qn, Some(15_000));
+        assert_eq!(requested_qn, 20_000);
+        let note = quality_note.expect("quality note");
+        assert!(note.contains("2K 15000"), "{note}");
+        assert!(note.contains("4K 20000"), "{note}");
+    }
+
+    #[test]
+    fn video_default_quality_is_the_top_regular_tier() {
+        assert_eq!(TuiAudio::video_default_qn_for_test(), 20_000);
+    }
+
+    #[test]
+    fn host_events_parse_ready_closed_and_error() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_host_line_for_test("ready\r\n"));
+        assert!(audio.video_host_line_for_test("closed"));
+        assert!(audio.video_host_line_for_test("error 播放器退出"));
+        assert!(!audio.video_host_line_for_test("unknown"));
+    }
+
+    #[test]
+    fn host_events_parse_control_bar_actions() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_host_line_for_test("control paused 1"));
+        assert!(audio.video_host_line_for_test("control paused 0"));
+        assert!(audio.video_host_line_for_test("control refresh"));
+        assert!(audio.video_host_line_for_test("control quality 400"));
+        assert!(audio.video_host_line_for_test("volume 65"));
+        // 非法值不猜。
+        assert!(!audio.video_host_line_for_test("control paused maybe"));
+        assert!(!audio.video_host_line_for_test("volume 101"));
+        assert!(!audio.video_host_line_for_test("control quality abc"));
+    }
+
+    #[test]
+    fn host_pause_and_volume_events_do_not_tear_down_the_window() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_host_line_for_test("ready"));
+        assert!(audio.poll_video());
+        assert!(audio.video_host_line_for_test("control paused 1"));
+        assert!(audio.video_host_line_for_test("volume 37"));
+        assert!(audio.poll_video());
+        assert!(
+            audio.video_is_active(),
+            "control bar events keep the host alive"
+        );
+        assert_eq!(audio.video_audio_state_for_test(), (37, true));
+        // poll_video 已把宿主音量同步到 TUI master volume。
+        assert!((audio.volume() - 0.37).abs() < 0.001);
+    }
+
+    #[test]
+    fn quality_switch_failure_keeps_the_old_picture() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_host_line_for_test("ready"));
+        audio.poll_video();
+        assert!(audio.video_host_line_for_test("error 清晰度切换失败，已恢复原画面"));
+        assert!(audio.poll_video());
+        assert!(
+            audio.video_is_active(),
+            "loadfile failure must not tear down the host"
+        );
+        let hint = audio.video_status_hint().expect("load failure hint");
+        assert!(hint.contains("清晰度切换失败"), "{hint}");
+    }
+
+    #[test]
+    fn playing_child_exit_is_reaped_and_reported() {
+        let audio = TuiAudio::empty();
+        audio.video_attach_child_for_test(exit_child());
+        assert!(audio.video_is_active());
+
+        let mut seen = false;
+        for _ in 0..200 {
+            if audio.poll_video() {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(seen, "poll should reap the exited fake process");
+        assert!(!audio.video_is_active());
+        let hint = audio.video_status_hint().expect("exit hint");
+        assert!(hint.contains("视频窗口已关闭"), "{hint}");
+    }
+
+    #[test]
+    fn close_is_idempotent_and_marks_video_closed() {
+        let audio = TuiAudio::empty();
+        audio.video_attach_child_for_test(exit_child());
+        assert!(audio.close_video());
+        assert!(!audio.video_is_active());
+        assert_eq!(audio.video_status_hint().as_deref(), Some("视频已关闭"));
+        assert!(!audio.close_video());
+    }
+
+    #[test]
+    fn toggle_without_live_is_refused_before_any_process() {
+        let audio = TuiAudio::empty();
+        assert_eq!(
+            audio.toggle_video(),
+            Err("当前没有直播".to_owned()),
+            "idle toggle must not start a player"
+        );
+        assert!(!audio.video_is_active());
+    }
+
+    #[test]
+    fn toggle_while_active_closes_instead_of_opening_a_second_player() {
+        let audio = TuiAudio::empty();
+        audio.video_active_for_test();
+        assert_eq!(
+            audio.toggle_video(),
+            Ok("视频已关闭".to_owned()),
+            "second v must close, not spawn"
+        );
+        assert!(!audio.video_is_active());
+    }
+
+    #[test]
+    fn only_the_host_backend_uses_mpv_audio() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_uses_mpv_audio());
+
+        let external = TuiAudio::empty();
+        external.video_active_for_test();
+        assert!(!external.video_uses_mpv_audio());
+
+        audio.set_video_volume(0.37);
+        audio.video_set_paused_for_test(true);
+        assert_eq!(audio.video_audio_state_for_test(), (37, true));
+    }
+
+    #[test]
+    fn host_ready_moves_to_playing_and_closed_returns_to_idle() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_host_line_for_test("ready"));
+        assert!(audio.poll_video());
+        assert_eq!(
+            audio.video_status_hint().as_deref(),
+            Some("视频已打开（v 关闭）")
+        );
+
+        assert!(audio.video_host_line_for_test("closed"));
+        assert!(audio.poll_video());
+        assert!(!audio.video_is_active());
+        assert_eq!(audio.video_status_hint().as_deref(), Some("视频窗口已关闭"));
+    }
+
+    #[test]
+    fn host_error_returns_to_idle_with_a_chinese_note() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_host_line_for_test("error mpv 启动失败"));
+        assert!(audio.poll_video());
+        assert!(!audio.video_is_active());
+        let hint = audio.video_status_hint().expect("error hint");
+        assert!(hint.contains("视频启动失败"), "{hint}");
+        assert!(hint.contains("mpv 启动失败"), "{hint}");
+    }
+
+    #[test]
+    fn host_process_exit_without_an_event_is_reported() {
+        let audio = TuiAudio::empty();
+        audio.video_exiting_host_for_test();
+        let mut seen = false;
+        for _ in 0..200 {
+            if audio.poll_video() {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(seen);
+        assert!(!audio.video_is_active());
+        let hint = audio.video_status_hint().expect("exit hint");
+        assert!(hint.contains("启动失败") || hint.contains("窗口"), "{hint}");
+    }
+
+    #[test]
+    fn toggle_while_a_host_is_active_closes_it() {
+        let audio = TuiAudio::empty();
+        audio.video_host_for_test();
+        assert!(audio.video_is_active());
+        assert_eq!(audio.toggle_video(), Ok("视频已关闭".to_owned()));
+        assert!(!audio.video_is_active());
+    }
+
+    #[test]
+    fn fetch_error_moves_back_to_idle_with_a_status_hint() {
+        let audio = TuiAudio::empty();
+        audio.video_inject_fetch_error_for_test("模拟网络断开");
+        assert!(audio.video_is_active(), "preparing counts as active");
+        assert!(audio.poll_video());
+        assert!(!audio.video_is_active());
+        let hint = audio.video_status_hint().expect("fetch failure hint");
+        assert!(hint.contains("视频取流失败"), "{hint}");
+        assert!(hint.contains("模拟网络断开"), "{hint}");
+    }
+
+    #[test]
+    fn video_theme_sync_is_idempotent_and_reaches_the_host() {
+        let audio = TuiAudio::empty();
+        let mut palette = Palette::default_dark();
+        assert!(audio.sync_video_theme(&palette));
+        assert_eq!(
+            audio.video_theme_for_test(),
+            Some(VideoTheme::from_palette(&palette))
+        );
+        assert!(
+            !audio.sync_video_theme(&palette),
+            "unchanged palette must not resend the theme line"
+        );
+
+        // 宿主在线时同样只发一次；stdin 为 None 的假宿主不会真的写管道。
+        audio.video_host_for_test();
+        palette.accent = Color::Rgb(0x11, 0x22, 0x33);
+        assert!(audio.sync_video_theme(&palette));
+        assert_eq!(
+            audio.video_theme_for_test(),
+            Some(VideoTheme::from_palette(&palette))
+        );
+        assert!(!audio.sync_video_theme(&palette));
+    }
+
+    #[test]
+    fn terminal_palette_sync_uses_the_default_dark_video_theme() {
+        let audio = TuiAudio::empty();
+        assert!(audio.sync_video_theme(&Palette::terminal()));
+        assert_eq!(
+            audio.video_theme_for_test(),
+            Some(VideoTheme::default_dark())
+        );
+    }
+
+    #[test]
+    fn notes_take_priority_over_phase_hints() {
+        let audio = TuiAudio::empty();
+        audio.video_note_for_test("视频准备中…");
+        assert_eq!(audio.video_status_hint().as_deref(), Some("视频准备中…"));
+        audio.video_active_for_test();
+        assert_eq!(
+            audio.video_status_hint().as_deref(),
+            Some("视频准备中…"),
+            "fresh note must win over the persistent phase hint"
+        );
+    }
+}

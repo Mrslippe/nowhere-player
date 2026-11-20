@@ -16,12 +16,18 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// mpv 参数。URL 不在其中；`--playlist=-` 让 mpv 从 stdin 读 URL。
-pub fn mpv_args(hwnd: usize, referer: &str, origin: &str) -> Vec<String> {
-    vec![
+pub fn mpv_args(hwnd: usize, referer: &str, origin: &str, volume: u8, paused: bool) -> Vec<String> {
+    let mut args = vec![
         "--no-config".to_owned(),
         format!("--wid={hwnd}"),
-        "--no-audio".to_owned(),
-        // 视频宽高比优先：窗口比例和视频不一致时，只在一侧留 letterbox。
+        // 视频模式由 mpv 同时解码音视频，音画同步交给 mpv 内部时钟。
+        format!("--volume={}", volume.min(100)),
+        // mpv 默认 cache-secs=1h，直播会稳定缓存约 5–8s；限制到 1.5s。
+        "--cache=yes".to_owned(),
+        "--cache-secs=1.5".to_owned(),
+        // 追帧靠 set_property speed（音视频同一时钟）；变速时必须保住音高。
+        "--audio-pitch-correction=yes".to_owned(),
+        // 视频窗口打开时仍使用统一的自绘标题栏。
         "--keepaspect=yes".to_owned(),
         "--no-osc".to_owned(),
         "--no-osd-bar".to_owned(),
@@ -29,8 +35,12 @@ pub fn mpv_args(hwnd: usize, referer: &str, origin: &str) -> Vec<String> {
         format!("--input-ipc-server={IPC_PIPE}"),
         format!("--user-agent={BROWSER_UA}"),
         format!("--http-header-fields=Referer: {referer},Origin: {origin},Accept: */*"),
-        "--playlist=-".to_owned(),
-    ]
+    ];
+    if paused {
+        args.push("--pause=yes".to_owned());
+    }
+    args.push("--playlist=-".to_owned());
+    args
 }
 
 /// 写到 mpv stdin 的播放列表：一行 URL。
@@ -133,13 +143,19 @@ fn executable_names(name: &str) -> Vec<String> {
 /// 启动 mpv 并把 URL 写进它的 stdin；stdout/stderr 不继承。
 pub fn spawn_mpv(program: &Path, hwnd: usize, request: &Request) -> Result<Child, String> {
     request.validate()?;
-    let log_path = std::env::temp_dir().join("nowhere-video-mpv.log");
+    let log_path = crate::logging::default_dir().join("mpv.log");
     let stderr = std::fs::File::create(&log_path)
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null());
     let mut command = Command::new(program);
     command
-        .args(mpv_args(hwnd, &request.referer, &request.origin))
+        .args(mpv_args(
+            hwnd,
+            &request.referer,
+            &request.origin,
+            request.volume,
+            request.paused,
+        ))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(stderr);
@@ -154,7 +170,15 @@ pub fn spawn_mpv(program: &Path, hwnd: usize, request: &Request) -> Result<Child
     let mut child = command
         .spawn()
         .map_err(|error| format!("mpv 启动失败：{error}"))?;
+    log::info!(
+        target: "mpv",
+        "spawn pid={} mpv={} log={}",
+        child.id(),
+        program.display(),
+        log_path.display()
+    );
     let Some(mut stdin) = child.stdin.take() else {
+        log::error!(target: "mpv", "stdin missing");
         let _ = child.kill();
         let _ = child.wait();
         return Err("mpv 的 stdin 不可用".to_owned());
@@ -164,6 +188,7 @@ pub fn spawn_mpv(program: &Path, hwnd: usize, request: &Request) -> Result<Child
         .write_all(payload.as_bytes())
         .and_then(|_| stdin.flush())
     {
+        log::error!(target: "mpv", "playlist handshake failed: {error}");
         let _ = child.kill();
         let _ = child.wait();
         return Err(format!("mpv 握手失败：{error}"));
@@ -210,12 +235,26 @@ mod tests {
     }
 
     #[test]
-    fn mpv_args_embed_the_window_and_disable_audio_and_osc() {
-        let args = mpv_args(42, REFERER, ORIGIN);
+    fn mpv_args_embed_the_window_and_enable_audio() {
+        let args = mpv_args(42, REFERER, ORIGIN, 65, false);
         assert_eq!(args[0], "--no-config");
         assert_eq!(args[1], "--wid=42");
-        assert_eq!(args[2], "--no-audio");
-        assert!(args.iter().any(|arg| arg == "--no-audio"));
+        assert!(
+            args.iter().any(|arg| arg == "--volume=65"),
+            "video mode must carry the TUI volume into mpv"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--no-audio"),
+            "video mode must let mpv decode its own audio"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--cache-secs=1.5"),
+            "video cache must be capped below the mpv default"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--audio-pitch-correction=yes"),
+            "speed chasing must keep the audio pitch"
+        );
         assert!(
             args.iter().any(|arg| arg == "--keepaspect=yes"),
             "mpv must keep the video aspect ratio inside the resized child window"
@@ -235,8 +274,14 @@ mod tests {
     }
 
     #[test]
+    fn paused_request_starts_mpv_paused() {
+        let args = mpv_args(42, REFERER, ORIGIN, 100, true);
+        assert!(args.iter().any(|arg| arg == "--pause=yes"));
+    }
+
+    #[test]
     fn the_url_is_not_in_the_process_arguments() {
-        let args = mpv_args(7, REFERER, ORIGIN);
+        let args = mpv_args(7, REFERER, ORIGIN, 100, false);
         assert!(
             !args.iter().any(|arg| arg.contains("example.invalid")),
             "URL must travel over stdin, not argv"

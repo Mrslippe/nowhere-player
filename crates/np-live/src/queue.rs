@@ -3,12 +3,12 @@
 //! 队列是网络线程（producer）和解码线程（consumer）之间唯一的中转：
 //!
 //! - 网络线程按 FLV tag 到一帧就 push；队列满时等待，不丢数据；
-//! - 解码线程按 AAC 帧 pop，落后太多时由控制器从队头丢旧帧；
+//! - 解码线程按 AAC 帧 pop，运行期不主动丢帧；
 //! - `buffer_ms = 最新帧 pts - 已播放媒体时间`。
 //!
-//! 目标默认 900ms（`NP_LIVE_TARGET_MS` 仅供调试覆盖）；缓冲超过 target+100ms
-//! 时启动 1.05x WSOLA，超过 target+300ms 到 1.10x，回到 target 恢复 1.00x，
-//! 只加速不减速。target+500ms 的硬丢帧仍保留作为兜底。
+//! 目标默认 900ms（`NP_LIVE_TARGET_MS` 仅供调试覆盖）；缓冲超过 target
+//! 时启动 1.10x WSOLA，超过 target+1s 到 1.20x，超过 target+2s 到 1.30x；
+//! 低于 min(600ms,target) 降到 0.60x。回到 target 恢复 1.00x，不硬丢帧。
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::flv::AacFrame;
 
-use np_audio::MIN_TEMPO_SPEED;
+use np_audio::NORMAL_TEMPO_SPEED;
 
 /// 直播目标缓冲默认值（毫秒），与 `live.buffer_ms` 默认值一致。
 pub const DEFAULT_TARGET_BUFFER_MS: u64 = 900;
@@ -95,24 +95,24 @@ fn resolve_target_buffer_ms(env: Option<u64>, override_ms: Option<u64>, default_
 #[cfg(test)]
 pub(crate) const TARGET_BUFFER_MS: u64 = 1500;
 
-/// 缓冲上限：超过才丢旧帧（测试夹具）。
-#[cfg(test)]
-pub(crate) const MAX_BUFFER_MS: u64 = 2000;
 /// 缓冲下限：低于它只作为诊断标记，不阻塞 decode 线程（测试夹具）。
 #[cfg(test)]
 pub(crate) const MIN_BUFFER_MS: u64 = 1200;
-/// 控制周期：250ms 检查一次缓冲，不必每帧都判断。
-pub(crate) const CONTROL_INTERVAL_MS: u64 = 250;
-/// 一次丢帧后的冷却时间，避免连续跳变。
-pub(crate) const DROP_COOLDOWN_MS: u64 = 500;
-/// 缓冲超过 target + 100ms 时开始轻微加速追帧。
-pub(crate) const TEMPO_SOFT_MS: u64 = 100;
-/// 缓冲超过 target + 300ms 时加速到上限。
-pub(crate) const TEMPO_HARD_MS: u64 = 300;
-/// 轻加速：5%。
-pub(crate) const TEMPO_SOFT_SPEED: f32 = 1.05;
-/// 重加速：10%。
-pub(crate) const TEMPO_HARD_SPEED: f32 = 1.10;
+/// 控制周期：100ms 检查一次缓冲；脚本加速 300ms、减速 50ms，取折中。
+pub(crate) const CONTROL_INTERVAL_MS: u64 = 100;
+/// 缓冲超过 target 时开始轻微加速（脚本 +0s → 1.1x）。
+pub(crate) const SPEEDUP_SOFT_MS: u64 = 0;
+/// 缓冲超过 target+1s 时 1.2x。
+pub(crate) const SPEEDUP_MID_MS: u64 = 1_000;
+/// 缓冲超过 target+2s 时 1.3x。
+pub(crate) const SPEEDUP_HIGH_MS: u64 = 2_000;
+/// 三档加速速度。
+pub(crate) const SPEEDUP_SOFT: f32 = 1.10;
+pub(crate) const SPEEDUP_MID: f32 = 1.20;
+pub(crate) const SPEEDUP_HIGH: f32 = 1.30;
+/// 缓冲低于 `min(600ms,target/2)` 时减速；脚本的 0.2/0.3 档统一到 0.6 下限。
+pub(crate) const SLOWDOWN_START_MS: u64 = 600;
+pub(crate) const SLOWDOWN_SPEED: f32 = 0.60;
 /// 帧队列硬上限：约 87s 音频。暂停缓存 cap 30s，恢复后还要容纳
 /// 生成中的 live 数据，所以不能只按 30s 配。
 pub(crate) const QUEUE_CAPACITY_FRAMES: usize = 4096;
@@ -307,21 +307,17 @@ fn span_of(state: &QueueState) -> Option<u64> {
 pub(crate) enum Control {
     /// 不需要动作。
     Idle,
-    /// 追到目标缓冲（调用方按最新 pts 计算阈值）。
-    DropTo(u64),
     /// 缓冲回到下限以上，结束一次饥饿。
     Recovered,
 }
 
-/// 250ms 周期的缓冲控制器。
+/// 100ms 周期的缓冲控制器。
 pub(crate) struct BufferController {
     last_tick: Option<Instant>,
-    last_drop: Option<Instant>,
     starving: bool,
     target_ms: u64,
-    max_ms: u64,
     min_ms: u64,
-    /// 当前 WSOLA 速度；只增不减（回到 target 才回 1.00）。
+    /// 当前 WSOLA 速度，由缓冲量直接决定。
     speed: f32,
 }
 
@@ -330,12 +326,10 @@ impl BufferController {
         let target_ms = target_buffer_ms();
         Self {
             last_tick: None,
-            last_drop: None,
             starving: false,
             target_ms,
-            max_ms: target_ms.saturating_add(500),
             min_ms: target_ms.saturating_sub(300),
-            speed: MIN_TEMPO_SPEED,
+            speed: NORMAL_TEMPO_SPEED,
         }
     }
 
@@ -344,30 +338,22 @@ impl BufferController {
         self.speed
     }
 
-    /// 距上次控制周期是否已满 250ms。
+    /// 本路的目标缓冲，仅用于日志/诊断。
+    pub(crate) fn target_ms(&self) -> u64 {
+        self.target_ms
+    }
+
+    /// 距上次控制周期是否已满 100ms。
     pub(crate) fn due(&self, now: Instant) -> bool {
         self.last_tick.is_none_or(|last| {
             now.saturating_duration_since(last) >= Duration::from_millis(CONTROL_INTERVAL_MS)
         })
     }
 
-    /// 推进一次控制周期。只有 `buffer > target+500ms` 且冷却已过才丢帧；
-    /// 其余时间只调整 WSOLA 速度；`buffer < target-300ms` 不再阻塞解码，
-    /// 调用方只在队列空时补静音。
+    /// 推进一次控制周期；只改 WSOLA 速度，不丢帧。
     pub(crate) fn tick(&mut self, now: Instant, buffer_ms: u64) -> Control {
         self.last_tick = Some(now);
-
-        let cooldown_ok = self.last_drop.is_none_or(|last| {
-            now.saturating_duration_since(last) >= Duration::from_millis(DROP_COOLDOWN_MS)
-        });
-        if buffer_ms > self.max_ms && cooldown_ok {
-            self.last_drop = Some(now);
-            // 丢帧后缓冲回到目标附近，追帧速度同步回 1.00，避免继续压缩。
-            self.speed = MIN_TEMPO_SPEED;
-            return Control::DropTo(self.target_ms);
-        }
-
-        self.speed = tempo_speed(self.speed, buffer_ms, self.target_ms);
+        self.speed = script_speed(buffer_ms, self.target_ms);
 
         if self.starving && buffer_ms >= self.min_ms {
             self.starving = false;
@@ -387,21 +373,28 @@ impl BufferController {
     }
 }
 
-/// 由缓冲量决定 WSOLA 速度（只加速，不降速）。
+/// 浏览器脚本的追帧策略：
 ///
-/// - `buffer > target + 300ms` → 1.10x；
-/// - `buffer > target + 100ms` → 1.05x；
-/// - `buffer <= target` → 1.00x；
-/// - `(target, target + 100ms]` 保持当前速度，避免在阈值上反复跳变。
-fn tempo_speed(current: f32, buffer_ms: u64, target_ms: u64) -> f32 {
-    if buffer_ms > target_ms.saturating_add(TEMPO_HARD_MS) {
-        TEMPO_HARD_SPEED
-    } else if buffer_ms > target_ms.saturating_add(TEMPO_SOFT_MS) {
-        TEMPO_SOFT_SPEED
-    } else if buffer_ms <= target_ms {
-        MIN_TEMPO_SPEED
+/// - `buffer > target + 2s` → 1.30x；
+/// - `buffer > target + 1s` → 1.20x；
+/// - `buffer > target` → 1.10x；
+/// - `buffer < min(600ms, target/2)` → 0.60x；
+/// - 其余 1.00x。
+///
+/// 脚本的 0.3/0.2 减速档统一映射到 0.60 下限，因为 20ms WSOLA 窗
+/// 在更低速度下无法保持重叠。
+fn script_speed(buffer_ms: u64, target_ms: u64) -> f32 {
+    let slow_start = SLOWDOWN_START_MS.min(target_ms / 2);
+    if buffer_ms < slow_start {
+        SLOWDOWN_SPEED
+    } else if buffer_ms > target_ms.saturating_add(SPEEDUP_HIGH_MS) {
+        SPEEDUP_HIGH
+    } else if buffer_ms > target_ms.saturating_add(SPEEDUP_MID_MS) {
+        SPEEDUP_MID
+    } else if buffer_ms > target_ms.saturating_add(SPEEDUP_SOFT_MS) {
+        SPEEDUP_SOFT
     } else {
-        current.clamp(MIN_TEMPO_SPEED, TEMPO_HARD_SPEED)
+        NORMAL_TEMPO_SPEED
     }
 }
 
@@ -487,48 +480,66 @@ mod tests {
     }
 
     #[test]
-    fn controller_drops_only_above_the_maximum() {
+    fn controller_uses_the_script_speed_tiers() {
         let base = Instant::now();
         let mut controller = BufferController::new();
 
-        assert!(controller.due(base));
         assert_eq!(controller.tick(base, TARGET_BUFFER_MS), Control::Idle);
-        assert!(!controller.due(base + Duration::from_millis(100)));
+        assert_eq!(controller.speed(), 1.0);
+
         assert_eq!(
-            controller.tick(base + Duration::from_millis(250), MAX_BUFFER_MS),
-            Control::Idle,
-            "2000ms is still acceptable"
+            controller.tick(base + Duration::from_millis(100), TARGET_BUFFER_MS + 1),
+            Control::Idle
         );
+        assert_eq!(controller.speed(), 1.10);
+
         assert_eq!(
-            controller.tick(base + Duration::from_millis(500), MAX_BUFFER_MS + 1),
-            Control::DropTo(TARGET_BUFFER_MS)
+            controller.tick(base + Duration::from_millis(200), TARGET_BUFFER_MS + 1_001),
+            Control::Idle
         );
+        assert_eq!(controller.speed(), 1.20);
+
         assert_eq!(
-            controller.tick(base + Duration::from_millis(750), MAX_BUFFER_MS + 1),
-            Control::Idle,
-            "cooldown blocks a second drop within 500ms"
+            controller.tick(base + Duration::from_millis(300), TARGET_BUFFER_MS + 2_001),
+            Control::Idle
         );
+        assert_eq!(controller.speed(), 1.30);
+
         assert_eq!(
-            controller.tick(base + Duration::from_millis(1_000), MAX_BUFFER_MS + 1),
-            Control::DropTo(TARGET_BUFFER_MS)
+            controller.tick(base + Duration::from_millis(400), TARGET_BUFFER_MS),
+            Control::Idle
         );
+        assert_eq!(controller.speed(), 1.0, "target itself returns to 1.00");
     }
 
     #[test]
-    fn controller_never_drops_below_the_maximum() {
+    fn controller_slows_down_at_the_floor_without_going_below_it() {
         let base = Instant::now();
         let mut controller = BufferController::new();
-        for (index, buffer) in [0u64, 300, MIN_BUFFER_MS, TARGET_BUFFER_MS, MAX_BUFFER_MS]
-            .into_iter()
-            .enumerate()
-        {
-            let now = base + Duration::from_millis(250 * index as u64);
+        for (index, buffer) in [599u64, 300, 200, 0].into_iter().enumerate() {
+            let now = base + Duration::from_millis(100 * index as u64);
+            assert_eq!(controller.tick(now, buffer), Control::Idle);
             assert_eq!(
-                controller.tick(now, buffer),
-                Control::Idle,
-                "buffer {buffer}"
+                controller.speed(),
+                SLOWDOWN_SPEED,
+                "buffer {buffer}ms must use the 0.60x floor"
             );
         }
+        assert_eq!(
+            controller.tick(base + Duration::from_millis(500), SLOWDOWN_START_MS),
+            Control::Idle
+        );
+        assert_eq!(controller.speed(), 1.0);
+    }
+
+    #[test]
+    fn low_watermark_is_half_target_below_the_script_cap() {
+        assert_eq!(script_speed(499, 1_000), SLOWDOWN_SPEED);
+        assert_eq!(script_speed(500, 1_000), 1.0);
+        assert_eq!(script_speed(599, 1_500), SLOWDOWN_SPEED);
+        assert_eq!(script_speed(600, 1_500), 1.0);
+        assert_eq!(script_speed(599, 2_000), SLOWDOWN_SPEED);
+        assert_eq!(script_speed(600, 2_000), 1.0);
     }
 
     #[test]
@@ -539,91 +550,23 @@ mod tests {
         assert!(controller.note_starved());
         assert!(!controller.note_starved(), "same episode counts once");
         assert_eq!(
-            controller.tick(base + Duration::from_millis(250), MIN_BUFFER_MS),
+            controller.tick(base + Duration::from_millis(100), MIN_BUFFER_MS),
             Control::Recovered
         );
         assert!(controller.note_starved(), "a new episode counts again");
     }
 
     #[test]
-    fn controller_ramps_tempo_above_the_soft_and_hard_thresholds() {
+    fn controller_never_returns_a_drop_action() {
         let base = Instant::now();
         let mut controller = BufferController::new();
-        assert_eq!(controller.speed(), 1.0);
-
-        // (target, target+100] 保持当前速度，不因为噪声跳变。
-        assert_eq!(controller.tick(base, TARGET_BUFFER_MS + 50), Control::Idle);
-        assert_eq!(controller.speed(), 1.0);
-
-        assert_eq!(
-            controller.tick(base + Duration::from_millis(250), TARGET_BUFFER_MS + 150),
-            Control::Idle,
-            "tempo chases the buffer instead of dropping frames"
-        );
-        assert_eq!(controller.speed(), 1.05);
-
-        assert_eq!(
-            controller.tick(base + Duration::from_millis(500), TARGET_BUFFER_MS + 350),
-            Control::Idle
-        );
-        assert_eq!(controller.speed(), 1.10);
-    }
-
-    #[test]
-    fn controller_returns_to_one_x_only_at_target() {
-        let base = Instant::now();
-        let mut controller = BufferController::new();
-        let step = Duration::from_millis(250);
-
-        assert_eq!(controller.tick(base, TARGET_BUFFER_MS + 350), Control::Idle);
-        assert_eq!(controller.speed(), 1.10);
-        assert_eq!(
-            controller.tick(base + step, TARGET_BUFFER_MS + 150),
-            Control::Idle
-        );
-        assert_eq!(controller.speed(), 1.05);
-        // 回到 target 上方的保持带：不急着回 1.00。
-        assert_eq!(
-            controller.tick(base + step * 2, TARGET_BUFFER_MS + 50),
-            Control::Idle
-        );
-        assert_eq!(controller.speed(), 1.05);
-        assert_eq!(
-            controller.tick(base + step * 3, TARGET_BUFFER_MS),
-            Control::Idle
-        );
-        assert_eq!(controller.speed(), 1.0);
-    }
-
-    #[test]
-    fn controller_never_slows_down() {
-        let base = Instant::now();
-        let mut controller = BufferController::new();
-        for (index, buffer) in [0u64, 200, TARGET_BUFFER_MS - 1, TARGET_BUFFER_MS]
+        for (index, buffer) in [0u64, 600, TARGET_BUFFER_MS, TARGET_BUFFER_MS + 2_001]
             .into_iter()
             .enumerate()
         {
-            let now = base + Duration::from_millis(250 * index as u64);
-            let _ = controller.tick(now, buffer);
-            assert!(
-                controller.speed() >= 1.0,
-                "speed must never drop below 1.0, got {} at {buffer}ms",
-                controller.speed()
-            );
+            let now = base + Duration::from_millis(100 * index as u64);
+            assert_eq!(controller.tick(now, buffer), Control::Idle);
         }
-    }
-
-    #[test]
-    fn hard_drop_still_wins_and_resets_tempo() {
-        let base = Instant::now();
-        let mut controller = BufferController::new();
-        assert_eq!(controller.tick(base, TARGET_BUFFER_MS + 350), Control::Idle);
-        assert_eq!(controller.speed(), 1.10);
-        assert_eq!(
-            controller.tick(base + Duration::from_millis(250), MAX_BUFFER_MS + 1),
-            Control::DropTo(TARGET_BUFFER_MS)
-        );
-        assert_eq!(controller.speed(), 1.0, "a hard drop returns to 1.00x");
     }
 
     #[test]

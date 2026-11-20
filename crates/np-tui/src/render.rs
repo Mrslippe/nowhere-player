@@ -331,19 +331,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         app.view_index + 1
     };
-    // 树超过 7 行时在计数前加溢出箭头；选中项始终在可见窗口内。
-    let mut tree_scroll = ScrollState::new(usize::from(inner.height));
-    tree_scroll.follow(app.view_index, app.views.len());
-    let tree_overflow = match (
-        tree_scroll.has_above(),
-        tree_scroll.has_below(app.views.len()),
-    ) {
-        (true, true) => "↕",
-        (true, false) => "↑",
-        (false, true) => "↓",
-        (false, false) => "",
-    };
-    let left_count = format!(" {tree_overflow}{view_number} of {} ", app.views.len());
+    let left_count = format!(" {view_number} of {} ", app.views.len());
     let count_style = Style::default()
         .fg(app.palette.faint)
         .add_modifier(Modifier::ITALIC);

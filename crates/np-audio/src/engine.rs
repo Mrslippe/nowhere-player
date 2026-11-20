@@ -59,6 +59,8 @@ pub(crate) struct Shared {
     playing: AtomicBool,
     /// Linear gain (`v^3`), stored as f32 bits.
     gain: AtomicU32,
+    /// Output mute after the sample tap, so the visualizer keeps its signal.
+    output_muted: AtomicBool,
     /// Frames handed to the device since the last seek.
     played_frames: AtomicU64,
     /// Position of the first frame after the last seek.
@@ -89,6 +91,7 @@ impl Shared {
         Self {
             playing: AtomicBool::new(false),
             gain: AtomicU32::new(1.0f32.to_bits()),
+            output_muted: AtomicBool::new(false),
             played_frames: AtomicU64::new(0),
             base_ms: AtomicU64::new(0),
             ended: AtomicBool::new(false),
@@ -157,6 +160,9 @@ impl Renderer {
         self.render_inner(out);
         if let Some(tap) = &self.tap {
             tap.write_interleaved(out, self.channels);
+        }
+        if self.shared.output_muted.load(Ordering::Acquire) {
+            out.fill(0.0);
         }
     }
 
@@ -416,6 +422,11 @@ impl Engine {
         self.shared
             .gain
             .store(gain_for_volume(volume).to_bits(), Ordering::Release);
+    }
+
+    /// 视频模式静音输出，但保留 sample tap 给可视化。
+    pub fn set_output_muted(&self, muted: bool) {
+        self.shared.output_muted.store(muted, Ordering::Release);
     }
 
     pub fn position_ms(&self) -> u64 {
@@ -714,6 +725,52 @@ mod tests {
         let last = out[699 * CHANNELS];
         assert!((last - 1.0).abs() < 1e-6, "last frame gain {last}");
         assert!(max_step(&out) <= 1.0 / FADE_FRAMES as f32 + 1e-6);
+    }
+
+    #[test]
+    fn output_mute_zeroes_the_device_buffer() {
+        let (mut renderer, mut producer, shared) = renderer(4096);
+        push(&mut producer, 2000);
+        shared.playing.store(true, Ordering::Release);
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+        assert!(out.iter().any(|sample| *sample != 0.0));
+
+        shared.output_muted.store(true, Ordering::Release);
+        out.fill(0.0);
+        renderer.render(&mut out);
+        assert!(
+            out.iter().all(|sample| *sample == 0.0),
+            "muted output must be silent"
+        );
+    }
+
+    #[test]
+    fn output_mute_keeps_the_visualizer_tap_alive() {
+        let (mut producer, consumer) = ring::spsc(4096 * CHANNELS);
+        let shared = Arc::new(Shared::new());
+        let (tap_writer, tap) = crate::tap::create(RATE);
+        let mut renderer = Renderer::new(
+            consumer,
+            Arc::clone(&shared),
+            CHANNELS,
+            RATE,
+            true,
+            Some(tap_writer),
+        );
+        push(&mut producer, 2000);
+        shared.playing.store(true, Ordering::Release);
+        shared.output_muted.store(true, Ordering::Release);
+
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.0));
+        let mut tap_out = [0.0f32; 700];
+        tap.latest(&mut tap_out);
+        assert!(
+            tap_out.iter().any(|sample| *sample != 0.0),
+            "mute must not zero the sample tap"
+        );
     }
 
     #[test]

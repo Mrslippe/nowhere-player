@@ -1,29 +1,25 @@
-//! 悬浮标题栏的 GDI 绘制：背景、标题、三个窗口按钮。
+//! 悬浮标题栏 + 底部控制条的 GDI 绘制：背景、标题、按钮、滑杆与文字。
 //!
-//! 只画 overlay 自己的 32px 客户区；视频子窗口完全不参与。
+//! 只画 overlay 自己的客户区；视频子窗口完全不参与。
 
 use windows::Win32::Foundation::{COLORREF, RECT};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush,
-    DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_NORMAL, FillRect,
-    GetStockObject, HDC, HFONT, HGDIOBJ, LineTo, MoveToEx, NULL_BRUSH, OUT_DEFAULT_PRECIS,
-    PAINTSTRUCT, PS_SOLID, Rectangle, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DRAW_TEXT_FORMAT, DT_END_ELLIPSIS, DT_LEFT,
+    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, Ellipse, EndPaint,
+    FF_DONTCARE, FW_NORMAL, FillRect, GetStockObject, HDC, HFONT, HGDIOBJ, LineTo, MoveToEx,
+    NULL_BRUSH, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, Rectangle, SelectObject,
+    SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::core::PCWSTR;
 
-use crate::layout::{Hit, Rect, button_rect, scale_dp, titlebar_height};
+use crate::layout::{
+    ControlHit, Hit, Rect, button_rect, control_layout, scale_dp, titlebar_height,
+};
 
 use super::Host;
+use super::icons::{IconKind, icon_area};
 use super::win::{to_rect, wide};
-
-const BACKGROUND: (u8, u8, u8) = (24, 24, 28);
-const TITLE: (u8, u8, u8) = (232, 232, 236);
-const BORDER: (u8, u8, u8) = (48, 48, 54);
-const BUTTON_HOVER: (u8, u8, u8) = (52, 52, 58);
-const CLOSE_HOVER: (u8, u8, u8) = (196, 43, 28);
-const CLOSE_GLYPH: (u8, u8, u8) = (255, 255, 255);
-const GLYPH: (u8, u8, u8) = (230, 230, 234);
 
 fn color((red, green, blue): (u8, u8, u8)) -> COLORREF {
     COLORREF(u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16))
@@ -107,19 +103,20 @@ pub(super) fn overlay(host: &Host) {
         return;
     }
 
-    fill(hdc, Rect::new(0, 0, width, height), BACKGROUND);
+    let theme = host.theme;
+    fill(hdc, Rect::new(0, 0, width, height), theme.surface);
 
     let close = button_rect(width, host.dpi, Hit::Close);
     let padding = scale_dp(12, host.dpi).max(4);
     let title_rect = Rect::new(padding, 0, (close.left - padding).max(padding), height);
-    draw_title(hdc, &host.title, title_rect, host.font);
+    draw_title(hdc, &host.title, title_rect, host.font, theme.text);
 
     line(
         hdc,
         (0, height.saturating_sub(1)),
         (width, height.saturating_sub(1)),
         1,
-        BORDER,
+        theme.line,
     );
 
     let stroke = scale_dp(1, host.dpi).max(1);
@@ -129,17 +126,19 @@ pub(super) fn overlay(host: &Host) {
         let hovered = host.titlebar.hovered() == Some(hit);
         if hovered {
             let hover = if hit == Hit::Close {
-                CLOSE_HOVER
+                theme.danger
             } else {
-                BUTTON_HOVER
+                theme.hover
             };
             fill(hdc, rect, hover);
         }
         let center = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+        // 关闭按钮 hover 时底色是 danger：用 accentFg 保证红底上的对比度；
+        // 未 hover 时与其它按钮一样用正文色，避免浅色主题下看不清。
         let glyph_color = if hovered && hit == Hit::Close {
-            CLOSE_GLYPH
+            theme.accent_fg
         } else {
-            GLYPH
+            theme.text
         };
         match hit {
             Hit::Minimize => line(
@@ -210,7 +209,232 @@ pub(super) fn overlay(host: &Host) {
     }
 }
 
-fn draw_title(hdc: HDC, title: &str, rect: Rect, font: HFONT) {
+/// 画一帧底部控制条。
+pub(super) fn controls(host: &Host) {
+    let layout = control_layout(host.client_w, host.client_h, host.dpi);
+    let bar = layout.bar;
+    let width = bar.width().max(0);
+    let height = bar.height().max(0);
+    let mut paint = PAINTSTRUCT::default();
+    // SAFETY: `host.controls` 是本进程创建的子窗口；paint 为本函数局部变量。
+    let hdc = unsafe { BeginPaint(host.controls, &mut paint) };
+    if hdc.is_invalid() {
+        return;
+    }
+
+    let theme = host.theme;
+    fill(hdc, Rect::new(0, 0, width, height), theme.surface);
+    // 只保留顶部 1px 分隔线；不再画上下双边框。
+    line(hdc, (0, 0), (width, 0), 1, theme.line);
+
+    let local = |rect: Rect| {
+        Rect::new(
+            rect.left - bar.left,
+            rect.top - bar.top,
+            rect.right - bar.left,
+            rect.bottom - bar.top,
+        )
+    };
+    let hovered = host.hovered_control;
+    let painter = host.icon_painter();
+    let background = |hit: ControlHit| {
+        if hovered == Some(hit) {
+            theme.hover
+        } else {
+            theme.surface
+        }
+    };
+
+    let play_pause = local(layout.play_pause);
+    hover_background(hdc, hovered, play_pause, ControlHit::PlayPause, theme.hover);
+    if host.paused {
+        // 暂停中显示播放三角：正文色。
+        painter.draw(
+            hdc,
+            play_pause,
+            IconKind::Play,
+            theme.text,
+            background(ControlHit::PlayPause),
+        );
+    } else {
+        // 播放中显示暂停双竖线：accent。
+        painter.draw(
+            hdc,
+            play_pause,
+            IconKind::Pause,
+            theme.accent,
+            background(ControlHit::PlayPause),
+        );
+    }
+
+    let refresh = local(layout.refresh);
+    hover_background(hdc, hovered, refresh, ControlHit::Refresh, theme.hover);
+    painter.draw(
+        hdc,
+        refresh,
+        IconKind::Refresh,
+        theme.text,
+        background(ControlHit::Refresh),
+    );
+
+    let mute = local(layout.mute);
+    hover_background(hdc, hovered, mute, ControlHit::Mute, theme.hover);
+    let (mute_icon, mute_color) = if host.volume == 0 {
+        (IconKind::Mute, theme.muted)
+    } else {
+        (IconKind::Volume, theme.text)
+    };
+    painter.draw(
+        hdc,
+        mute,
+        mute_icon,
+        mute_color,
+        background(ControlHit::Mute),
+    );
+
+    let slider = local(layout.slider);
+    let track = if hovered == Some(ControlHit::Volume) {
+        // 滑杆 hover 只提亮轨道 / 圆点，不画整块背景。
+        theme.muted
+    } else {
+        theme.line
+    };
+    draw_slider(hdc, slider, host.volume, track, theme.accent, theme.accent);
+
+    if !host.qualities.is_empty() {
+        let quality = local(layout.quality);
+        hover_background(hdc, hovered, quality, ControlHit::Quality, theme.hover);
+        let color = if hovered == Some(ControlHit::Quality) {
+            theme.text
+        } else {
+            theme.muted
+        };
+        let icon_background = background(ControlHit::Quality);
+        let label = host.quality_label();
+        if label.is_empty() {
+            // 没有清晰度标签时只显示 chevron。
+            painter.draw(hdc, quality, IconKind::Chevron, color, icon_background);
+        } else {
+            // 文字保留，chevron 单独绘制；不再依赖字体 `▾` 的基线。
+            let chevron = Rect::new(
+                (quality.right - icon_area(host.dpi)).max(quality.left),
+                quality.top,
+                quality.right,
+                quality.bottom,
+            );
+            let gap = scale_dp(2, host.dpi).max(0);
+            let label_rect = Rect::new(
+                quality.left,
+                quality.top,
+                (chevron.left - gap).max(quality.left),
+                quality.bottom,
+            );
+            draw_text(hdc, label, label_rect, host.font, DT_RIGHT, color);
+            painter.draw(hdc, chevron, IconKind::Chevron, color, icon_background);
+        }
+    }
+    draw_text(
+        hdc,
+        &host.cache_text(),
+        local(layout.cache),
+        host.font,
+        DT_RIGHT,
+        theme.faint,
+    );
+
+    // SAFETY: hdc 来自 BeginPaint，配对结束。
+    unsafe {
+        let _ = EndPaint(host.controls, &paint);
+    }
+}
+
+fn hover_background(
+    hdc: HDC,
+    hovered: Option<ControlHit>,
+    rect: Rect,
+    hit: ControlHit,
+    hover: (u8, u8, u8),
+) {
+    if hovered == Some(hit) {
+        fill(hdc, rect, hover);
+    }
+}
+
+fn filled_ellipse(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32, rgb: (u8, u8, u8)) {
+    // SAFETY: 画刷 / 空画笔只在调用期间使用；旧对象全部恢复并释放。
+    unsafe {
+        let brush = CreateSolidBrush(color(rgb));
+        if brush.is_invalid() {
+            return;
+        }
+        let old_brush = SelectObject(hdc, brush.into());
+        let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+        let _ = Ellipse(hdc, left, top, right, bottom);
+        let _ = SelectObject(hdc, old_pen);
+        let _ = SelectObject(hdc, old_brush);
+        let _ = DeleteObject(brush.into());
+    }
+}
+
+fn draw_slider(
+    hdc: HDC,
+    rect: Rect,
+    volume: u8,
+    track: (u8, u8, u8),
+    fill_color: (u8, u8, u8),
+    knob: (u8, u8, u8),
+) {
+    let left = rect.left + 2;
+    let right = rect.right - 2;
+    if right <= left {
+        return;
+    }
+    let cy = (rect.top + rect.bottom) / 2;
+    let x = left + ((right - left) * i32::from(volume.min(100))) / 100;
+    line(hdc, (left, cy), (right, cy), 2, track);
+    line(hdc, (left, cy), (x, cy), 2, fill_color);
+    filled_ellipse(hdc, x - 4, cy - 4, x + 4, cy + 4, knob);
+}
+
+fn draw_text(
+    hdc: HDC,
+    text: &str,
+    rect: Rect,
+    font: HFONT,
+    align: DRAW_TEXT_FORMAT,
+    rgb: (u8, u8, u8),
+) {
+    if text.is_empty() || rect.width() <= 0 {
+        return;
+    }
+    let mut text: Vec<u16> = text.encode_utf16().collect();
+    let mut text_rect = RECT {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    };
+    // SAFETY: 文本缓冲、字体和 rect 在调用期间有效；选择器在之后恢复。
+    unsafe {
+        let _ = SetBkMode(hdc, TRANSPARENT);
+        let _ = SetTextColor(hdc, color(rgb));
+        let object: HGDIOBJ = if font.0.is_null() {
+            GetStockObject(DEFAULT_GUI_FONT)
+        } else {
+            font.into()
+        };
+        let old = SelectObject(hdc, object);
+        let _ = DrawTextW(
+            hdc,
+            &mut text,
+            &mut text_rect,
+            align | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        let _ = SelectObject(hdc, old);
+    }
+}
+
+fn draw_title(hdc: HDC, title: &str, rect: Rect, font: HFONT, rgb: (u8, u8, u8)) {
     if title.is_empty() || rect.width() <= 0 {
         return;
     }
@@ -224,7 +448,7 @@ fn draw_title(hdc: HDC, title: &str, rect: Rect, font: HFONT) {
     // SAFETY: 文本缓冲、字体和 rect 在调用期间有效；选择器在之后恢复。
     unsafe {
         let _ = SetBkMode(hdc, TRANSPARENT);
-        let _ = SetTextColor(hdc, color(TITLE));
+        let _ = SetTextColor(hdc, color(rgb));
         let object: HGDIOBJ = if font.0.is_null() {
             GetStockObject(DEFAULT_GUI_FONT)
         } else {

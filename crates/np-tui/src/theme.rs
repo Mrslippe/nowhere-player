@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use np_app::{CmdError, ThemeApi, ThemeExportTarget};
 use np_core::theme::{
@@ -26,6 +27,12 @@ pub struct Palette {
     pub success: Color,
     pub line: Color,
     pub line_strong: Color,
+    /// 抬升背景（视频控制条 / 标题栏 surface）。
+    pub bg_elev: Color,
+    /// 控件 hover 背景。
+    pub bg_hover: Color,
+    /// 强调色上的前景。
+    pub accent_fg: Color,
 }
 
 impl Palette {
@@ -43,6 +50,9 @@ impl Palette {
         let success = color_or(&tokens.success, &default.success, &mut warnings);
         let line = color_or(&tokens.line, &default.line, &mut warnings);
         let line_strong = color_or(&tokens.line_strong, &default.line_strong, &mut warnings);
+        let bg_elev = color_or(&tokens.bg_elev, &default.bg_elev, &mut warnings);
+        let bg_hover = color_or(&tokens.bg_hover, &default.bg_hover, &mut warnings);
+        let accent_fg = color_or(&tokens.accent_fg, &default.accent_fg, &mut warnings);
         (
             Self {
                 bg,
@@ -56,6 +66,9 @@ impl Palette {
                 success,
                 line,
                 line_strong,
+                bg_elev,
+                bg_hover,
+                accent_fg,
             },
             warnings,
         )
@@ -80,8 +93,96 @@ impl Palette {
             success: Color::Green,
             line: Color::DarkGray,
             line_strong: Color::DarkGray,
+            // 终端没有 `#rrggbb`：视频窗口转换时按槽位回退 `default_dark()`。
+            bg_elev: Color::Reset,
+            bg_hover: Color::DarkGray,
+            accent_fg: Color::Reset,
         }
     }
+}
+
+/// 视频窗口主题：9 个具体 RGB，顺序与 `theme ...` 协议行一致。
+///
+/// 视频宿主是独立进程，不读主题 JSON，也不持有 `ratatui::Color`；TUI 每次
+/// 主题变化都把这一份颜色通过 stdin 发过去。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoTheme {
+    pub accent: [u8; 3],
+    /// 控制条 / 标题栏背景（`Palette::bg_elev`）。
+    pub surface: [u8; 3],
+    pub hover: [u8; 3],
+    pub text: [u8; 3],
+    pub muted: [u8; 3],
+    pub faint: [u8; 3],
+    pub line: [u8; 3],
+    pub danger: [u8; 3],
+    pub accent_fg: [u8; 3],
+}
+
+impl VideoTheme {
+    /// `Palette → VideoTheme`；非 RGB 的终端槽位逐个回退默认暗色。
+    pub fn from_palette(palette: &Palette) -> Self {
+        let fallback = default_palette();
+        Self {
+            accent: rgb_or(palette.accent, fallback.accent),
+            surface: rgb_or(palette.bg_elev, fallback.bg_elev),
+            hover: rgb_or(palette.bg_hover, fallback.bg_hover),
+            text: rgb_or(palette.fg, fallback.fg),
+            muted: rgb_or(palette.muted, fallback.muted),
+            faint: rgb_or(palette.faint, fallback.faint),
+            line: rgb_or(palette.line, fallback.line),
+            danger: rgb_or(palette.danger, fallback.danger),
+            accent_fg: rgb_or(palette.accent_fg, fallback.accent_fg),
+        }
+    }
+
+    /// 默认暗色（graphite）对应的视频主题。
+    pub fn default_dark() -> Self {
+        Self::from_palette(default_palette())
+    }
+
+    /// 九个颜色，顺序固定：accent / surface / hover / text / muted / faint /
+    /// line / danger / accentFg。
+    pub fn colors(self) -> [[u8; 3]; 9] {
+        [
+            self.accent,
+            self.surface,
+            self.hover,
+            self.text,
+            self.muted,
+            self.faint,
+            self.line,
+            self.danger,
+            self.accent_fg,
+        ]
+    }
+
+    /// 初始握手与运行期更新共用的协议行：`theme #.. #.. ...\n`。
+    ///
+    /// 只含颜色，不含 URL / Cookie / 标题，可安全写进 np-video 的 stdin。
+    pub fn protocol_line(self) -> String {
+        let mut line = String::from("theme");
+        for [red, green, blue] in self.colors() {
+            line.push_str(&format!(" #{red:02x}{green:02x}{blue:02x}"));
+        }
+        line.push('\n');
+        line
+    }
+}
+
+fn default_palette() -> &'static Palette {
+    static DEFAULT: OnceLock<Palette> = OnceLock::new();
+    DEFAULT.get_or_init(Palette::default_dark)
+}
+
+fn rgb_or(color: Color, fallback: Color) -> [u8; 3] {
+    let channel = |color: Color| match color {
+        Color::Rgb(red, green, blue) => Some([red, green, blue]),
+        _ => None,
+    };
+    channel(color)
+        .or_else(|| channel(fallback))
+        .unwrap_or([0, 0, 0])
 }
 
 fn color_or(value: &str, fallback: &str, warnings: &mut Vec<String>) -> Color {
@@ -346,5 +447,69 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("颜色非法"))
         );
+    }
+
+    #[test]
+    fn video_theme_reads_all_nine_palette_roles() {
+        let theme = VideoTheme::from_palette(&Palette::default_dark());
+        assert_eq!(theme.accent, [255, 180, 84]);
+        assert_eq!(theme.surface, [20, 23, 28]);
+        assert_eq!(theme.hover, [26, 30, 36]);
+        assert_eq!(theme.text, [233, 228, 218]);
+        assert_eq!(theme.muted, [167, 164, 158]);
+        assert_eq!(theme.faint, [125, 124, 120]);
+        assert_eq!(theme.line, [30, 32, 35]);
+        assert_eq!(theme.danger, [255, 139, 125]);
+        assert_eq!(theme.accent_fg, [13, 15, 18]);
+        assert_eq!(theme, VideoTheme::default_dark());
+    }
+
+    #[test]
+    fn milk_green_video_theme_is_light_surface_with_dark_text() {
+        let spec = np_core::theme::BuiltinTheme::find("milkgreen")
+            .expect("milkgreen")
+            .to_spec();
+        let (palette, warnings) = Palette::from_tokens(&spec.tokens);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let theme = VideoTheme::from_palette(&palette);
+        assert_eq!(theme.surface, [228, 233, 223]);
+        assert_eq!(theme.hover, [217, 224, 212]);
+        assert_eq!(theme.text, [30, 42, 34]);
+        assert_eq!(theme.muted, [74, 88, 80]);
+        assert_eq!(theme.faint, [138, 151, 142]);
+        assert_eq!(theme.accent, [63, 125, 91]);
+        assert_eq!(theme.line, [195, 204, 191]);
+        assert_eq!(theme.danger, [163, 58, 42]);
+        assert_eq!(theme.accent_fg, [238, 241, 234]);
+    }
+
+    #[test]
+    fn terminal_palette_falls_back_to_the_default_dark_rgb() {
+        // 终端主题只有 ANSI 槽位；视频窗口必须拿到具体 RGB，不能把 Reset 发过去。
+        assert_eq!(
+            VideoTheme::from_palette(&Palette::terminal()),
+            VideoTheme::default_dark()
+        );
+    }
+
+    #[test]
+    fn video_theme_line_has_nine_hex_colors_in_fixed_order() {
+        let line = VideoTheme::default_dark().protocol_line();
+        assert_eq!(
+            line,
+            "theme #ffb454 #14171c #1a1e24 #e9e4da #a7a49e #7d7c78 #1e2023 #ff8b7d #0d0f12\n"
+        );
+        let fields: Vec<&str> = line.trim_end().split(' ').collect();
+        assert_eq!(fields.len(), 10);
+        assert_eq!(fields[0], "theme");
+        for field in &fields[1..] {
+            assert_eq!(field.len(), 7, "{field}");
+            assert!(field.starts_with('#'), "{field}");
+            assert!(
+                field[1..].bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "{field}"
+            );
+        }
+        assert!(!line.contains("http") && !line.contains("token="));
     }
 }

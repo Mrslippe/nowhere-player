@@ -65,3 +65,5 @@ https://github.com/mpv-player/mpv/releases/tag/git-release
 6. 不要把 mpv 与 `np-tui.exe` 静态链接。
 
 `np-tui` / `np-video` 只通过独立子进程调用 mpv。
+
+视频窗口打开时，mpv 从同一条 FLV 同时输出音视频；TUI 直播音频静音但继续解码，关闭窗口后恢复。因此 `np-video` 与 `np-tui` 必须同包、同版本发布（协议 v2）；只替换其中一个会导致视频模式不可用并回退错误提示。

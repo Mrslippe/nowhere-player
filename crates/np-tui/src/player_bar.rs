@@ -153,7 +153,7 @@ pub(crate) fn draw_player_strip(
     );
 }
 
-/// 直播时间位：`LIVE`，缓冲可读时带上队列毫秒数（B1.2 的 900ms 目标）。
+/// 直播时间位：`LIVE`，缓冲可读时带上队列毫秒数（默认 900ms 目标）。
 fn live_time_label(buffer_ms: Option<u64>) -> String {
     match buffer_ms {
         Some(ms) if ms > 0 => format!("LIVE {ms}ms"),

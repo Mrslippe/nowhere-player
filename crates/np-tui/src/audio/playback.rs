@@ -98,6 +98,9 @@ impl TuiAudio {
         if let Some(player) = self.player.borrow().as_ref() {
             player.set_volume(volume);
         }
+        if self.video_uses_mpv_audio() {
+            self.set_video_volume(volume);
+        }
         self.volume.set(volume);
     }
 
@@ -487,6 +490,9 @@ impl PlayerApi for TuiAudio {
         let volume = volume.clamp(0.0, 1.0);
         if let Some(player) = self.player.borrow().as_ref() {
             player.set_volume(volume);
+        }
+        if self.video_uses_mpv_audio() {
+            self.set_video_volume(volume);
         }
         self.volume.set(volume);
         Ok(self.state())
