@@ -10,7 +10,57 @@ use np_core::theme::{
     BuiltinTheme, RawTheme, THEME_CONTRACT, ThemeError, ThemeSource, ThemeSpec, ThemeTokens,
 };
 use np_core::theme::{ThemeApplyReply, ThemeListEntry};
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
+
+/// 主题色的语义槽位；UI 组件只通过 [`Palette::color`] 取色。
+///
+/// 同一槽位在不同主题 / 终端回退下会落到不同具体色，组件不能假设槽位之间
+/// 存在某种颜色关系（选中态也不再是简单的 `fg` / `bg` 互换）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteToken {
+    /// 整屏背景；终端回退时是 `Color::Reset`（不填背景）。
+    Canvas,
+    /// 抬升背景（面板 / 浮层 / 视频控制条）。
+    Surface,
+    /// 控件 hover 背景。
+    SurfaceHover,
+    /// 正文前景。
+    Text,
+    /// 次要前景。
+    Muted,
+    /// 更弱的前景（占位符 / 分隔）。
+    Faint,
+    /// 强调色。
+    Accent,
+    /// 强调色的半透明底（已按当前主题背景合成）。
+    ///
+    /// 主题契约要求保留该槽位；当前 TUI 还没有半透明底控件消费它。
+    #[allow(dead_code)]
+    AccentSoft,
+    /// 强调色上的前景（按钮文字）。
+    AccentOn,
+    /// 细线 / 普通边框。
+    Border,
+    /// 强线 / 粗边框。
+    BorderStrong,
+    /// 选中行背景（RGB 主题）。
+    SelectionBg,
+    /// 选中行前景（RGB 主题）。
+    SelectionFg,
+    /// 禁用控件前景。
+    Disabled,
+    /// 错误色。
+    Danger,
+    /// 警告色。
+    Warn,
+    /// 成功色。
+    ///
+    /// 主题契约要求保留该槽位；当前 TUI 的成功提示走状态栏 `muted`。
+    #[allow(dead_code)]
+    Success,
+    /// 焦点边框。
+    Focus,
+}
 
 /// TUI 实际使用的颜色；结构轴只保留导出，不强行映射。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +72,8 @@ pub struct Palette {
     pub muted: Color,
     pub faint: Color,
     pub accent: Color,
+    /// 强调色的半透明底，已按当前主题 `bg` 合成。
+    pub accent_soft: Color,
     pub danger: Color,
     pub warn: Color,
     pub success: Color,
@@ -36,23 +88,83 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// 唯一取色入口：语义 token → 具体颜色。
+    pub fn color(&self, token: PaletteToken) -> Color {
+        match token {
+            PaletteToken::Canvas => self.bg.unwrap_or(Color::Reset),
+            PaletteToken::Surface => self.bg_elev,
+            PaletteToken::SurfaceHover => self.bg_hover,
+            PaletteToken::Text => self.fg,
+            PaletteToken::Muted => self.muted,
+            PaletteToken::Faint => self.faint,
+            PaletteToken::Accent => self.accent,
+            PaletteToken::AccentSoft => self.accent_soft,
+            PaletteToken::AccentOn => self.accent_fg,
+            PaletteToken::Border => self.line,
+            PaletteToken::BorderStrong => self.line_strong,
+            PaletteToken::SelectionBg => self.fg,
+            PaletteToken::SelectionFg => self.bg.unwrap_or(Color::Reset),
+            PaletteToken::Disabled => self.faint,
+            PaletteToken::Danger => self.danger,
+            PaletteToken::Warn => self.warn,
+            PaletteToken::Success => self.success,
+            PaletteToken::Focus => self.accent,
+        }
+    }
+
+    /// 整屏背景；`None` = 跟随终端，不铺底色（终端回退主题）。
+    pub fn canvas(&self) -> Option<Color> {
+        self.bg
+    }
+
+    /// 选中 / 光标反白：RGB 主题互换前后景；终端回退没有可互换的具体色，
+    /// 交给 `REVERSED` 让终端反转，避免 Reset 对 Reset 不可见。
+    pub fn selection_style(&self) -> Style {
+        if self.terminal || self.bg.is_none() {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+                .bg(self.color(PaletteToken::SelectionBg))
+                .fg(self.color(PaletteToken::SelectionFg))
+        }
+    }
+
     /// 从 14 个 token 生成；非法颜色保留默认值。
+    ///
+    /// `rgba()` / `#RRGGBBAA` 的 alpha 一律按本主题实际 `bg` 合成，不再假设
+    /// 固定 graphite 背景；`bg` 自身无法再合成，按不透明色处理。
     pub fn from_tokens(tokens: &ThemeTokens) -> (Self, Vec<String>) {
         let default = ThemeTokens::default();
         let mut warnings = Vec::new();
-        let bg = Some(color_or(&tokens.bg, &default.bg, &mut warnings));
-        let fg = color_or(&tokens.fg, &default.fg, &mut warnings);
-        let muted = color_or(&tokens.fg_muted, &default.fg_muted, &mut warnings);
-        let faint = color_or(&tokens.fg_faint, &default.fg_faint, &mut warnings);
-        let accent = color_or(&tokens.accent, &default.accent, &mut warnings);
-        let danger = color_or(&tokens.danger, &default.danger, &mut warnings);
-        let warn = color_or(&tokens.warn, &default.warn, &mut warnings);
-        let success = color_or(&tokens.success, &default.success, &mut warnings);
-        let line = color_or(&tokens.line, &default.line, &mut warnings);
-        let line_strong = color_or(&tokens.line_strong, &default.line_strong, &mut warnings);
-        let bg_elev = color_or(&tokens.bg_elev, &default.bg_elev, &mut warnings);
-        let bg_hover = color_or(&tokens.bg_hover, &default.bg_hover, &mut warnings);
-        let accent_fg = color_or(&tokens.accent_fg, &default.accent_fg, &mut warnings);
+        let bg_color = color_or(&tokens.bg, &default.bg, &mut warnings, None);
+        let bg = Some(bg_color);
+        let base = match bg_color {
+            Color::Rgb(red, green, blue) => Some((red, green, blue)),
+            _ => None,
+        };
+        let fg = color_or(&tokens.fg, &default.fg, &mut warnings, base);
+        let muted = color_or(&tokens.fg_muted, &default.fg_muted, &mut warnings, base);
+        let faint = color_or(&tokens.fg_faint, &default.fg_faint, &mut warnings, base);
+        let accent = color_or(&tokens.accent, &default.accent, &mut warnings, base);
+        let accent_soft = color_or(
+            &tokens.accent_soft,
+            &default.accent_soft,
+            &mut warnings,
+            base,
+        );
+        let danger = color_or(&tokens.danger, &default.danger, &mut warnings, base);
+        let warn = color_or(&tokens.warn, &default.warn, &mut warnings, base);
+        let success = color_or(&tokens.success, &default.success, &mut warnings, base);
+        let line = color_or(&tokens.line, &default.line, &mut warnings, base);
+        let line_strong = color_or(
+            &tokens.line_strong,
+            &default.line_strong,
+            &mut warnings,
+            base,
+        );
+        let bg_elev = color_or(&tokens.bg_elev, &default.bg_elev, &mut warnings, base);
+        let bg_hover = color_or(&tokens.bg_hover, &default.bg_hover, &mut warnings, base);
+        let accent_fg = color_or(&tokens.accent_fg, &default.accent_fg, &mut warnings, base);
         (
             Self {
                 bg,
@@ -61,6 +173,7 @@ impl Palette {
                 muted,
                 faint,
                 accent,
+                accent_soft,
                 danger,
                 warn,
                 success,
@@ -88,6 +201,8 @@ impl Palette {
             muted: Color::DarkGray,
             faint: Color::DarkGray,
             accent: Color::Cyan,
+            // 终端没有 alpha：半透明强调底退化为 hover 灰。
+            accent_soft: Color::DarkGray,
             danger: Color::Red,
             warn: Color::Yellow,
             success: Color::Green,
@@ -121,18 +236,21 @@ pub struct VideoTheme {
 
 impl VideoTheme {
     /// `Palette → VideoTheme`；非 RGB 的终端槽位逐个回退默认暗色。
+    ///
+    /// 与 UI 组件一样经由 [`Palette::color`] 取色；9 色协议顺序不变。
     pub fn from_palette(palette: &Palette) -> Self {
         let fallback = default_palette();
+        let rgb = |token: PaletteToken| rgb_or(palette.color(token), fallback.color(token));
         Self {
-            accent: rgb_or(palette.accent, fallback.accent),
-            surface: rgb_or(palette.bg_elev, fallback.bg_elev),
-            hover: rgb_or(palette.bg_hover, fallback.bg_hover),
-            text: rgb_or(palette.fg, fallback.fg),
-            muted: rgb_or(palette.muted, fallback.muted),
-            faint: rgb_or(palette.faint, fallback.faint),
-            line: rgb_or(palette.line, fallback.line),
-            danger: rgb_or(palette.danger, fallback.danger),
-            accent_fg: rgb_or(palette.accent_fg, fallback.accent_fg),
+            accent: rgb(PaletteToken::Accent),
+            surface: rgb(PaletteToken::Surface),
+            hover: rgb(PaletteToken::SurfaceHover),
+            text: rgb(PaletteToken::Text),
+            muted: rgb(PaletteToken::Muted),
+            faint: rgb(PaletteToken::Faint),
+            line: rgb(PaletteToken::Border),
+            danger: rgb(PaletteToken::Danger),
+            accent_fg: rgb(PaletteToken::AccentOn),
         }
     }
 
@@ -185,35 +303,69 @@ fn rgb_or(color: Color, fallback: Color) -> [u8; 3] {
         .unwrap_or([0, 0, 0])
 }
 
-fn color_or(value: &str, fallback: &str, warnings: &mut Vec<String>) -> Color {
-    parse_color(value)
+fn color_or(
+    value: &str,
+    fallback: &str,
+    warnings: &mut Vec<String>,
+    base: Option<(u8, u8, u8)>,
+) -> Color {
+    resolve_color(value, base)
         .map(|(r, g, b)| Color::Rgb(r, g, b))
         .or_else(|| {
             warnings.push(format!("非法颜色 {value}，回退 {fallback}"));
-            parse_color(fallback).map(|(r, g, b)| Color::Rgb(r, g, b))
+            resolve_color(fallback, base).map(|(r, g, b)| Color::Rgb(r, g, b))
         })
         .unwrap_or(Color::Rgb(0, 0, 0))
 }
 
-fn parse_color(value: &str) -> Option<(u8, u8, u8)> {
+/// 解析后的颜色：RGB + 不透明度；`#RRGGBBAA` 的 alpha 不能再被丢弃。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ParsedColor {
+    rgb: (u8, u8, u8),
+    alpha: f32,
+}
+
+/// 解析 token 并按当前主题背景合成半透明色。
+///
+/// `base` 是本主题实际 `bg` 的 RGB；`None`（例如 `bg` 自身）时按不透明处理。
+fn resolve_color(value: &str, base: Option<(u8, u8, u8)>) -> Option<(u8, u8, u8)> {
+    let parsed = parse_color(value)?;
+    Some(match base {
+        Some(bg) => blend_on(parsed.rgb, bg, parsed.alpha),
+        None => parsed.rgb,
+    })
+}
+
+fn parse_color(value: &str) -> Option<ParsedColor> {
     let value = value.trim();
     if let Some(hex) = value.strip_prefix('#') {
+        // 先判 ASCII 再切片：非法 UTF-8 边界不能 panic，只回退。
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let opaque = |rgb: (u8, u8, u8)| ParsedColor { rgb, alpha: 1.0 };
         return match hex.len() {
-            3 => Some((
+            3 => Some(opaque((
                 u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?,
                 u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?,
                 u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?,
-            )),
-            6 => Some((
+            ))),
+            6 => Some(opaque((
                 u8::from_str_radix(&hex[0..2], 16).ok()?,
                 u8::from_str_radix(&hex[2..4], 16).ok()?,
                 u8::from_str_radix(&hex[4..6], 16).ok()?,
-            )),
-            8 => Some((
-                u8::from_str_radix(&hex[0..2], 16).ok()?,
-                u8::from_str_radix(&hex[2..4], 16).ok()?,
-                u8::from_str_radix(&hex[4..6], 16).ok()?,
-            )),
+            ))),
+            8 => {
+                let alpha = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                Some(ParsedColor {
+                    rgb: (
+                        u8::from_str_radix(&hex[0..2], 16).ok()?,
+                        u8::from_str_radix(&hex[2..4], 16).ok()?,
+                        u8::from_str_radix(&hex[4..6], 16).ok()?,
+                    ),
+                    alpha: f32::from(alpha) / 255.0,
+                })
+            }
             _ => None,
         };
     }
@@ -226,9 +378,14 @@ fn parse_color(value: &str) -> Option<(u8, u8, u8)> {
             let r = parts[0].parse().ok()?;
             let g = parts[1].parse().ok()?;
             let b = parts[2].parse().ok()?;
-            let a: f32 = parts[3].parse().ok()?;
-            let bg = (13.0, 15.0, 18.0);
-            return Some(blend_on((r, g, b), (bg.0 as u8, bg.1 as u8, bg.2 as u8), a));
+            let alpha: f32 = parts[3].parse().ok()?;
+            if !alpha.is_finite() {
+                return None;
+            }
+            return Some(ParsedColor {
+                rgb: (r, g, b),
+                alpha: alpha.clamp(0.0, 1.0),
+            });
         }
     }
     None
@@ -389,8 +546,8 @@ mod tests {
     fn milk_green_foreground_contrast_is_at_least_seven() {
         let theme = np_core::theme::BuiltinTheme::find("milkgreen").expect("milkgreen");
         let spec = theme.to_spec();
-        let fg = parse_color(&spec.tokens.fg).expect("fg");
-        let bg = parse_color(&spec.tokens.bg).expect("bg");
+        let fg = parse_color(&spec.tokens.fg).expect("fg").rgb;
+        let bg = parse_color(&spec.tokens.bg).expect("bg").rgb;
         assert!(
             contrast_ratio(fg, bg) >= 7.0,
             "contrast {}",
@@ -511,5 +668,160 @@ mod tests {
             );
         }
         assert!(!line.contains("http") && !line.contains("token="));
+    }
+
+    #[test]
+    fn rgba_alpha_composites_on_the_actual_theme_background() {
+        // 浅色主题曾经按固定 graphite 混色，rgba 线会变成近黑的脏线。
+        let tokens = ThemeTokens {
+            bg: "#eef1ea".to_owned(),
+            line: "rgba(0, 0, 0, 0.5)".to_owned(),
+            line_strong: "rgba(255, 255, 255, 0.14)".to_owned(),
+            ..ThemeTokens::default()
+        };
+        let (palette, warnings) = Palette::from_tokens(&tokens);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(palette.line, Color::Rgb(119, 121, 117));
+        assert_eq!(palette.line_strong, Color::Rgb(240, 243, 237));
+        assert_ne!(
+            palette.line,
+            Color::Rgb(7, 8, 9),
+            "不能再按固定 graphite 合成"
+        );
+    }
+
+    #[test]
+    fn eight_digit_hex_alpha_is_no_longer_dropped() {
+        let parsed = parse_color("#11223344").expect("8 位 hex");
+        assert_eq!(parsed.rgb, (0x11, 0x22, 0x33));
+        assert!((parsed.alpha - 68.0 / 255.0).abs() < f32::EPSILON);
+
+        let tokens = ThemeTokens {
+            fg: "#11223344".to_owned(),
+            ..ThemeTokens::default()
+        };
+        let (palette, warnings) = Palette::from_tokens(&tokens);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // 合成到默认背景 #0d0f12，而不是直接取 #112233。
+        assert_eq!(palette.fg, Color::Rgb(0x0e, 0x14, 0x1b));
+        // alpha 为 FF 时保持原色。
+        let tokens = ThemeTokens {
+            fg: "#112233ff".to_owned(),
+            ..ThemeTokens::default()
+        };
+        let (palette, _) = Palette::from_tokens(&tokens);
+        assert_eq!(palette.fg, Color::Rgb(0x11, 0x22, 0x33));
+    }
+
+    #[test]
+    fn milk_green_soft_accent_is_composited_on_milk_green() {
+        let spec = np_core::theme::BuiltinTheme::find("milkgreen")
+            .expect("milkgreen")
+            .to_spec();
+        let (palette, warnings) = Palette::from_tokens(&spec.tokens);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // #3f7d5b22 → alpha 34/255，合成到 #eef1ea。
+        assert_eq!(palette.accent_soft, Color::Rgb(215, 226, 215));
+    }
+
+    #[test]
+    fn invalid_token_color_still_falls_back_to_the_default() {
+        let tokens = ThemeTokens {
+            accent: "not-a-color".to_owned(),
+            ..ThemeTokens::default()
+        };
+        let (palette, warnings) = Palette::from_tokens(&tokens);
+        assert_eq!(palette.accent, Color::Rgb(255, 180, 84));
+        assert!(
+            warnings.iter().any(|warning| warning.contains("非法颜色")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_colors_return_none_instead_of_panicking() {
+        // 多字节字符不能让 hex 切片 panic，只按非法值回退。
+        assert_eq!(parse_color("#🎵abcd"), None);
+        assert_eq!(parse_color("#éa"), None);
+        assert_eq!(parse_color("rgba(1, 2, 3, NaN)"), None);
+        assert_eq!(parse_color("rgba(1, 2, 300, 0.5)"), None);
+        assert_eq!(
+            parse_color("rgba(1, 2, 3, 1.5)").map(|c| c.alpha),
+            Some(1.0)
+        );
+
+        let mut warnings = Vec::new();
+        assert_eq!(
+            color_or("#🎵abcd", "#ffb454", &mut warnings, None),
+            Color::Rgb(255, 180, 84)
+        );
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn terminal_selection_is_reversed_instead_of_reset_on_reset() {
+        let terminal = Palette::terminal();
+        let style = terminal.selection_style();
+        assert!(style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(style.fg, None, "不能显式写 Reset 前台");
+        assert_eq!(style.bg, None, "不能显式写 Reset 背景");
+
+        let dark = Palette::default_dark();
+        let style = dark.selection_style();
+        assert!(!style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(style.bg, Some(dark.color(PaletteToken::SelectionBg)));
+        assert_eq!(style.fg, Some(dark.color(PaletteToken::SelectionFg)));
+        assert_ne!(style.bg, style.fg, "RGB 主题选中态仍互换前后景");
+    }
+
+    #[test]
+    fn palette_tokens_cover_all_semantic_slots() {
+        let palette = Palette::default_dark();
+        assert_eq!(palette.color(PaletteToken::Canvas), Color::Rgb(13, 15, 18));
+        assert_eq!(palette.color(PaletteToken::Surface), palette.bg_elev);
+        assert_eq!(palette.color(PaletteToken::SurfaceHover), palette.bg_hover);
+        assert_eq!(palette.color(PaletteToken::Text), palette.fg);
+        assert_eq!(palette.color(PaletteToken::Muted), palette.muted);
+        assert_eq!(palette.color(PaletteToken::Faint), palette.faint);
+        assert_eq!(palette.color(PaletteToken::Accent), palette.accent);
+        assert_eq!(palette.color(PaletteToken::AccentSoft), palette.accent_soft);
+        assert_eq!(palette.color(PaletteToken::AccentOn), palette.accent_fg);
+        assert_eq!(palette.color(PaletteToken::Border), palette.line);
+        assert_eq!(
+            palette.color(PaletteToken::BorderStrong),
+            palette.line_strong
+        );
+        assert_eq!(palette.color(PaletteToken::SelectionBg), palette.fg);
+        assert_eq!(
+            palette.color(PaletteToken::SelectionFg),
+            palette.bg.unwrap_or(Color::Reset)
+        );
+        assert_eq!(palette.color(PaletteToken::Disabled), palette.faint);
+        assert_eq!(palette.color(PaletteToken::Danger), palette.danger);
+        assert_eq!(palette.color(PaletteToken::Warn), palette.warn);
+        assert_eq!(palette.color(PaletteToken::Success), palette.success);
+        assert_eq!(palette.color(PaletteToken::Focus), palette.accent);
+
+        // 终端回退：Canvas 不填背景，其余槽位都是 ANSI 语义色。
+        let terminal = Palette::terminal();
+        assert_eq!(terminal.canvas(), None);
+        assert_eq!(terminal.color(PaletteToken::Canvas), Color::Reset);
+        assert_eq!(terminal.color(PaletteToken::Accent), Color::Cyan);
+    }
+
+    #[test]
+    fn video_theme_keeps_nine_roles_when_soft_accent_changes() {
+        let tokens = ThemeTokens {
+            accent_soft: "#ff0000".to_owned(),
+            ..ThemeTokens::default()
+        };
+        let (palette, warnings) = Palette::from_tokens(&tokens);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let theme = VideoTheme::from_palette(&palette);
+        assert_eq!(theme, VideoTheme::default_dark());
+        let colors = theme.colors();
+        assert_eq!(colors.len(), 9);
+        assert_eq!(colors[0], [255, 180, 84], "accent 仍在第一格");
+        assert_eq!(colors[8], [13, 15, 18], "accentFg 仍在最后一格");
     }
 }

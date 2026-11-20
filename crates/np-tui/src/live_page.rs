@@ -6,7 +6,7 @@
 //! 不退回底部 LIVE 条。
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthChar;
@@ -16,6 +16,7 @@ use crate::audio::TuiAudio;
 use crate::danmaku_overlay;
 use crate::input::{display_width, truncate_width};
 use crate::player_bar::draw_visual;
+use crate::theme::PaletteToken;
 use crate::ui::bars;
 use crate::ui::chrome::{self, StatusHints, StatusState};
 
@@ -221,7 +222,7 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
     }
     let y = area.y;
     let right = area.right();
-    let line_style = Style::default().fg(app.palette.line_strong);
+    let line_style = Style::default().fg(app.palette.color(PaletteToken::BorderStrong));
     frame.buffer_mut().set_string(area.x, y, "┏", line_style);
     frame
         .buffer_mut()
@@ -248,7 +249,7 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
             y,
             &anchor,
             Style::default()
-                .fg(app.palette.accent)
+                .fg(app.palette.color(PaletteToken::Accent))
                 .add_modifier(Modifier::BOLD),
         );
     }
@@ -264,9 +265,12 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
     if !volume {
         return;
     }
-    frame
-        .buffer_mut()
-        .set_string(label_x, y, " Vol ", Style::default().fg(app.palette.muted));
+    frame.buffer_mut().set_string(
+        label_x,
+        y,
+        " Vol ",
+        Style::default().fg(app.palette.color(PaletteToken::Muted)),
+    );
     let filled = ((player.volume().clamp(0.0, 1.0) * f32::from(VOLUME_CELLS)).round() as u16)
         .min(VOLUME_CELLS);
     let gap_x = right.saturating_sub(2);
@@ -288,7 +292,7 @@ fn draw_player_top(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, p
         gap_x,
         y,
         " ",
-        Style::default().bg(app.palette.bg.unwrap_or(Color::Reset)),
+        Style::default().bg(app.palette.color(PaletteToken::Canvas)),
     );
 }
 
@@ -299,13 +303,19 @@ fn draw_visual_area(frame: &mut ratatui::Frame, visual: Rect, app: &App) {
     let idle = app.spectrum.iter().all(|value| *value == 0.0);
     if idle {
         let line = "░".repeat(usize::from(visual.width));
-        let style = Style::default().fg(app.palette.faint);
+        let style = Style::default().fg(app.palette.color(PaletteToken::Faint));
         for y in visual.y..visual.bottom() {
             frame.buffer_mut().set_string(visual.x, y, &line, style);
         }
         return;
     }
-    draw_visual(frame, visual, app, app.palette.accent, app.palette.bg);
+    draw_visual(
+        frame,
+        visual,
+        app,
+        app.palette.color(PaletteToken::Accent),
+        app.palette.canvas(),
+    );
 }
 
 fn draw_info(frame: &mut ratatui::Frame, visual: Rect, app: &App, player: &TuiAudio) {
@@ -320,7 +330,7 @@ fn draw_info(frame: &mut ratatui::Frame, visual: Rect, app: &App, player: &TuiAu
     let text_width = display_width(&text) as u16;
     let patch_width = text_width.saturating_add(2).min(visual.width);
     let patch_x = visual.right().saturating_sub(patch_width);
-    let bg = app.palette.bg.unwrap_or(Color::Reset);
+    let bg = app.palette.color(PaletteToken::Canvas);
     let info_y = visual.bottom().saturating_sub(1);
     frame.buffer_mut().set_string(
         patch_x,
@@ -331,7 +341,9 @@ fn draw_info(frame: &mut ratatui::Frame, visual: Rect, app: &App, player: &TuiAu
     frame.render_widget(
         Paragraph::new(Line::from(TuiSpan::styled(
             text,
-            Style::default().fg(app.palette.muted).bg(bg),
+            Style::default()
+                .fg(app.palette.color(PaletteToken::Muted))
+                .bg(bg),
         )))
         .alignment(ratatui::layout::Alignment::Right),
         Rect {
@@ -359,7 +371,7 @@ fn draw_pitch(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, player
         time_x,
         row.y,
         player.live_elapsed_label(),
-        Style::default().fg(app.palette.muted),
+        Style::default().fg(app.palette.color(PaletteToken::Muted)),
     );
 }
 
@@ -369,8 +381,8 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
         return;
     }
     let y = layout.control_y;
-    let line_style = Style::default().fg(app.palette.line_strong);
-    let bg = Style::default().bg(app.palette.bg.unwrap_or(Color::Reset));
+    let line_style = Style::default().fg(app.palette.color(PaletteToken::BorderStrong));
+    let bg = Style::default().bg(app.palette.color(PaletteToken::Canvas));
     frame.buffer_mut().set_string(area.x, y, "┗", line_style);
     frame
         .buffer_mut()
@@ -384,9 +396,12 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
         .set_string(area.x.saturating_add(1), y, " ", bg);
 
     let mut x = area.x.saturating_add(2);
-    frame
-        .buffer_mut()
-        .set_string(x, y, "↻", Style::default().fg(app.palette.accent));
+    frame.buffer_mut().set_string(
+        x,
+        y,
+        "↻",
+        Style::default().fg(app.palette.color(PaletteToken::Accent)),
+    );
     x = x.saturating_add(1);
     frame.buffer_mut().set_string(x, y, " ", bg);
     x = x.saturating_add(1);
@@ -397,7 +412,7 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
         y,
         glyph,
         Style::default()
-            .fg(app.palette.accent)
+            .fg(app.palette.color(PaletteToken::Accent))
             .add_modifier(Modifier::BOLD),
     );
     x = x.saturating_add(display_width(glyph) as u16);
@@ -419,7 +434,7 @@ fn draw_control(frame: &mut ratatui::Frame, layout: &LiveLayout, app: &App, play
             text_x,
             y,
             &buffer_text,
-            Style::default().fg(app.palette.muted),
+            Style::default().fg(app.palette.color(PaletteToken::Muted)),
         );
         frame
             .buffer_mut()

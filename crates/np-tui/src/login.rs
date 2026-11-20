@@ -7,13 +7,13 @@ use std::time::Duration;
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Clear, Paragraph};
 
 use np_live::auth::{AuthStore, BiliAuth, QR_POLL_INTERVAL, QrStatus, generate_qr, poll_qr};
 use np_sources::ReqwestTransport;
 
-use crate::theme::Palette;
+use crate::theme::{Palette, PaletteToken};
 
 enum LoginEvent {
     Qr(Vec<String>),
@@ -157,7 +157,7 @@ impl LoginUi {
             return;
         }
         frame.render_widget(Clear, area);
-        let bg = palette.bg.unwrap_or(Color::Reset);
+        let bg = palette.color(PaletteToken::Canvas);
         let status = if self.status.is_empty() {
             "B站登录 · Esc 取消 · R 刷新".to_owned()
         } else {
@@ -165,7 +165,11 @@ impl LoginUi {
         };
         let status_y = area.bottom().saturating_sub(1);
         frame.render_widget(
-            Paragraph::new(status).style(Style::default().fg(palette.muted).bg(bg)),
+            Paragraph::new(status).style(
+                Style::default()
+                    .fg(palette.color(PaletteToken::Muted))
+                    .bg(bg),
+            ),
             Rect {
                 x: area.x,
                 y: status_y,
@@ -177,7 +181,11 @@ impl LoginUi {
             frame.render_widget(
                 Paragraph::new("正在生成二维码…")
                     .alignment(ratatui::layout::Alignment::Center)
-                    .style(Style::default().fg(palette.fg).bg(bg)),
+                    .style(
+                        Style::default()
+                            .fg(palette.color(PaletteToken::Text))
+                            .bg(bg),
+                    ),
                 area,
             );
             return;
@@ -187,7 +195,11 @@ impl LoginUi {
             frame.render_widget(
                 Paragraph::new("终端高度不足，无法显示二维码")
                     .alignment(ratatui::layout::Alignment::Center)
-                    .style(Style::default().fg(palette.accent).bg(bg)),
+                    .style(
+                        Style::default()
+                            .fg(palette.color(PaletteToken::Accent))
+                            .bg(bg),
+                    ),
                 area,
             );
             return;
@@ -205,7 +217,11 @@ impl LoginUi {
             .y
             .saturating_add(area.height.saturating_sub(qr_height + 1) / 2);
         frame.render_widget(
-            Paragraph::new(self.qr_lines.join("\n")).style(Style::default().fg(palette.fg).bg(bg)),
+            Paragraph::new(self.qr_lines.join("\n")).style(
+                Style::default()
+                    .fg(palette.color(PaletteToken::Text))
+                    .bg(bg),
+            ),
             Rect {
                 x,
                 y,

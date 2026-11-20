@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use crate::glyphs;
-use crate::theme::Palette;
+use crate::theme::{Palette, PaletteToken};
 
 /// 从 `area.x` 开始按 `spacing` 列间距画 `total` 个块，前 `filled` 个高亮。
 ///
@@ -24,8 +24,8 @@ pub(crate) fn draw_block_bar(
         return;
     }
     let filled = filled.min(total);
-    let bright = Style::default().fg(palette.accent);
-    let dark = Style::default().fg(palette.faint);
+    let bright = Style::default().fg(palette.color(PaletteToken::Accent));
+    let dark = Style::default().fg(palette.color(PaletteToken::Faint));
     for index in 0..total {
         let offset = u16::try_from(index)
             .unwrap_or(u16::MAX)

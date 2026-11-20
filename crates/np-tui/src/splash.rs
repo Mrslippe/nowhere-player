@@ -8,11 +8,12 @@ use np_core::SettingValue;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::layout::Alignment;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block as TuiBlock, Borders, Paragraph};
 
 use crate::app::App;
+use crate::theme::PaletteToken;
 use np_app::ThemeApi;
 
 pub(crate) use crate::logo::splash_art;
@@ -47,16 +48,16 @@ where
         frame.buffer_mut().set_style(
             area,
             Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
+                .bg(app.palette.color(PaletteToken::Canvas))
+                .fg(app.palette.color(PaletteToken::Text)),
         );
         let block = TuiBlock::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(app.palette.line))
+            .border_style(Style::default().fg(app.palette.color(PaletteToken::Border)))
             .style(
                 Style::default()
-                    .bg(app.palette.bg.unwrap_or(Color::Reset))
-                    .fg(app.palette.fg),
+                    .bg(app.palette.color(PaletteToken::Canvas))
+                    .fg(app.palette.color(PaletteToken::Text)),
             );
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -78,8 +79,8 @@ where
         frame.render_widget(
             Paragraph::new(lines).alignment(Alignment::Center).style(
                 Style::default()
-                    .bg(app.palette.bg.unwrap_or(Color::Reset))
-                    .fg(app.palette.fg),
+                    .bg(app.palette.color(PaletteToken::Canvas))
+                    .fg(app.palette.color(PaletteToken::Text)),
             ),
             content_area,
         );

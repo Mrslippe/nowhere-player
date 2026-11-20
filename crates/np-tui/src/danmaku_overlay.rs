@@ -21,7 +21,7 @@ use crate::audio::TuiAudio;
 use crate::input::{display_width, truncate_width};
 use crate::live_page::LiveLayout;
 use crate::model::Focus;
-use crate::theme::Palette;
+use crate::theme::{Palette, PaletteToken};
 
 /// 浮层宽度：34 = 左框 1 + 内容 32 + 右上 / 右下角 1；72×24 下占 x36..x69。
 pub(crate) const OVERLAY_WIDTH: u16 = 34;
@@ -365,7 +365,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
         return;
     }
     let palette = &app.palette;
-    let bg = palette.bg.unwrap_or(Color::Reset);
+    let bg = palette.color(PaletteToken::Canvas);
     let fill = " ".repeat(usize::from(area.width));
     for y in area.y..area.bottom() {
         frame
@@ -373,7 +373,9 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
             .set_string(area.x, y, &fill, Style::default().bg(bg));
     }
 
-    let border = Style::default().fg(palette.line_strong).bg(bg);
+    let border = Style::default()
+        .fg(palette.color(PaletteToken::BorderStrong))
+        .bg(bg);
     let right = area.right().saturating_sub(1);
     // 只画左竖边；消息行与 Input 行右侧保持空白。
     for y in area.y.saturating_add(1)..area.bottom() {
@@ -412,7 +414,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
         separator_y,
         INPUT_LABEL,
         Style::default()
-            .fg(palette.accent)
+            .fg(palette.color(PaletteToken::Accent))
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     );
@@ -440,13 +442,15 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &T
         input_area.x,
         input_area.y,
         ">",
-        Style::default().fg(palette.accent).bg(bg),
+        Style::default()
+            .fg(palette.color(PaletteToken::Accent))
+            .bg(bg),
     );
 }
 
 fn draw_title(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAudio) {
     let palette = &app.palette;
-    let bg = palette.bg.unwrap_or(Color::Reset);
+    let bg = palette.color(PaletteToken::Canvas);
     let right = area.right().saturating_sub(1);
     let title_x = area.x.saturating_add(1);
     frame.buffer_mut().set_string(
@@ -454,7 +458,7 @@ fn draw_title(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAud
         area.y,
         TITLE_TEXT,
         Style::default()
-            .fg(palette.accent)
+            .fg(palette.color(PaletteToken::Accent))
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     );
@@ -465,7 +469,9 @@ fn draw_title(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAud
         online_x,
         area.y,
         &online,
-        Style::default().fg(palette.muted).bg(bg),
+        Style::default()
+            .fg(palette.color(PaletteToken::Muted))
+            .bg(bg),
     );
 
     let label = title_label(app.danmaku_overlay.offset(), app.danmaku_overlay.unread());
@@ -484,9 +490,13 @@ fn draw_title(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAud
         return;
     }
     let style = if app.danmaku_overlay.unread() > 0 {
-        Style::default().fg(palette.warn).bg(bg)
+        Style::default()
+            .fg(palette.color(PaletteToken::Warn))
+            .bg(bg)
     } else {
-        Style::default().fg(palette.muted).bg(bg)
+        Style::default()
+            .fg(palette.color(PaletteToken::Muted))
+            .bg(bg)
     };
     frame
         .buffer_mut()
@@ -605,7 +615,7 @@ fn draw_messages(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &Tui
         return;
     }
     let palette = &app.palette;
-    let bg = palette.bg.unwrap_or(Color::Reset);
+    let bg = palette.color(PaletteToken::Canvas);
     let messages = player.danmaku_messages();
     let width = usize::from(area.width);
     let lines = wrap_messages(&messages, width, player.own_bili_uid());
@@ -619,9 +629,14 @@ fn draw_messages(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &Tui
             .x
             .saturating_add(area.width.saturating_sub(display_width(&text) as u16) / 2);
         let y = area.y.saturating_add(area.height / 2);
-        frame
-            .buffer_mut()
-            .set_string(x, y, &text, Style::default().fg(palette.faint).bg(bg));
+        frame.buffer_mut().set_string(
+            x,
+            y,
+            &text,
+            Style::default()
+                .fg(palette.color(PaletteToken::Faint))
+                .bg(bg),
+        );
         return;
     }
 
@@ -648,13 +663,17 @@ fn draw_line(
     for (accent, text) in &line.segments {
         let style = if line.own {
             Style::default()
-                .fg(palette.accent)
+                .fg(palette.color(PaletteToken::Accent))
                 .bg(bg)
                 .add_modifier(Modifier::BOLD)
         } else if *accent {
-            Style::default().fg(palette.accent).bg(bg)
+            Style::default()
+                .fg(palette.color(PaletteToken::Accent))
+                .bg(bg)
         } else {
-            Style::default().fg(palette.fg).bg(bg)
+            Style::default()
+                .fg(palette.color(PaletteToken::Text))
+                .bg(bg)
         };
         frame.buffer_mut().set_string(cursor, y, text, style);
         cursor = cursor.saturating_add(display_width(text) as u16);

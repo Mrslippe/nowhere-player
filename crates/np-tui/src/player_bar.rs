@@ -10,6 +10,7 @@ use crate::app::{App, VisualMode};
 use crate::audio::TuiAudio;
 use crate::fft::spectrum;
 use crate::keymap::{self, Action};
+use crate::theme::PaletteToken;
 use crate::transport::TransportAvailability;
 use crate::truncate_width;
 use crate::ui::bars::draw_block_bar;
@@ -54,14 +55,20 @@ pub(crate) fn draw_player_strip(
     if visual_height > 0 {
         if idle {
             let line = "░".repeat(content.width as usize);
-            let style = Style::default().fg(app.palette.faint);
+            let style = Style::default().fg(app.palette.color(PaletteToken::Faint));
             for y in visual_area.y..visual_area.bottom() {
                 frame
                     .buffer_mut()
                     .set_string(visual_area.x, y, &line, style);
             }
         } else {
-            draw_visual(frame, visual_area, app, app.palette.accent, app.palette.bg);
+            draw_visual(
+                frame,
+                visual_area,
+                app,
+                app.palette.color(PaletteToken::Accent),
+                app.palette.canvas(),
+            );
         }
     }
 
@@ -96,7 +103,7 @@ pub(crate) fn draw_player_strip(
     if title_width > 0 {
         let patch_width = title_width.saturating_add(2).min(content.width);
         let patch_x = content.right().saturating_sub(patch_width);
-        let bg = app.palette.bg.unwrap_or(Color::Reset);
+        let bg = app.palette.color(PaletteToken::Canvas);
         frame.buffer_mut().set_string(
             patch_x,
             overlay_y,
@@ -106,7 +113,9 @@ pub(crate) fn draw_player_strip(
         frame.render_widget(
             Paragraph::new(Line::from(TuiSpan::styled(
                 title,
-                Style::default().fg(app.palette.muted).bg(bg),
+                Style::default()
+                    .fg(app.palette.color(PaletteToken::Muted))
+                    .bg(bg),
             )))
             .alignment(Alignment::Right),
             Rect {
@@ -143,7 +152,7 @@ pub(crate) fn draw_player_strip(
     frame.render_widget(
         Paragraph::new(time)
             .alignment(Alignment::Right)
-            .style(Style::default().fg(app.palette.muted)),
+            .style(Style::default().fg(app.palette.color(PaletteToken::Muted))),
         Rect {
             x: content.right().saturating_sub(time_width),
             y: content.bottom().saturating_sub(1),
@@ -200,13 +209,13 @@ fn draw_player_frame(
     let bottom_fill = width.saturating_sub(2 + mode_w);
     let top = format!("┏{title}{}┓", "━".repeat(top_fill));
     let bottom = format!("┗{}{mode}┛", "━".repeat(bottom_fill));
-    let line = Style::default().fg(app.palette.line_strong);
+    let line = Style::default().fg(app.palette.color(PaletteToken::BorderStrong));
     frame.buffer_mut().set_string(area.x, area.y, &top, line);
     frame.buffer_mut().set_string(
         area.x.saturating_add(1),
         area.y,
         title,
-        Style::default().fg(app.palette.accent),
+        Style::default().fg(app.palette.color(PaletteToken::Accent)),
     );
     frame
         .buffer_mut()
@@ -215,7 +224,7 @@ fn draw_player_frame(
         area.right().saturating_sub(mode_w as u16 + 1),
         area.bottom().saturating_sub(1),
         mode,
-        Style::default().fg(app.palette.muted),
+        Style::default().fg(app.palette.color(PaletteToken::Muted)),
     );
     let volume_width = 20u16;
     if area.width > volume_width + 8 {
@@ -223,7 +232,7 @@ fn draw_player_frame(
             ((volume.clamp(0.0, 1.0) * f32::from(volume_width)).round() as u16).min(volume_width);
         let gap_x = area.right().saturating_sub(2);
         let start = gap_x.saturating_sub(volume_width);
-        let bg = app.palette.bg.unwrap_or(Color::Reset);
+        let bg = app.palette.color(PaletteToken::Canvas);
         draw_block_bar(
             frame,
             Rect {
@@ -246,7 +255,7 @@ fn draw_player_frame(
             start.saturating_sub(label_width),
             area.y,
             label,
-            Style::default().fg(app.palette.muted),
+            Style::default().fg(app.palette.color(PaletteToken::Muted)),
         );
     }
     draw_transport(frame, area, app, transport);
@@ -263,7 +272,7 @@ fn draw_transport(
     }
     let bottom = area.bottom().saturating_sub(1);
     let start_x = area.x.saturating_add(2);
-    let edge_style = Style::default().fg(app.palette.line);
+    let edge_style = Style::default().fg(app.palette.color(PaletteToken::Border));
     // 左端留一格空白，按钮从下一格开始。
     frame
         .buffer_mut()
@@ -272,21 +281,21 @@ fn draw_transport(
     let hints = app.show_key_hints;
     let gap = if hints { "  " } else { " " };
     let key_style = Style::default()
-        .fg(app.palette.faint)
+        .fg(app.palette.color(PaletteToken::Faint))
         .add_modifier(Modifier::ITALIC);
     let disabled = Style::default()
-        .fg(app.palette.faint)
+        .fg(app.palette.color(PaletteToken::Disabled))
         .add_modifier(Modifier::DIM);
-    let button_style = Style::default().fg(app.palette.accent);
+    let button_style = Style::default().fg(app.palette.color(PaletteToken::Accent));
     let paused_style = Style::default()
-        .fg(app.palette.fg)
+        .fg(app.palette.color(PaletteToken::Text))
         .add_modifier(Modifier::BOLD);
     let playing_style = Style::default()
-        .fg(app.palette.accent)
+        .fg(app.palette.color(PaletteToken::Accent))
         .add_modifier(Modifier::BOLD);
     let flash_style = Style::default()
-        .bg(app.palette.accent)
-        .fg(app.palette.bg.unwrap_or(Color::Reset))
+        .bg(app.palette.color(PaletteToken::Accent))
+        .fg(app.palette.color(PaletteToken::AccentOn))
         .add_modifier(Modifier::BOLD);
     let feedback = |button: Action| {
         app.transport_feedback.is_some_and(|(current, at)| {

@@ -67,4 +67,32 @@ docs/30-计划/任务卡/T-0123-主题色谱Token收口.md（仅结果段）
 
 ## 5. 结果
 
-待实现。
+2026-11-21：
+
+- `theme.rs`：
+  - `Palette` 新增 `accent_soft`，14 个颜色 token 全部消费；
+  - 新增 `PaletteToken`（18 个语义槽位）与唯一取色入口 `Palette::color`；
+    另有 `Palette::canvas()`（`None` = 跟随终端）与 `Palette::selection_style()`；
+  - `rgba()` 与 `#RRGGBBAA` 的 alpha 按本主题实际 `bg` 合成，8 位 hex 的 alpha
+    不再丢弃；非法颜色仍告警并回退默认色；hex 先判 ASCII，非法 UTF-8 不再可能
+    panic；
+  - 终端回退选中态改用 `Modifier::REVERSED`，不再 Reset 对 Reset；
+  - `VideoTheme` 也经 `Palette::color` 取色，9 色协议与顺序不变。
+- `render.rs` / `player_bar.rs` / `input.rs` / `chat_input.rs` /
+  `danmaku_overlay.rs` / `login.rs` / `live_page.rs` / `splash.rs` /
+  `ui/chrome.rs` / `ui/bars.rs`：UI 取色全部改为
+  `palette.color(PaletteToken::…)`，选中 / 光标统一走 `selection_style()`；
+  字符网格不变，golden 未改。
+- 新增单测：alpha 合成（含浅色 bg）、8 位 hex、milkgreen `accentSoft`、非法
+  颜色回退、终端 `REVERSED`（主题层 + TestBackend 渲染各一条）、18 个槽位映射、
+  VideoTheme 9 色顺序。
+- 验证：
+  - `cargo test -p np-tui`：313 passed / 0 failed / 1 ignored（含 27 条 golden）；
+  - `cargo clippy -p np-tui --all-targets -- -D warnings`：通过；
+  - `cargo fmt --all -- --check`：通过。
+- 取舍：`AccentSoft` / `Success` 当前 TUI 还没有消费点，按契约保留槽位并在变体上
+  标注 `#[allow(dead_code)]` 且写明原因。
+- 遗留：`app.rs:235` 仍直接读 `self.palette.bg`（OSC 背景，非 UI 组件）；该文件
+  不在本卡授权路径内，未改。等价改为
+  `osc::set_background(self.palette.canvas());` 后
+  `rg "palette\.(fg|bg)" crates/np-tui/src` 只剩 `theme.rs` 与测试。

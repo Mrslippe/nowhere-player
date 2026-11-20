@@ -1,10 +1,11 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 #[cfg(test)]
 use crate::theme::Palette;
+use crate::theme::PaletteToken;
 #[cfg(test)]
 use np_core::{Output, Span, SpanColor, Tone};
 
@@ -34,28 +35,20 @@ pub(crate) fn input_line(app: &App, width: usize) -> (Line<'static>, usize) {
     let (start, end) = input_window(&app.input, app.cursor, text_width);
     let mut spans = vec![TuiSpan::styled(
         "› ",
-        Style::default().fg(app.palette.accent),
+        Style::default().fg(app.palette.color(PaletteToken::Accent)),
     )];
     for (index, character) in app.input.iter().enumerate().take(end).skip(start) {
         if index == app.cursor {
             spans.push(TuiSpan::styled(
                 character.to_string(),
-                Style::default()
-                    .bg(app.palette.fg)
-                    .fg(app.palette.bg.unwrap_or(Color::Reset))
-                    .add_modifier(Modifier::BOLD),
+                app.palette.selection_style().add_modifier(Modifier::BOLD),
             ));
         } else {
             spans.push(TuiSpan::raw(character.to_string()));
         }
     }
     if app.cursor == app.input.len() {
-        spans.push(TuiSpan::styled(
-            " ",
-            Style::default()
-                .bg(app.palette.fg)
-                .fg(app.palette.bg.unwrap_or(Color::Reset)),
-        ));
+        spans.push(TuiSpan::styled(" ", app.palette.selection_style()));
     }
     let prefix: String = app.input[start..app.cursor].iter().collect();
     let cursor_x = 2 + UnicodeWidthStr::width(prefix.as_str());
@@ -106,7 +99,10 @@ pub(crate) fn all_lines(app: &App) -> Vec<Line<'static>> {
         }
         if !block.input.is_empty() {
             lines.push(Line::from(vec![
-                TuiSpan::styled("› ", Style::default().fg(app.palette.accent)),
+                TuiSpan::styled(
+                    "› ",
+                    Style::default().fg(app.palette.color(PaletteToken::Accent)),
+                ),
                 TuiSpan::raw(block.input.clone()),
             ]));
         }
@@ -116,14 +112,14 @@ pub(crate) fn all_lines(app: &App) -> Vec<Line<'static>> {
         if let Some(footer) = &block.footer {
             lines.push(Line::styled(
                 footer.clone(),
-                Style::default().fg(app.palette.muted),
+                Style::default().fg(app.palette.color(PaletteToken::Muted)),
             ));
         }
     }
     if lines.is_empty() {
         lines.push(Line::styled(
             "输入 help 或 library list --limit=10 开始",
-            Style::default().fg(app.palette.muted),
+            Style::default().fg(app.palette.color(PaletteToken::Muted)),
         ));
     }
     lines
@@ -139,23 +135,25 @@ pub(crate) fn span_style(span: &Span, tone: Option<Tone>, palette_ref: &Palette)
         style = style.add_modifier(Modifier::ITALIC);
     }
     if span.dim {
-        style = style.fg(palette_ref.muted);
+        style = style.fg(palette_ref.color(PaletteToken::Muted));
     }
     let color = span.color.map(|color| match color {
-        SpanColor::Accent => palette_ref.accent,
-        SpanColor::Danger => palette_ref.danger,
-        SpanColor::Warn => palette_ref.accent,
-        SpanColor::Success => palette_ref.fg,
-        SpanColor::Muted => palette_ref.muted,
+        SpanColor::Accent => palette_ref.color(PaletteToken::Accent),
+        SpanColor::Danger => palette_ref.color(PaletteToken::Danger),
+        SpanColor::Warn => palette_ref.color(PaletteToken::Accent),
+        SpanColor::Success => palette_ref.color(PaletteToken::Text),
+        SpanColor::Muted => palette_ref.color(PaletteToken::Muted),
     });
     let tone = tone.map(|tone| match tone {
-        Tone::Accent => palette_ref.accent,
-        Tone::Danger => palette_ref.danger,
-        Tone::Warn => palette_ref.accent,
-        Tone::Success => palette_ref.fg,
-        Tone::Muted => palette_ref.muted,
+        Tone::Accent => palette_ref.color(PaletteToken::Accent),
+        Tone::Danger => palette_ref.color(PaletteToken::Danger),
+        Tone::Warn => palette_ref.color(PaletteToken::Accent),
+        Tone::Success => palette_ref.color(PaletteToken::Text),
+        Tone::Muted => palette_ref.color(PaletteToken::Muted),
     });
-    style.fg(color.or(tone).unwrap_or(palette_ref.fg))
+    style.fg(color
+        .or(tone)
+        .unwrap_or(palette_ref.color(PaletteToken::Text)))
 }
 
 #[cfg(test)]
@@ -179,7 +177,7 @@ pub(crate) fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, pale
             lines.push(Line::styled(
                 format_row(columns, &widths),
                 Style::default()
-                    .fg(palette_ref.accent)
+                    .fg(palette_ref.color(PaletteToken::Accent))
                     .add_modifier(Modifier::BOLD),
             ));
             lines.push(Line::styled(
@@ -188,7 +186,7 @@ pub(crate) fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, pale
                     .map(|width| "─".repeat(*width))
                     .collect::<Vec<_>>()
                     .join("  "),
-                Style::default().fg(palette_ref.muted),
+                Style::default().fg(palette_ref.color(PaletteToken::Muted)),
             ));
             for row in rows {
                 lines.push(Line::raw(format_row(row, &widths)));
@@ -202,12 +200,12 @@ pub(crate) fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, pale
         } => {
             lines.push(Line::styled(
                 format!("错误 {code} · {message}"),
-                Style::default().fg(palette_ref.danger),
+                Style::default().fg(palette_ref.color(PaletteToken::Danger)),
             ));
             if let Some(hint) = hint {
                 lines.push(Line::styled(
                     hint.clone(),
-                    Style::default().fg(palette_ref.muted),
+                    Style::default().fg(palette_ref.color(PaletteToken::Muted)),
                 ));
             }
         }
@@ -217,7 +215,10 @@ pub(crate) fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, pale
                 line.push_str(" · ");
                 line.push_str(suggestion);
             }
-            lines.push(Line::styled(line, Style::default().fg(palette_ref.muted)));
+            lines.push(Line::styled(
+                line,
+                Style::default().fg(palette_ref.color(PaletteToken::Muted)),
+            ));
         }
         Output::Progress {
             label,
@@ -232,13 +233,13 @@ pub(crate) fn output_lines(output: &Output, lines: &mut Vec<Line<'static>>, pale
             };
             lines.push(Line::styled(
                 format!("{label}  {percent}%  {current}/{total} {unit}"),
-                Style::default().fg(palette_ref.accent),
+                Style::default().fg(palette_ref.color(PaletteToken::Accent)),
             ));
         }
         Output::Media { kind, .. } => {
             lines.push(Line::styled(
                 format!("[媒体 {kind:?}]"),
-                Style::default().fg(palette_ref.muted),
+                Style::default().fg(palette_ref.color(PaletteToken::Muted)),
             ));
         }
     }

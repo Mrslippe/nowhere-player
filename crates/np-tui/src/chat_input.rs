@@ -5,7 +5,7 @@
 
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::Paragraph;
 #[cfg(test)]
@@ -14,6 +14,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::App;
 use crate::audio::TuiAudio;
 use crate::input::{display_width, input_window, truncate_width};
+use crate::theme::PaletteToken;
 
 /// 弹幕输入上限：B 站单条弹幕最多 20 个字符（CJK 按 1 个字符计）。
 pub(crate) const CHAT_MAX_CHARS: usize = 20;
@@ -180,13 +181,15 @@ pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     if area.width < 4 || area.height == 0 {
         return;
     }
-    let bg = app.palette.bg.unwrap_or(Color::Reset);
+    let bg = app.palette.color(PaletteToken::Canvas);
     let Some(chat) = app.chat_input.as_ref() else {
         frame.buffer_mut().set_string(
             area.x,
             area.y,
             CHAT_PROMPT,
-            Style::default().fg(app.palette.accent).bg(bg),
+            Style::default()
+                .fg(app.palette.color(PaletteToken::Accent))
+                .bg(bg),
         );
         let hint_width = usize::from(area.width.saturating_sub(2));
         let hint = truncate_width("按 c 输入弹幕", hint_width);
@@ -194,7 +197,9 @@ pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             area.x.saturating_add(2),
             area.y,
             &hint,
-            Style::default().fg(app.palette.faint).bg(bg),
+            Style::default()
+                .fg(app.palette.color(PaletteToken::Faint))
+                .bg(bg),
         );
         return;
     };
@@ -202,19 +207,20 @@ pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let focused = app.danmaku_overlay.input_focused();
     let input_width = usize::from(area.width.saturating_sub(2));
     let (start, end) = input_window(&chat.value, chat.cursor, input_width);
-    let cursor_style = Style::default()
-        .bg(app.palette.fg)
-        .fg(app.palette.bg.unwrap_or(Color::Reset))
-        .add_modifier(Modifier::BOLD);
+    let cursor_style = app.palette.selection_style().add_modifier(Modifier::BOLD);
     let mut spans = vec![TuiSpan::styled(
         CHAT_PROMPT,
-        Style::default().fg(app.palette.accent).bg(bg),
+        Style::default()
+            .fg(app.palette.color(PaletteToken::Accent))
+            .bg(bg),
     )];
     for (index, character) in chat.value.iter().enumerate().take(end).skip(start) {
         let style = if focused && index == chat.cursor {
             cursor_style
         } else {
-            Style::default().fg(app.palette.fg).bg(bg)
+            Style::default()
+                .fg(app.palette.color(PaletteToken::Text))
+                .bg(bg)
         };
         spans.push(TuiSpan::styled(character.to_string(), style));
     }
@@ -222,7 +228,11 @@ pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         spans.push(TuiSpan::styled(" ", cursor_style));
     }
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg).fg(app.palette.fg)),
+        Paragraph::new(Line::from(spans)).style(
+            Style::default()
+                .bg(bg)
+                .fg(app.palette.color(PaletteToken::Text)),
+        ),
         area,
     );
 
@@ -254,7 +264,7 @@ pub(crate) fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 label,
                 Style::default()
                     .bg(bg)
-                    .fg(app.palette.accent)
+                    .fg(app.palette.color(PaletteToken::Accent))
                     .add_modifier(Modifier::BOLD),
             );
         }

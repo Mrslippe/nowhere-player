@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span as TuiSpan};
 use ratatui::widgets::{Block as TuiBlock, BorderType, Borders, Clear, Paragraph};
 
@@ -11,13 +11,14 @@ use crate::keymap::{self, Action};
 use crate::layout::{layout_areas, layout_inner};
 use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
+use crate::theme::PaletteToken;
 use crate::ui::chrome::{self, StatusHints, StatusState};
 use crate::ui::scroll::ScrollState;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
     let full = frame.area();
     frame.render_widget(Clear, full);
-    if let Some(bg) = app.palette.bg {
+    if let Some(bg) = app.palette.canvas() {
         frame.buffer_mut().set_style(full, Style::default().bg(bg));
     }
     if full.width < 4 || full.height < 6 {
@@ -252,8 +253,8 @@ fn paint_browse_borders(
     focused: bool,
     app: &App,
 ) {
-    let line = Style::default().fg(app.palette.line);
-    let accent = Style::default().fg(app.palette.accent);
+    let line = Style::default().fg(app.palette.color(PaletteToken::Border));
+    let accent = Style::default().fg(app.palette.color(PaletteToken::Focus));
     let browse_style = if app.focus == Focus::Browse {
         accent
     } else {
@@ -286,11 +287,11 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let block = TuiBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(app.palette.line))
+        .border_style(Style::default().fg(app.palette.color(PaletteToken::Border)))
         .style(
             Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
+                .bg(app.palette.color(PaletteToken::Canvas))
+                .fg(app.palette.color(PaletteToken::Text)),
         );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -301,16 +302,16 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     paint_browse_borders(frame, area, split, focused, app);
     let browse_title_style = Style::default()
         .fg(if app.focus == Focus::Browse {
-            app.palette.accent
+            app.palette.color(PaletteToken::Focus)
         } else {
-            app.palette.muted
+            app.palette.color(PaletteToken::Muted)
         })
         .add_modifier(Modifier::BOLD);
     let list_title_style = Style::default()
         .fg(if app.focus == Focus::List {
-            app.palette.accent
+            app.palette.color(PaletteToken::Focus)
         } else {
-            app.palette.muted
+            app.palette.color(PaletteToken::Muted)
         })
         .add_modifier(Modifier::BOLD);
     border_text(frame, area, area.y, " Browse ", false, browse_title_style);
@@ -333,7 +334,7 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     let left_count = format!(" {view_number} of {} ", app.views.len());
     let count_style = Style::default()
-        .fg(app.palette.faint)
+        .fg(app.palette.color(PaletteToken::Faint))
         .add_modifier(Modifier::ITALIC);
     let left_count_x = split.saturating_sub(display_width(&left_count) as u16 + 1);
     frame.buffer_mut().set_string(
@@ -361,9 +362,9 @@ fn draw_browse_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     draw_list(frame, right, app);
     draw_list_scrollbar(frame, area, app);
     let line_style = Style::default().fg(if focused {
-        app.palette.accent
+        app.palette.color(PaletteToken::Focus)
     } else {
-        app.palette.line
+        app.palette.color(PaletteToken::Border)
     });
     for y in inner.y..inner.bottom() {
         frame.buffer_mut().set_string(split, y, "┃", line_style);
@@ -384,15 +385,15 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
         .border_style(Style::default().fg(if app.focus == Focus::Controller {
-            app.palette.accent
+            app.palette.color(PaletteToken::Focus)
         } else {
-            app.palette.line
+            app.palette.color(PaletteToken::Border)
         }))
         .title(" Controller ")
         .style(
             Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
+                .bg(app.palette.color(PaletteToken::Canvas))
+                .fg(app.palette.color(PaletteToken::Text)),
         );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -403,8 +404,8 @@ fn draw_controller(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(line).style(
             Style::default()
-                .bg(app.palette.bg.unwrap_or(Color::Reset))
-                .fg(app.palette.fg),
+                .bg(app.palette.color(PaletteToken::Canvas))
+                .fg(app.palette.color(PaletteToken::Text)),
         ),
         inner,
     );
@@ -449,12 +450,9 @@ pub(crate) fn draw_library(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 text.push_str(&" ".repeat(pad));
             }
             let style = if active {
-                Style::default()
-                    .bg(app.palette.fg)
-                    .fg(app.palette.bg.unwrap_or(Color::Reset))
-                    .add_modifier(Modifier::BOLD)
+                app.palette.selection_style().add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(app.palette.fg)
+                Style::default().fg(app.palette.color(PaletteToken::Text))
             };
             Line::from(TuiSpan::styled(truncate_width(&text, text_width), style))
         })
@@ -487,8 +485,8 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         frame.render_widget(
             Paragraph::new("暂无数据；: 命令执行 library list").style(
                 Style::default()
-                    .bg(app.palette.bg.unwrap_or(Color::Reset))
-                    .fg(app.palette.muted),
+                    .bg(app.palette.color(PaletteToken::Canvas))
+                    .fg(app.palette.color(PaletteToken::Muted)),
             ),
             inner,
         );
@@ -523,7 +521,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     lines.push(Line::styled(
         format_row(&columns, &widths),
         Style::default()
-            .fg(app.palette.accent)
+            .fg(app.palette.color(PaletteToken::Accent))
             .add_modifier(Modifier::BOLD),
     ));
     // 列表扣掉表头：72×24 下 Settings 等列表可见 6 行。
@@ -533,11 +531,9 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         let row = &rows[index];
         let selected = app.focus == Focus::List && index == app.row_index;
         let style = if selected {
-            Style::default()
-                .bg(app.palette.fg)
-                .fg(app.palette.bg.unwrap_or(Color::Reset))
+            app.palette.selection_style()
         } else {
-            Style::default().fg(app.palette.fg)
+            Style::default().fg(app.palette.color(PaletteToken::Text))
         };
         lines.push(Line::styled(
             truncate_width(&format_row(row, &widths), inner.width as usize),
@@ -555,7 +551,7 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             area.x,
             y,
             glyphs::SELECT,
-            Style::default().fg(app.palette.accent),
+            Style::default().fg(app.palette.color(PaletteToken::Accent)),
         );
     }
 }
@@ -586,10 +582,10 @@ fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     let block = TuiBlock::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.palette.accent))
-        .title_style(Style::default().fg(app.palette.accent))
+        .border_style(Style::default().fg(app.palette.color(PaletteToken::Accent)))
+        .title_style(Style::default().fg(app.palette.color(PaletteToken::Accent)))
         .title(" New Playlist ")
-        .style(Style::default().bg(app.palette.bg.unwrap_or(Color::Reset)));
+        .style(Style::default().bg(app.palette.color(PaletteToken::Canvas)));
     let inner = block.inner(box_area);
     frame.render_widget(block, box_area);
     let content = Rect {
@@ -607,27 +603,20 @@ fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         if index == cursor {
             spans.push(TuiSpan::styled(
                 character.to_string(),
-                Style::default()
-                    .bg(app.palette.fg)
-                    .fg(app.palette.bg.unwrap_or(Color::Reset)),
+                app.palette.selection_style(),
             ));
         } else {
             spans.push(TuiSpan::raw(character.to_string()));
         }
     }
     if cursor == chars.len() && cursor - start < width {
-        spans.push(TuiSpan::styled(
-            " ",
-            Style::default()
-                .bg(app.palette.fg)
-                .fg(app.palette.bg.unwrap_or(Color::Reset)),
-        ));
+        spans.push(TuiSpan::styled(" ", app.palette.selection_style()));
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(
             Style::default()
-                .fg(app.palette.fg)
-                .bg(app.palette.bg.unwrap_or(Color::Reset)),
+                .fg(app.palette.color(PaletteToken::Text))
+                .bg(app.palette.color(PaletteToken::Canvas)),
         ),
         content,
     );
@@ -639,7 +628,7 @@ fn draw_playlist_input(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display: SearchDisplay) {
-    let bg = app.palette.bg.unwrap_or(Color::Reset);
+    let bg = app.palette.color(PaletteToken::Canvas);
     match display {
         SearchDisplay::Empty { query } => {
             let width = 38.min(area.width);
@@ -654,14 +643,14 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             let block = TuiBlock::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(if active {
-                    app.palette.accent
+                    app.palette.color(PaletteToken::Focus)
                 } else {
-                    app.palette.line
+                    app.palette.color(PaletteToken::Border)
                 }))
                 .title_style(Style::default().fg(if active {
-                    app.palette.accent
+                    app.palette.color(PaletteToken::Focus)
                 } else {
-                    app.palette.muted
+                    app.palette.color(PaletteToken::Muted)
                 }))
                 .title(" Key Words ")
                 .style(Style::default().bg(bg));
@@ -682,24 +671,21 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 if index == cursor && active {
                     spans.push(TuiSpan::styled(
                         character.to_string(),
-                        Style::default()
-                            .bg(app.palette.fg)
-                            .fg(app.palette.bg.unwrap_or(Color::Reset)),
+                        app.palette.selection_style(),
                     ));
                 } else {
                     spans.push(TuiSpan::raw(character.to_string()));
                 }
             }
             if cursor == chars.len() && cursor - start < width && active {
-                spans.push(TuiSpan::styled(
-                    " ",
-                    Style::default()
-                        .bg(app.palette.fg)
-                        .fg(app.palette.bg.unwrap_or(Color::Reset)),
-                ));
+                spans.push(TuiSpan::styled(" ", app.palette.selection_style()));
             }
             frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(Style::default().fg(app.palette.fg).bg(bg)),
+                Paragraph::new(Line::from(spans)).style(
+                    Style::default()
+                        .fg(app.palette.color(PaletteToken::Text))
+                        .bg(bg),
+                ),
                 content,
             );
             if active {
@@ -710,7 +696,7 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             // 平台名嵌在 Key Words 输入框的下边框，右对齐，前后各留一格。
             let platform = format!(" {}", app.search_platform.id_label());
             let platform_style = Style::default()
-                .fg(app.palette.faint)
+                .fg(app.palette.color(PaletteToken::Faint))
                 .add_modifier(Modifier::ITALIC);
             border_text(
                 frame,
@@ -725,7 +711,7 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
                 box_area.right().saturating_sub(2),
                 box_area.bottom().saturating_sub(1),
                 " ",
-                Style::default().fg(app.palette.line),
+                Style::default().fg(app.palette.color(PaletteToken::Border)),
             );
         }
         SearchDisplay::Searching => {
@@ -736,7 +722,11 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             frame.render_widget(
                 Paragraph::new(text)
                     .alignment(ratatui::layout::Alignment::Center)
-                    .style(Style::default().fg(app.palette.muted).bg(bg)),
+                    .style(
+                        Style::default()
+                            .fg(app.palette.color(PaletteToken::Muted))
+                            .bg(bg),
+                    ),
                 Rect {
                     x: area.x,
                     y,
@@ -750,7 +740,11 @@ fn draw_search_state(frame: &mut ratatui::Frame, area: Rect, app: &App, display:
             frame.render_widget(
                 Paragraph::new("✘ no results")
                     .alignment(ratatui::layout::Alignment::Center)
-                    .style(Style::default().fg(app.palette.muted).bg(bg)),
+                    .style(
+                        Style::default()
+                            .fg(app.palette.color(PaletteToken::Muted))
+                            .bg(bg),
+                    ),
                 Rect {
                     x: area.x,
                     y,
@@ -775,7 +769,7 @@ fn draw_list_scrollbar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let track_len = usize::from(track_end - track_start);
     let total = app.filtered_row_count();
     let mut scroll = ScrollState::new(usize::from(area.height.saturating_sub(1)));
-    let track_style = Style::default().fg(app.palette.line);
+    let track_style = Style::default().fg(app.palette.color(PaletteToken::Border));
     for y in track_start..track_end {
         frame.buffer_mut().set_string(x, y, "│", track_style);
     }
@@ -789,9 +783,9 @@ fn draw_list_scrollbar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let offset = first * (track_len - thumb_len) / max_first.max(1);
     let thumb_start = track_start.saturating_add(offset as u16);
     let style = Style::default().fg(if app.focus == Focus::List {
-        app.palette.accent
+        app.palette.color(PaletteToken::Focus)
     } else {
-        app.palette.muted
+        app.palette.color(PaletteToken::Muted)
     });
     for offset in 0..thumb_len {
         frame
@@ -804,7 +798,7 @@ pub(crate) fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App)
     let block = TuiBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(app.palette.line))
+        .border_style(Style::default().fg(app.palette.color(PaletteToken::Border)))
         .title(" 候选 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -817,12 +811,9 @@ pub(crate) fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App)
         let marker = if selected { glyphs::SELECT } else { " " };
         let text = format!("{marker} {}  {}", item.text, item.summary);
         let style = if selected {
-            Style::default()
-                .bg(app.palette.fg)
-                .fg(app.palette.bg.unwrap_or(Color::Reset))
-                .add_modifier(Modifier::BOLD)
+            app.palette.selection_style().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(app.palette.fg)
+            Style::default().fg(app.palette.color(PaletteToken::Text))
         };
         lines.push(Line::from(TuiSpan::styled(
             truncate_width(&text, inner.width as usize),
@@ -832,7 +823,7 @@ pub(crate) fn draw_completion(frame: &mut ratatui::Frame, area: Rect, app: &App)
     if let Some(item) = completion.items.get(app.completion_index) {
         lines.push(Line::from(TuiSpan::styled(
             truncate_width(&item.usage, inner.width as usize),
-            Style::default().fg(app.palette.muted),
+            Style::default().fg(app.palette.color(PaletteToken::Muted)),
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);

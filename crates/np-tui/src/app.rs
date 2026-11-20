@@ -232,7 +232,7 @@ impl App {
         if let Some(warning) = warnings.first() {
             self.set_status(format!("主题告警：{warning}"));
         }
-        osc::set_background(self.palette.bg);
+        osc::set_background(self.palette.canvas());
         self.theme_id = reply.id;
         self.theme_name = reply.name;
         if let Some(warning) = reply.warnings.first() {

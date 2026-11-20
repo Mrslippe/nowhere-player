@@ -5,11 +5,11 @@
 //! - 主界面状态栏是「状态 + 键/说明」，Live 页是一段整色提示。
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block as TuiBlock, BorderType, Borders};
 
 use crate::input::{display_width, truncate_width};
-use crate::theme::Palette;
+use crate::theme::{Palette, PaletteToken};
 
 /// 外框：粗边框、左下角主题名；标题由调用方给全（含两侧空格）。
 pub(crate) fn draw_outer_chrome(
@@ -22,11 +22,11 @@ pub(crate) fn draw_outer_chrome(
     let outer = TuiBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(palette.muted))
+        .border_style(Style::default().fg(palette.color(PaletteToken::Muted)))
         .style(
             Style::default()
-                .bg(palette.bg.unwrap_or(Color::Reset))
-                .fg(palette.fg),
+                .bg(palette.color(PaletteToken::Canvas))
+                .fg(palette.color(PaletteToken::Text)),
         );
     frame.render_widget(outer.title(title), area);
     let theme = format!(" {theme_name} ");
@@ -38,7 +38,7 @@ pub(crate) fn draw_outer_chrome(
         area.y,
         &theme,
         Style::default()
-            .fg(palette.accent)
+            .fg(palette.color(PaletteToken::Accent))
             .add_modifier(Modifier::ITALIC),
     );
 }
@@ -73,7 +73,7 @@ pub(crate) fn draw_status_bar(
     let max_x = area.right().saturating_sub(2);
     let mut x = area.x.saturating_add(2);
     // 状态栏覆盖在外框下边线上，延伸线沿用外框的深色，而不是内容区的浅色 line。
-    let edge_style = Style::default().fg(palette.muted);
+    let edge_style = Style::default().fg(palette.color(PaletteToken::Muted));
     // 先把这一行恢复成连续的边框线，避免宽字符跳过相邻格时把上一帧的
     // `·` / 键名残留在缓冲里。
     let border_line = "━".repeat(usize::from(area.width.saturating_sub(2)));
@@ -94,9 +94,9 @@ pub(crate) fn draw_status_bar(
                 state.text,
                 Style::default()
                     .fg(if state.warn {
-                        palette.warn
+                        palette.color(PaletteToken::Warn)
                     } else {
-                        palette.accent
+                        palette.color(PaletteToken::Accent)
                     })
                     .add_modifier(Modifier::BOLD),
             );
@@ -110,7 +110,7 @@ pub(crate) fn draw_status_bar(
                         x,
                         y,
                         separator,
-                        Style::default().fg(palette.faint),
+                        Style::default().fg(palette.color(PaletteToken::Faint)),
                     );
                     x = x.saturating_add(sep_width);
                 }
@@ -135,7 +135,7 @@ pub(crate) fn draw_status_bar(
                         x,
                         y,
                         separator,
-                        Style::default().fg(palette.faint),
+                        Style::default().fg(palette.color(PaletteToken::Faint)),
                     );
                     x = x.saturating_add(separator_width);
                 }
@@ -144,7 +144,7 @@ pub(crate) fn draw_status_bar(
                     y,
                     key,
                     Style::default()
-                        .fg(palette.accent)
+                        .fg(palette.color(PaletteToken::Accent))
                         .add_modifier(Modifier::BOLD),
                 );
                 x = x.saturating_add(key_width);
@@ -152,7 +152,7 @@ pub(crate) fn draw_status_bar(
                     x,
                     y,
                     description,
-                    Style::default().fg(palette.muted),
+                    Style::default().fg(palette.color(PaletteToken::Muted)),
                 );
                 x = x.saturating_add(description_width);
                 drew_text = true;
@@ -164,9 +164,12 @@ pub(crate) fn draw_status_bar(
             if hints.is_empty() {
                 return;
             }
-            frame
-                .buffer_mut()
-                .set_string(x, y, &hints, Style::default().fg(palette.muted));
+            frame.buffer_mut().set_string(
+                x,
+                y,
+                &hints,
+                Style::default().fg(palette.color(PaletteToken::Muted)),
+            );
             x = x.saturating_add(display_width(&hints) as u16);
             drew_text = true;
         }

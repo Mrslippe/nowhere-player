@@ -652,6 +652,30 @@ fn status_bar_is_embedded_in_bottom_border() {
 }
 
 #[test]
+fn terminal_palette_selection_stays_visible_with_reversed() {
+    use ratatui::style::Modifier;
+
+    // App::new() 用终端回退 Palette：fg / bg 都是 Reset，旧的反白条不可见。
+    let mut app = browse_app();
+    assert!(app.palette.terminal, "默认必须是终端回退主题");
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let selected = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == crate::glyphs::SELECT)
+        .expect("Browse 选中行标记");
+    assert!(
+        selected.style().add_modifier.contains(Modifier::REVERSED),
+        "终端回退的选中态必须用 REVERSED"
+    );
+}
+
+#[test]
 fn focus_and_status_styles_follow_the_focused_pane() {
     use ratatui::style::Modifier;
 
