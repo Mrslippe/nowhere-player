@@ -50,6 +50,7 @@ crates/np-tui/src/settings_editor.rs
 crates/np-tui/src/main.rs
 crates/np-tui/src/tests.rs
 crates/np-tui/src/snapshot_tests.rs
+crates/np-tui/tests/golden/settings_72x24.txt
 docs/10-设计/TUI交互模型.md
 docs/30-计划/任务卡/T-0126-Player视觉样式扩展.md（仅结果段）
 ```

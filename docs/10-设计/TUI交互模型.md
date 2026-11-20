@@ -290,6 +290,15 @@ Settings 页增加分类：播放、界面、启动、音源、其他；包含 v
 - `←→` 在 Browse / List 间切换；`Esc` 从 List 回 Browse。
 - `Tab` 只在 Search 的平台切换和 Controller 补全中使用，不再承担焦点切换。
 
+### 11.7 专注模式（T-0125）
+
+- 启动时读取 `tui.focusMode`（缺省关）；非 Live 页按 `Ctrl+F` 切换。
+- 开启后只保留外框、占满 `layout_inner` 内区的 Player、Controller / 登录浮层和状态栏；不绘制 Browse/List。
+- 状态栏第一项固定为 `Ctrl+F 退出专注`；窗口小于 50 列或 12 行时自动回退普通三区布局，提示仍然保留，不 panic。
+- 切换写回 `tui.focusMode`，下次启动保持；Live 页解析 `Ctrl+F` 但忽略，并提示「直播中不可切换专注模式」。
+- 设置页切换「专注模式」同样立即生效，不再提示“下次启动生效”；「动效」仍保留“下次启动生效”。
+- 开机自启写 HKCU Run，不需要管理员；启动时按当前 exe 路径自愈，失败写入状态栏。
+
 ## 12. 输入映射与控制器（2026-11-17）
 
 正常模式的输入不再直接写在 `event_loop` 的 `KeyCode` 分支里。
@@ -310,6 +319,7 @@ KeyEvent + InputContext
 - `controller.rs`：只接收 `Action`，执行播放、歌单、设置、搜索平台切换等。
 - `player_bar.rs`：播放控制的键名从 `keymap::label(Action)` 读取，不再手写。
 - `render.rs`：状态栏提示的 `s`、`/`、`n`、`d`、`a`、`r`、`Enter`、`Esc`、`Tab` 也从同一张表取。
+- 专注模式属于 UI 状态（`App.focus_mode`），不是 Browse 视图；`Ctrl+F` 由 `keymap` 的 Ctrl 表解析，controller 写回 `tui.focusMode`，render 只负责布局切换。
 - `transport.rs`：播放控制按钮的可用性（上一首/下一首/后退/前进）只计算一次，灰显和执行守卫共用。
 - 文本输入（Controller、Search 输入、New Playlist）仍由 `event_loop` 的输入模式处理，不进入业务分发。
 - `np-app` 命令层保持独立：UI 使用类型化 `Action`，不把按键拼成 `"next"` / `"play"` 命令再解析。

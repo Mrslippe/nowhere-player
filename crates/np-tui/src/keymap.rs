@@ -30,6 +30,7 @@ pub(crate) enum Action {
     OpenSearch,
     NextSearchPlatform,
     OpenCommand,
+    ToggleFocusMode,
     RefreshLive,
     LiveChat,
     ToggleVideo,
@@ -67,6 +68,20 @@ struct Binding {
     action: Action,
     label: &'static str,
 }
+
+/// 带 Ctrl 的全局键；不能和普通字符键混在 `BINDINGS` 里，否则 `Ctrl+F`
+/// 会退化成普通 `f`（`resolve` 目前只为 Enter 区分修饰键）。
+struct ControlBinding {
+    key: KeyCode,
+    action: Action,
+    label: &'static str,
+}
+
+const CONTROL_BINDINGS: &[ControlBinding] = &[ControlBinding {
+    key: KeyCode::Char('f'),
+    action: Action::ToggleFocusMode,
+    label: "Ctrl+F",
+}];
 
 const BINDINGS: &[Binding] = &[
     // Live 页：r 刷新到最新、c 弹幕入口（T-0094 占位）。
@@ -407,6 +422,14 @@ pub(crate) fn resolve(
     modifiers: KeyModifiers,
 ) -> Option<Action> {
     let shift = modifiers.contains(KeyModifiers::SHIFT);
+    // Ctrl 表只吃 Ctrl（不带 Shift）；未命中的 Ctrl 组合继续走原逻辑，
+    // 保持 Ctrl+J / Ctrl+K 等既有行为不变。
+    if modifiers.contains(KeyModifiers::CONTROL)
+        && !shift
+        && let Some(binding) = CONTROL_BINDINGS.iter().find(|binding| binding.key == key)
+    {
+        return Some(binding.action);
+    }
     for scope in context.scopes() {
         for binding in BINDINGS {
             if binding.scope != scope || binding.key != key {
@@ -423,6 +446,12 @@ pub(crate) fn resolve(
 
 /// 展示层查键名：和 resolve 共用同一张表。
 pub(crate) fn label(action: Action) -> &'static str {
+    if let Some(binding) = CONTROL_BINDINGS
+        .iter()
+        .find(|binding| binding.action == action)
+    {
+        return binding.label;
+    }
     BINDINGS
         .iter()
         .find(|binding| binding.action == action)
@@ -551,6 +580,34 @@ mod tests {
         assert_eq!(
             resolve(&list, KeyCode::Enter, KeyModifiers::SHIFT),
             Some(Action::Enter)
+        );
+    }
+
+    #[test]
+    fn ctrl_f_toggles_focus_mode_without_stealing_plain_f() {
+        let library = ctx(Focus::List, BrowseKind::Library);
+        assert_eq!(
+            resolve(&library, KeyCode::Char('f'), KeyModifiers::CONTROL),
+            Some(Action::ToggleFocusMode)
+        );
+        assert_eq!(label(Action::ToggleFocusMode), "Ctrl+F");
+        // 普通 f 没有绑定；Ctrl+Shift+F 也不走 Ctrl 表。
+        assert_eq!(
+            resolve(&library, KeyCode::Char('f'), KeyModifiers::NONE),
+            None
+        );
+        assert_eq!(
+            resolve(
+                &library,
+                KeyCode::Char('f'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            None
+        );
+        // 未登记的 Ctrl 组合仍按普通键解析，避免破坏既有行为。
+        assert_eq!(
+            resolve(&library, KeyCode::Char('j'), KeyModifiers::CONTROL),
+            Some(Action::MoveDown)
         );
     }
 }

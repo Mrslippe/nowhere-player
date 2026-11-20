@@ -124,9 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => eprintln!("np-tui 日志初始化失败：{error}"),
     }
     let settings = SettingsHandle::load(config_dir.clone());
-    if let Some(enabled) = settings.get_bool("startup.enabled") {
-        let _ = startup::set_enabled(enabled);
-    }
+    // 自启是“启动时自愈”的：失败不能静默，App 建好后再写到状态栏。
+    let startup_error = settings
+        .get_bool("startup.enabled")
+        .and_then(|enabled| startup::set_enabled(enabled).err());
     let theme_api = TuiThemeApi::new(config_dir.join("themes"));
     let library = Arc::new(LibraryHandle::with_paths(Paths {
         config_dir,
@@ -152,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_selftest(&script, &player, &library, &settings, &theme_api);
     }
     let mut app = App::new();
+    app.focus_mode = settings.get_bool("tui.focusMode").unwrap_or(false);
     // 音效开关立即生效；未写过设置时默认开启。
     app.sound
         .set_enabled(settings.get_bool("ui.sound").unwrap_or(true));
@@ -165,6 +167,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.status = "未找到 wt，已用 conhost，封面降级为字符".to_owned();
     } else if let Some(warning) = launcher::font_warning() {
         app.status = warning.to_owned();
+    }
+    if let Some(error) = startup_error {
+        app.set_status(format!("自启设置失败：{error}"));
     }
     #[cfg(windows)]
     {

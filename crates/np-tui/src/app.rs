@@ -80,6 +80,8 @@ pub(crate) struct App {
     pub(crate) theme_id: String,
     pub(crate) theme_name: String,
     pub(crate) focus: Focus,
+    /// UI 专注模式：隐藏 Browse/List，Player 占满内容区；`Ctrl+F` 切换。
+    pub(crate) focus_mode: bool,
     pub(crate) quit_armed: bool,
     pub(crate) remote_tx: Option<std::sync::mpsc::Sender<String>>,
     pub(crate) views: Vec<ViewData>,
@@ -144,6 +146,7 @@ impl App {
             theme_id: "milkgreen".to_owned(),
             theme_name: "MilkGreen".to_owned(),
             focus: Focus::Browse,
+            focus_mode: false,
             quit_armed: false,
             remote_tx: None,
             views: Vec::new(),
@@ -164,7 +167,6 @@ impl App {
             danmaku_overlay: crate::danmaku_overlay::DanmakuOverlay::default(),
         }
     }
-
     pub(crate) fn input_text(&self) -> String {
         self.input.iter().collect()
     }
@@ -208,7 +210,6 @@ impl App {
         self.input = self.history[next].chars().collect();
         self.cursor = self.input.len();
     }
-
     pub(crate) fn history_down(&mut self) {
         let Some(index) = self.history_cursor else {
             return;
@@ -225,7 +226,6 @@ impl App {
             self.cursor = self.input.len();
         }
     }
-
     pub(crate) fn apply_theme_reply(&mut self, reply: np_core::theme::ThemeApplyReply) {
         let (palette, warnings) = Palette::from_tokens(&reply.tokens);
         self.palette = palette;

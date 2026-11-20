@@ -7,7 +7,7 @@ use crate::render::*;
 use crate::theme::Palette;
 use crate::transport::TransportAvailability;
 use crate::ui::scroll::ScrollState;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use np_app::{PlaybackTarget, SourceId};
 use np_core::{Block, BlockStatus, Output};
 use ratatui::backend::TestBackend;
@@ -719,6 +719,62 @@ fn player_content_is_sixty_eight_columns_on_72x24() {
         .expect("player title");
     assert_eq!(buffer[(2, top)].symbol(), "┏");
     assert_eq!(buffer[(3, top)].symbol(), " ");
+}
+
+#[test]
+fn focus_mode_hides_browse_and_fills_player_on_72x24() {
+    let mut app = browse_app();
+    app.focus_mode = true;
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    assert!(!text.contains(" Browse "), "专注模式不应画 Browse：{text}");
+    assert!(text.contains(" Player "), "专注模式缺少 Player：{text}");
+    let buffer = terminal.backend().buffer();
+    // Player 外框直接落在内区：左上 (2,1)、右上 (69,1)、左下 (2,22)。
+    assert_eq!(buffer[(2, 1)].symbol(), "┏");
+    assert_eq!(buffer[(69, 1)].symbol(), "┓");
+    assert_eq!(buffer[(2, 22)].symbol(), "┗");
+    let status: String = row_text(&terminal, 23)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(status.contains("Ctrl+F"), "{status:?}");
+    assert!(status.contains("退出专注"), "{status:?}");
+}
+
+#[test]
+fn focus_mode_keeps_player_at_sixty_by_twenty() {
+    let mut app = browse_app();
+    app.focus_mode = true;
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    assert!(!text.contains(" Browse "), "专注模式不应画 Browse：{text}");
+    assert!(text.contains(" Player "), "专注模式缺少 Player：{text}");
+    let status: String = row_text(&terminal, 19)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(status.contains("Ctrl+F"), "{status:?}");
+    assert!(status.contains("退出专注"), "{status:?}");
+}
+
+#[test]
+fn focus_mode_falls_back_to_normal_layout_in_small_terminals() {
+    let mut app = browse_app();
+    app.focus_mode = true;
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(50, 10)).unwrap();
+    let text = draw_text(&mut app, &mut terminal, &audio);
+    assert!(text.contains(" Browse "), "小终端应回退普通布局：{text}");
+    assert!(text.contains(" Player "), "小终端仍要画 Player：{text}");
+    let status: String = row_text(&terminal, 9)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(status.contains("Ctrl+F"), "{status:?}");
+    assert!(status.contains("退出专注"), "{status:?}");
 }
 
 #[test]
@@ -1793,6 +1849,21 @@ fn motion_setting_reports_next_launch() {
 }
 
 #[test]
+fn focus_mode_setting_applies_immediately() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "tui.focusMode")
+        .expect("tui.focusMode");
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(settings.get_bool("tui.focusMode"), Some(true));
+    assert!(app.focus_mode);
+    assert_eq!(app.status, "专注模式 开");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn sound_setting_toggle_applies_immediately() {
     let (mut app, settings, audio, theme, root) = settings_fixture();
     app.row_index = app
@@ -2248,6 +2319,73 @@ fn controller_executes_resolved_actions() {
         &settings,
     );
     assert_eq!(app.search_platform, SearchPlatform::Netease);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ctrl_f_toggles_focus_mode_and_writes_back_setting() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-focus-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = TuiAudio::empty();
+    let mut app = App::new();
+    app.load_views(&audio, &*library, &settings);
+    app.focus = Focus::List;
+    let context = crate::keymap::InputContext {
+        focus: app.focus,
+        kind: app.view_kind.get(app.view_index).cloned(),
+        live: false,
+    };
+    let action = crate::keymap::resolve(&context, KeyCode::Char('f'), KeyModifiers::CONTROL)
+        .expect("Ctrl+F 应解析");
+    assert_eq!(action, Action::ToggleFocusMode);
+
+    crate::controller::execute(
+        action, &mut app, &mut audio, &library, &tx, &theme, &settings,
+    );
+    assert!(app.focus_mode);
+    assert_eq!(settings.get_bool("tui.focusMode"), Some(true));
+    assert_eq!(app.status, "专注模式 开");
+
+    crate::controller::execute(
+        Action::ToggleFocusMode,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(!app.focus_mode);
+    assert_eq!(settings.get_bool("tui.focusMode"), Some(false));
+    assert_eq!(app.status, "专注模式 关");
+
+    // Live 页解析但忽略，不写回设置。
+    audio.live_for_test(21622811, "BLAST");
+    crate::controller::execute(
+        Action::ToggleFocusMode,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert!(!app.focus_mode);
+    assert_eq!(settings.get_bool("tui.focusMode"), Some(false));
+    assert_eq!(app.status, "直播中不可切换专注模式");
     let _ = std::fs::remove_dir_all(root);
 }
 

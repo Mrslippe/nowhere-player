@@ -526,7 +526,13 @@ fn set_setting_value(
                 app.set_transient_status(format!("{} {}", field.label, bool_text(enabled)));
                 return Ok(());
             }
-            if field.key == "tui.focusMode" || field.key == "ui.motion" {
+            if field.key == "tui.focusMode" {
+                // 专注模式运行期立即生效；Ctrl+F 也写回同一个配置键。
+                app.focus_mode = enabled;
+                app.set_transient_status(format!("{} {}", field.label, bool_text(enabled)));
+                return Ok(());
+            }
+            if field.key == "ui.motion" {
                 app.set_transient_status(format!(
                     "{} {} · 下次启动生效",
                     field.label,

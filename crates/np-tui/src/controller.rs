@@ -209,6 +209,22 @@ fn execute_action(
             }
         }
         Action::OpenCommand => app.enter_command(),
+        Action::ToggleFocusMode => {
+            if player.is_live() {
+                app.set_status("直播中不可切换专注模式".to_owned());
+            } else {
+                app.focus_mode = !app.focus_mode;
+                let enabled = app.focus_mode;
+                let label = if enabled { "开" } else { "关" };
+                match settings.set_and_save("tui.focusMode", np_core::SettingValue::Bool(enabled)) {
+                    Ok(()) => app.set_transient_status(format!("专注模式 {label}")),
+                    Err(error) => {
+                        app.set_status(format!("专注模式 {label} · 保存失败：{}", error.message))
+                    }
+                }
+                app.refresh_settings_view(settings);
+            }
+        }
         Action::ToggleVideo => match player.toggle_video_with_theme(&app.palette) {
             Ok(note) => app.set_transient_status(note),
             Err(message) => app.set_status(message),

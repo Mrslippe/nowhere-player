@@ -31,13 +31,33 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
         player.draw_login(frame, &app.palette);
         return;
     }
-    let outer_title = format!(" NOWHERE PLAYER v{} ", env!("CARGO_PKG_VERSION"));
+    // UI 专注模式：隐藏 Browse/List，Player 占满内区。小终端回退普通布局，
+    // 但状态栏仍给出 Ctrl+F 退出提示。
+    if app.focus_mode && full.width >= 50 && full.height >= 12 {
+        draw_focus(frame, full, app, player);
+        return;
+    }
+    let outer_title = outer_title();
     chrome::draw_outer_chrome(frame, full, &app.palette, &outer_title, &app.theme_name);
 
     let [top, player_area, _] = layout_areas(full);
 
     draw_browse_list(frame, top, app);
     draw_player_strip(frame, player_area, app, player);
+    draw_controller_overlay(frame, full, app);
+    draw_status_border(frame, full, app);
+    player.draw_login(frame, &app.palette);
+}
+
+fn outer_title() -> String {
+    format!(" NOWHERE PLAYER v{} ", env!("CARGO_PKG_VERSION"))
+}
+
+/// 专注模式只留外框 + Player：Player 直接占用 `layout_inner` 的整个内区。
+fn draw_focus(frame: &mut ratatui::Frame, full: Rect, app: &mut App, player: &TuiAudio) {
+    let outer_title = outer_title();
+    chrome::draw_outer_chrome(frame, full, &app.palette, &outer_title, &app.theme_name);
+    draw_player_strip(frame, layout_inner(full), app, player);
     draw_controller_overlay(frame, full, app);
     draw_status_border(frame, full, app);
     player.draw_login(frame, &app.palette);
@@ -109,6 +129,15 @@ fn is_pending_status(app: &App) -> bool {
 }
 
 fn status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut hints = base_status_hints(app);
+    if app.focus_mode {
+        // 专注模式（含小终端回退）第一项固定是退出提示。
+        hints.insert(0, (keymap::label(Action::ToggleFocusMode), "退出专注"));
+    }
+    hints
+}
+
+fn base_status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let enter = keymap::label(Action::Enter);
     let esc = keymap::label(Action::Escape);
     let tab = keymap::label(Action::NextSearchPlatform);
