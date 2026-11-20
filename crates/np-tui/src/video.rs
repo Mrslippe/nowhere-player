@@ -36,7 +36,9 @@ pub(crate) const VIDEO_HOST_ENV: &str = "NP_VIDEO_HOST";
 /// 与 np-tui 同目录的宿主进程名。
 #[cfg(windows)]
 pub(crate) const VIDEO_HOST_EXE: &str = "np-video.exe";
+// 非 Windows 只用外部播放器；保留常量给测试与共享路径，避免平台分叉。
 #[cfg(not(windows))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const VIDEO_HOST_EXE: &str = "np-video";
 /// 状态栏一次性提示的停留时间。
 pub(crate) const VIDEO_NOTE_TTL: Duration = Duration::from_secs(4);
@@ -76,7 +78,11 @@ pub(crate) struct VideoProgram {
 /// 一次视频启动选择：优先自建宿主，缺失时回退外部播放器。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum VideoBackend {
-    Host { path: PathBuf },
+    // 宿主只在 Windows 构造；非 Windows 保留变体供共享匹配与测试。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Host {
+        path: PathBuf,
+    },
     External(VideoProgram),
 }
 
@@ -209,6 +215,9 @@ pub(crate) fn player_command(program: &VideoProgram, url: &str) -> Command {
 }
 
 /// 解析宿主可执行文件：显式覆盖 > np-tui 同目录 > PATH。
+///
+/// 非 Windows 不启动宿主，但测试与共享解析路径仍保留这份实现。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) fn resolve_host(
     override_path: Option<&OsStr>,
     exe_dir: Option<&Path>,

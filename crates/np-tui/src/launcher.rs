@@ -287,6 +287,7 @@ fn fallback_args(cwd: &str, exe: &str, size: bool) -> Vec<String> {
 
 /// 如果当前 Windows Terminal 不是 72×24，尝试开一个指定尺寸的新窗口。
 /// 用临时 marker 避免尺寸设置失败时无限重开。
+#[cfg(windows)]
 pub fn ensure_default_size(cols: u16, rows: u16) -> bool {
     if std::env::var_os("WT_SESSION").is_none() || (cols == 72 && (23..=24).contains(&rows)) {
         return false;

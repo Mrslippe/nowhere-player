@@ -1023,7 +1023,6 @@ mod tests {
         ));
     }
 
-    #[cfg(windows)]
     fn unique_directory(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
