@@ -412,15 +412,38 @@ pub(crate) fn draw_visual(
     let background = background.unwrap_or(Color::Reset);
     match app.visual_mode {
         VisualMode::Spectrum => draw_spectrum(frame, area, &app.spectrum, accent, background),
-        VisualMode::Waveform => draw_waveform(frame, area, &app.waveform, accent, background),
-        VisualMode::Vectorscope => draw_vectorscope(
-            frame,
-            area,
-            &app.stereo_left,
-            &app.stereo_right,
-            accent,
-            background,
-        ),
+        VisualMode::Bars => crate::visuals::draw_bars(frame, area, &app.spectrum, &app.palette),
+        VisualMode::Waveform => {
+            // 静音时降为 faint 基线，有信号时行为不变。
+            let color = if app.waveform.iter().all(|value| *value == 0.0) {
+                app.palette.color(PaletteToken::Faint)
+            } else {
+                accent
+            };
+            draw_waveform(frame, area, &app.waveform, color, background)
+        }
+        VisualMode::Mirror => crate::visuals::draw_mirror(frame, area, &app.waveform, &app.palette),
+        VisualMode::Vectorscope => {
+            let silent = app.stereo_left.iter().all(|value| *value == 0.0)
+                && app.stereo_right.iter().all(|value| *value == 0.0);
+            let color = if silent {
+                app.palette.color(PaletteToken::Faint)
+            } else {
+                accent
+            };
+            draw_vectorscope(
+                frame,
+                area,
+                &app.stereo_left,
+                &app.stereo_right,
+                color,
+                background,
+            )
+        }
+        VisualMode::Rings => crate::visuals::draw_rings(frame, area, &app.spectrum, &app.palette),
+        VisualMode::Starfield => {
+            crate::visuals::draw_starfield(frame, area, &app.spectrum, &app.palette)
+        }
     }
 }
 

@@ -109,7 +109,7 @@ related: [DES-010, DES-011, ADR-0006]
 | `a` | 加入队列 |
 | `A` | 加入歌单（弹选择层） |
 | `d` | 从当前歌单移除 |
-| `f` | 循环切换视觉模式（频谱/波形/矢量） |
+| `f` | 循环切换视觉模式（频谱/柱状/波形/镜像/矢量/环形/星野） |
 | `Ctrl+F` | 沉浸模式 |
 
 ### 4.3 左栏（视图）
@@ -142,7 +142,7 @@ related: [DES-010, DES-011, ADR-0006]
 - 焦点栏边框 `accent`，非焦点 `faint`——**用边框表达焦点，不用背景色**（终端背景不可靠）。
 - 选中行**反白**（`Reverse`），只给"当前行"，不给整列表。
 - 播放器条上方一条 `─` 分隔，不用整个方块边框（省空间）。
-- 视觉区固定 4 行，三种模式共用。
+- 视觉区高度随窗口（72×24 下 10 行），七种模式共用。
 - **键位条随焦点变化**（lazygit 的核心做法）。
 
 ---
@@ -241,7 +241,7 @@ Playback：
 m 循环播放模式（写入 settings.json）
 ```
 
-Settings 页增加分类：播放、界面、启动、音源、其他；包含 volume、mode、theme.id、ui.splash、tui.focusMode、startup.enabled、source.*。
+Settings 页增加分类：播放、界面、启动、音源、其他；包含 volume、mode、theme.id、ui.splash、tui.focusMode、startup.enabled、source.*、ui.visual。
 
 ## 11. 2026-11-16 交互收口
 
@@ -299,6 +299,21 @@ Settings 页增加分类：播放、界面、启动、音源、其他；包含 v
 - 设置页切换「专注模式」同样立即生效，不再提示“下次启动生效”；「动效」仍保留“下次启动生效”。
 - 开机自启写 HKCU Run，不需要管理员；启动时按当前 exe 路径自愈，失败写入状态栏。
 
+### 11.8 Player 视觉样式（T-0126）
+
+- `f` 按固定顺序循环：频谱 → 柱状 → 波形 → 镜像 → 矢量 → 环形 → 星野 → 频谱；
+  状态栏显示「视觉：柱状」等，并写回 `ui.visual`。
+- `Ctrl+F` 仍只切换专注模式；`Ctrl+Shift+F` 不触发任何视觉动作，普通 `f` 也不会被
+  Ctrl 表抢占。
+- 启动时先读 `ui.visual`（缺省 `spectrum`），再由 `NP_TUI_VISUAL` 覆盖；环境变量
+  支持全部 7 个 id，并兼容旧 `wave` / `vector` 别名。
+- 设置页末尾追加「视觉样式」，`←→` 循环 7 种；未持久化时回退 App 当前模式，
+  已持久化后优先显示 `ui.visual`。
+- 新增样式只通过 `PaletteToken` 取色：柱状 / 镜像 / 环形 / 星野在 72×24 静音时
+  给 faint 基线或星点，不黑屏；波形与矢量静音时降为 faint 线，有信号时行为不变。
+- 环形固定 3 圈、单圈最多 24 段；星野固定 48 颗星，相位取 `status::now_millis()`，
+  静音时静止；每帧不分配大 `Vec`。
+
 ## 12. 输入映射与控制器（2026-11-17）
 
 正常模式的输入不再直接写在 `event_loop` 的 `KeyCode` 分支里。
@@ -320,6 +335,7 @@ KeyEvent + InputContext
 - `player_bar.rs`：播放控制的键名从 `keymap::label(Action)` 读取，不再手写。
 - `render.rs`：状态栏提示的 `s`、`/`、`n`、`d`、`a`、`r`、`Enter`、`Esc`、`Tab` 也从同一张表取。
 - 专注模式属于 UI 状态（`App.focus_mode`），不是 Browse 视图；`Ctrl+F` 由 `keymap` 的 Ctrl 表解析，controller 写回 `tui.focusMode`，render 只负责布局切换。
+- 视觉样式属于 UI 状态（`App.visual_mode`）；普通 `f` 由 `keymap` 解析为 `CycleVisual`，controller 写回 `ui.visual`，`visuals.rs` 只负责按 `PaletteToken` 绘制。
 - `transport.rs`：播放控制按钮的可用性（上一首/下一首/后退/前进）只计算一次，灰显和执行守卫共用。
 - 文本输入（Controller、Search 输入、New Playlist）仍由 `event_loop` 的输入模式处理，不进入业务分发。
 - `np-app` 命令层保持独立：UI 使用类型化 `Action`，不把按键拼成 `"next"` / `"play"` 命令再解析。

@@ -64,11 +64,67 @@ pub(crate) fn playback_mode_symbol(id: &str) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Player 视觉样式；顺序即 `f` 的循环顺序，id 用于 `ui.visual` 与
+/// `NP_TUI_VISUAL`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum VisualMode {
+    #[default]
     Spectrum,
+    Bars,
     Waveform,
+    Mirror,
     Vectorscope,
+    Rings,
+    Starfield,
+}
+
+impl VisualMode {
+    /// 固定顺序：`f`、设置页 `←→` 与 id 往返共用，避免各写一份循环表。
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Spectrum,
+        Self::Bars,
+        Self::Waveform,
+        Self::Mirror,
+        Self::Vectorscope,
+        Self::Rings,
+        Self::Starfield,
+    ];
+
+    pub(crate) fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|mode| *mode == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    /// 持久化 id；只接受正式取值。
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Spectrum => "spectrum",
+            Self::Bars => "bars",
+            Self::Waveform => "waveform",
+            Self::Mirror => "mirror",
+            Self::Vectorscope => "vectorscope",
+            Self::Rings => "rings",
+            Self::Starfield => "starfield",
+        }
+    }
+
+    /// 中文短名：状态栏与设置页值列共用。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Spectrum => "频谱",
+            Self::Bars => "柱状",
+            Self::Waveform => "波形",
+            Self::Mirror => "镜像",
+            Self::Vectorscope => "矢量",
+            Self::Rings => "环形",
+            Self::Starfield => "星野",
+        }
+    }
+
+    /// 只接受正式 id；旧别名 `wave` / `vector` 只在 `NP_TUI_VISUAL` 解析里兼容。
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|mode| mode.id() == id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

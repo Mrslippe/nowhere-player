@@ -36,6 +36,7 @@ pub(crate) enum Action {
     ToggleVideo,
     ToggleDanmaku,
     CycleMode,
+    CycleVisual,
     VolumeUp,
     VolumeDown,
     Quit,
@@ -292,6 +293,14 @@ const BINDINGS: &[Binding] = &[
         action: Action::CycleMode,
         label: "m",
     },
+    // T-0126：普通 f 轮换 Player 视觉样式；Ctrl+F 由上方 Ctrl 表先命中。
+    Binding {
+        key: KeyCode::Char('f'),
+        shift: false,
+        scope: Scope::Global,
+        action: Action::CycleVisual,
+        label: "f",
+    },
     Binding {
         key: KeyCode::Char('s'),
         shift: false,
@@ -423,12 +432,12 @@ pub(crate) fn resolve(
 ) -> Option<Action> {
     let shift = modifiers.contains(KeyModifiers::SHIFT);
     // Ctrl 表只吃 Ctrl（不带 Shift）；未命中的 Ctrl 组合继续走原逻辑，
-    // 保持 Ctrl+J / Ctrl+K 等既有行为不变。
+    // 保持 Ctrl+J / Ctrl+K 等既有行为不变。Ctrl 表登记过的键（目前是 F）
+    // 带 Shift 时直接不解析，避免落到普通 `f` 上。
     if modifiers.contains(KeyModifiers::CONTROL)
-        && !shift
         && let Some(binding) = CONTROL_BINDINGS.iter().find(|binding| binding.key == key)
     {
-        return Some(binding.action);
+        return if shift { None } else { Some(binding.action) };
     }
     for scope in context.scopes() {
         for binding in BINDINGS {
@@ -584,18 +593,20 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_f_toggles_focus_mode_without_stealing_plain_f() {
+    fn ctrl_f_toggles_focus_mode_while_plain_f_cycles_visual() {
         let library = ctx(Focus::List, BrowseKind::Library);
         assert_eq!(
             resolve(&library, KeyCode::Char('f'), KeyModifiers::CONTROL),
             Some(Action::ToggleFocusMode)
         );
         assert_eq!(label(Action::ToggleFocusMode), "Ctrl+F");
-        // 普通 f 没有绑定；Ctrl+Shift+F 也不走 Ctrl 表。
+        // 普通 f 轮换视觉样式，不被 Ctrl 表抢占。
         assert_eq!(
             resolve(&library, KeyCode::Char('f'), KeyModifiers::NONE),
-            None
+            Some(Action::CycleVisual)
         );
+        assert_eq!(label(Action::CycleVisual), "f");
+        // Ctrl+Shift+F 既不是专注模式，也不落到普通 f。
         assert_eq!(
             resolve(
                 &library,

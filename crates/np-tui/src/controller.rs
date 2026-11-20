@@ -169,6 +169,17 @@ fn execute_action(
             app.set_transient_status(format!("模式：{}", playback_mode_label(mode)));
             app.refresh_settings_view(settings);
         }
+        // T-0126：`f` 轮换 Player 视觉样式并写回 `ui.visual`。
+        Action::CycleVisual => {
+            let next = app.visual_mode.next();
+            app.visual_mode = next;
+            let _ = settings.set_and_save(
+                "ui.visual",
+                np_core::SettingValue::Str(next.id().to_owned()),
+            );
+            app.set_transient_status(format!("视觉：{}", next.label()));
+            app.refresh_settings_view(settings);
+        }
         Action::SeekBack => {
             if player.is_live() {
                 app.set_status("直播中不可跳转".to_owned());

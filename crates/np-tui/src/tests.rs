@@ -125,6 +125,116 @@ fn waveform_mode_draws_braille_points() {
 }
 
 #[test]
+fn visual_mode_cycles_all_seven_and_round_trips_ids() {
+    let mut mode = VisualMode::Spectrum;
+    let mut seen = Vec::new();
+    for _ in 0..VisualMode::ALL.len() {
+        seen.push(mode);
+        mode = mode.next();
+    }
+    assert_eq!(mode, VisualMode::Spectrum, "7 次 next 后回到起点");
+    assert_eq!(seen, VisualMode::ALL.to_vec());
+    assert_eq!(VisualMode::default(), VisualMode::Spectrum);
+
+    let ids = [
+        "spectrum",
+        "bars",
+        "waveform",
+        "mirror",
+        "vectorscope",
+        "rings",
+        "starfield",
+    ];
+    let labels = ["频谱", "柱状", "波形", "镜像", "矢量", "环形", "星野"];
+    for ((mode, id), label) in VisualMode::ALL.iter().zip(ids).zip(labels) {
+        assert_eq!(mode.id(), id);
+        assert_eq!(mode.label(), label);
+        assert_eq!(VisualMode::from_id(id), Some(*mode), "from_id({id})");
+    }
+    // 旧别名只允许出现在 main 的 NP_TUI_VISUAL 解析里。
+    assert_eq!(VisualMode::from_id("wave"), None);
+    assert_eq!(VisualMode::from_id("vector"), None);
+    assert_eq!(crate::visual_from_env("wave"), Some(VisualMode::Waveform));
+    assert_eq!(
+        crate::visual_from_env("vector"),
+        Some(VisualMode::Vectorscope)
+    );
+    assert_eq!(
+        crate::visual_from_env("starfield"),
+        Some(VisualMode::Starfield)
+    );
+    assert_eq!(crate::visual_from_env("bogus"), None);
+}
+
+fn player_visual_area() -> ratatui::layout::Rect {
+    let [_, player, _] = layout_areas(ratatui::layout::Rect::new(0, 0, 72, 24));
+    ratatui::layout::Rect {
+        x: player.x + 1,
+        y: player.y + 1,
+        width: player.width - 2,
+        height: player.height - 3,
+    }
+}
+
+fn visual_cell_counts(app: &App, buffer: &ratatui::buffer::Buffer) -> (usize, usize, usize) {
+    let area = player_visual_area();
+    let mut visible = 0;
+    let mut faint = 0;
+    let mut accent = 0;
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let cell = &buffer[(x, y)];
+            if cell.symbol() != " " {
+                visible += 1;
+            }
+            if cell.fg == app.palette.faint {
+                faint += 1;
+            }
+            if cell.fg == app.palette.accent {
+                accent += 1;
+            }
+        }
+    }
+    (visible, faint, accent)
+}
+
+#[test]
+fn all_visual_modes_render_at_72x24_with_a_faint_baseline_when_silent() {
+    let mut app = App::new();
+    let audio = TuiAudio::empty();
+    for mode in VisualMode::ALL {
+        app.visual_mode = mode;
+        let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio))
+            .unwrap();
+        let (visible, faint, _) = visual_cell_counts(&app, terminal.backend().buffer());
+        assert!(visible > 8, "{mode:?} 静音时视觉区几乎为空：{visible} 格");
+        assert!(faint > 0, "{mode:?} 静音时没有淡基线");
+    }
+}
+
+#[test]
+fn all_visual_modes_render_signals_at_72x24() {
+    let mut app = App::new();
+    app.spectrum = (0..16).map(|index| 0.15 + index as f32 * 0.05).collect();
+    app.waveform = (0..2048).map(|index| (index as f32 * 0.05).sin()).collect();
+    app.stereo_left = app.waveform.clone();
+    app.stereo_right = app.waveform.iter().map(|value| -value).collect();
+    let audio = TuiAudio::empty();
+    for mode in VisualMode::ALL {
+        app.visual_mode = mode;
+        let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio))
+            .unwrap();
+        let (visible, _, accent) = visual_cell_counts(&app, terminal.backend().buffer());
+        assert!(visible > 8, "{mode:?} 有信号时视觉区几乎为空：{visible} 格");
+        assert!(accent > 0, "{mode:?} 有信号时缺少 accent 主体");
+    }
+}
+
+#[test]
 fn braille_spectrum_has_more_points_than_one_block_row() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1538,6 +1648,7 @@ fn settings_page_lists_editable_fields_by_category() {
         "B站",
         "网易云",
         "直播缓冲",
+        "视觉样式",
     ] {
         assert!(labels.contains(&label), "missing {label}");
     }
@@ -1790,9 +1901,9 @@ fn settings_bool_enter_toggles_and_commits_without_edit_mode() {
 }
 
 #[test]
-fn settings_motion_and_sound_are_appended_and_default_on() {
+fn settings_motion_sound_and_visual_are_appended() {
     let root = std::env::temp_dir().join(format!(
-        "np-tui-settings-t0124-{}-{}",
+        "np-tui-settings-t0126-{}-{}",
         std::process::id(),
         now_millis()
     ));
@@ -1801,14 +1912,20 @@ fn settings_motion_and_sound_are_appended_and_default_on() {
     let page = crate::settings_page::settings_page(&settings);
     let keys: Vec<&str> = page.fields.iter().map(|field| field.key.as_str()).collect();
     assert_eq!(
-        &keys[keys.len() - 2..],
-        &["ui.motion", "ui.sound"],
+        &keys[keys.len() - 3..],
+        &["ui.motion", "ui.sound", "ui.visual"],
         "新设置必须追加在末尾，避免既有行号偏移"
     );
-    for field in &page.fields[keys.len() - 2..] {
+    for field in &page.fields[keys.len() - 3..keys.len() - 1] {
         assert_eq!(field.kind, crate::settings_page::SettingsKind::Bool);
         assert_eq!(field.default, Some(np_core::SettingValue::Bool(true)));
     }
+    let visual = &page.fields[keys.len() - 1];
+    assert_eq!(visual.kind, crate::settings_page::SettingsKind::VisualMode);
+    assert_eq!(
+        visual.default,
+        Some(np_core::SettingValue::Str("spectrum".to_owned()))
+    );
     assert_eq!(
         crate::settings_page::default_value("ui.motion"),
         np_core::SettingValue::Bool(true)
@@ -1816,6 +1933,10 @@ fn settings_motion_and_sound_are_appended_and_default_on() {
     assert_eq!(
         crate::settings_page::default_value("ui.sound"),
         np_core::SettingValue::Bool(true)
+    );
+    assert_eq!(
+        crate::settings_page::default_value("ui.visual"),
+        np_core::SettingValue::Str("spectrum".to_owned())
     );
     let motion_row = page
         .view
@@ -1831,6 +1952,13 @@ fn settings_motion_and_sound_are_appended_and_default_on() {
         .find(|row| row.get(1).is_some_and(|label| label == "音效"))
         .expect("音效 row");
     assert_eq!(sound_row[2], "开");
+    let visual_row = page
+        .view
+        .rows
+        .iter()
+        .find(|row| row.get(1).is_some_and(|label| label == "视觉样式"))
+        .expect("视觉样式 row");
+    assert_eq!(visual_row[2], "频谱");
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1952,6 +2080,79 @@ fn settings_playback_mode_edits_as_an_enum() {
 }
 
 #[test]
+fn settings_visual_mode_cycles_and_commits() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    // 模拟 NP_TUI_VISUAL 覆盖：未持久化时编辑草稿应回退 App 当前模式。
+    app.visual_mode = VisualMode::Rings;
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "ui.visual")
+        .expect("ui.visual");
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][2], "‹ 环形 ›");
+    crate::settings_editor::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][2], "‹ 星野 ›");
+    crate::settings_editor::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.visual_mode, VisualMode::Starfield);
+    assert_eq!(settings.get_str("ui.visual").as_deref(), Some("starfield"));
+    assert_eq!(app.views[0].rows[app.row_index][2], "星野");
+
+    // 已持久化后 current_value 优先 settings：环境覆盖不得污染编辑值。
+    app.visual_mode = VisualMode::Bars;
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][2], "‹ 星野 ›");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn startup_visual_mode_reads_ui_visual_then_env_override() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-visual-startup-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let settings = SettingsHandle::load(root.clone());
+    assert_eq!(
+        crate::startup_visual_mode(&settings, None),
+        VisualMode::Spectrum,
+        "未写过 ui.visual 时默认频谱"
+    );
+    settings
+        .set_and_save("ui.visual", np_core::SettingValue::Str("rings".to_owned()))
+        .unwrap();
+    assert_eq!(
+        crate::startup_visual_mode(&settings, None),
+        VisualMode::Rings
+    );
+    // 重新加载模拟下一次启动。
+    let reloaded = SettingsHandle::load(root.clone());
+    assert_eq!(
+        crate::startup_visual_mode(&reloaded, None),
+        VisualMode::Rings
+    );
+    assert_eq!(
+        crate::startup_visual_mode(&reloaded, Some("starfield")),
+        VisualMode::Starfield
+    );
+    assert_eq!(
+        crate::startup_visual_mode(&reloaded, Some("wave")),
+        VisualMode::Waveform
+    );
+    assert_eq!(
+        crate::startup_visual_mode(&reloaded, Some("vector")),
+        VisualMode::Vectorscope
+    );
+    // 非法覆盖不写坏已持久化值，回退到 settings。
+    assert_eq!(
+        crate::startup_visual_mode(&reloaded, Some("bogus")),
+        VisualMode::Rings
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn transient_status_expires_after_three_seconds() {
     let mut app = App::new();
     let now = Instant::now();
@@ -2042,11 +2243,11 @@ fn browse_tree_scrolls_the_ninth_view_into_seven_rows() {
 #[test]
 fn settings_list_scrolls_the_ninth_field_into_six_rows() {
     let (mut app, settings, _audio, _theme, root) = settings_fixture();
-    // T-0124 在末尾追加「动效 / 音效」两行，第 9 项仍是「直播缓冲」。
-    assert_eq!(app.views[0].rows.len(), 11);
+    // T-0124 / T-0126 在末尾追加「动效 / 音效 / 视觉样式」，第 9 项仍是「直播缓冲」。
+    assert_eq!(app.views[0].rows.len(), 12);
     app.row_index = 8;
     let mut scroll = ScrollState::new(6);
-    scroll.follow(8, 11);
+    scroll.follow(8, 12);
     assert_eq!(scroll.first, 3);
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
@@ -2386,6 +2587,68 @@ fn ctrl_f_toggles_focus_mode_and_writes_back_setting() {
     assert!(!app.focus_mode);
     assert_eq!(settings.get_bool("tui.focusMode"), Some(false));
     assert_eq!(app.status, "直播中不可切换专注模式");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn f_cycles_visual_mode_and_writes_back_ui_visual() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-visual-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let library = std::sync::Arc::new(np_app::LibraryHandle::with_paths(np_app::Paths {
+        config_dir: config.clone(),
+        cache_dir: root.join("cache"),
+        data_dir: root.join("data"),
+    }));
+    let settings = np_app::SettingsHandle::load(config);
+    let theme = TuiThemeApi::new(root.join("themes"));
+    let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
+    let mut audio = TuiAudio::empty();
+    let mut app = App::new();
+    let context = crate::keymap::InputContext {
+        focus: Focus::Browse,
+        kind: None,
+        live: false,
+    };
+    let action = crate::keymap::resolve(&context, KeyCode::Char('f'), KeyModifiers::NONE)
+        .expect("普通 f 应解析为 CycleVisual");
+    assert_eq!(action, Action::CycleVisual);
+
+    crate::controller::execute(
+        action, &mut app, &mut audio, &library, &tx, &theme, &settings,
+    );
+    assert_eq!(app.visual_mode, VisualMode::Bars);
+    assert_eq!(settings.get_str("ui.visual").as_deref(), Some("bars"));
+    assert_eq!(app.status, "视觉：柱状");
+
+    for expected in [
+        VisualMode::Waveform,
+        VisualMode::Mirror,
+        VisualMode::Vectorscope,
+        VisualMode::Rings,
+        VisualMode::Starfield,
+        VisualMode::Spectrum,
+    ] {
+        crate::controller::execute(
+            Action::CycleVisual,
+            &mut app,
+            &mut audio,
+            &library,
+            &tx,
+            &theme,
+            &settings,
+        );
+        assert_eq!(app.visual_mode, expected);
+    }
+    assert_eq!(
+        settings.get_str("ui.visual").as_deref(),
+        Some("spectrum"),
+        "一整圈后写回默认频谱"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

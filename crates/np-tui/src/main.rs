@@ -47,6 +47,7 @@ mod transport;
 #[cfg(windows)]
 mod tray;
 mod ui;
+mod visuals;
 
 use app::*;
 use audio::TuiAudio;
@@ -78,6 +79,26 @@ fn log_singleton(acquired: bool) {
             "singleton: {}",
             if acquired { "acquired" } else { "secondary" }
         );
+    }
+}
+
+/// 启动时解析视觉样式：先读 `ui.visual`，再让 `NP_TUI_VISUAL` 覆盖。
+fn startup_visual_mode(settings: &SettingsHandle, env: Option<&str>) -> VisualMode {
+    if let Some(mode) = env.and_then(visual_from_env) {
+        return mode;
+    }
+    settings
+        .get_str("ui.visual")
+        .and_then(|id| VisualMode::from_id(id.trim().to_ascii_lowercase().as_str()))
+        .unwrap_or_default()
+}
+
+/// `NP_TUI_VISUAL`：支持全部 7 个正式 id，并兼容旧 `wave` / `vector`。
+fn visual_from_env(value: &str) -> Option<VisualMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "wave" => Some(VisualMode::Waveform),
+        "vector" => Some(VisualMode::Vectorscope),
+        id => VisualMode::from_id(id),
     }
 }
 
@@ -208,13 +229,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.view_index = index;
         }
     }
-    if let Ok(mode) = std::env::var("NP_TUI_VISUAL") {
-        app.visual_mode = match mode.trim().to_ascii_lowercase().as_str() {
-            "waveform" | "wave" => VisualMode::Waveform,
-            "vectorscope" | "vector" => VisualMode::Vectorscope,
-            _ => VisualMode::Spectrum,
-        };
-    }
+    app.visual_mode =
+        startup_visual_mode(&settings, std::env::var("NP_TUI_VISUAL").ok().as_deref());
     #[cfg(windows)]
     if selftest.is_none()
         && let Ok((cols, rows)) = crossterm::terminal::size()

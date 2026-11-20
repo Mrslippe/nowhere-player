@@ -8,7 +8,7 @@ use crossterm::event::KeyCode;
 
 use crate::app::App;
 use crate::audio::TuiAudio;
-use crate::model::playback_mode_symbol;
+use crate::model::{VisualMode, playback_mode_symbol};
 use crate::settings_page::{
     SettingsField, SettingsKind, bool_text, default_value, live_buffer_ms, set_row_value,
 };
@@ -176,7 +176,7 @@ pub(crate) fn begin_settings_edit(
         }
         SettingsKind::Bool => adjust_setting(app, 1, player, settings, theme),
         _ => {
-            let draft = current_value(&field, player, settings, &app.theme_id);
+            let draft = current_value(&field, player, settings, &app.theme_id, app.visual_mode);
             app.settings_editor.start_edit(draft);
             paint_draft_row(app);
             Ok(())
@@ -200,7 +200,7 @@ pub(crate) fn adjust_setting(
     if field.kind == SettingsKind::ReadOnly {
         return Err(format!("{} 是只读配置", field.field_label()));
     }
-    let current = current_value(&field, player, settings, &app.theme_id);
+    let current = current_value(&field, player, settings, &app.theme_id, app.visual_mode);
     let value = step_value(&field, &current, direction, settings, theme, &app.theme_id)?;
     set_setting_value(app, &field, value, player, settings, theme)?;
     app.refresh_settings_view(settings);
@@ -343,6 +343,7 @@ fn current_value(
     player: &TuiAudio,
     settings: &SettingsHandle,
     theme_id: &str,
+    visual: VisualMode,
 ) -> SettingValue {
     match field.kind {
         SettingsKind::Volume => SettingValue::Num(f64::from(player.volume().clamp(0.0, 1.0))),
@@ -354,6 +355,15 @@ fn current_value(
                 .unwrap_or_else(|| default_bool(&field.key)),
         ),
         SettingsKind::BufferMs => SettingValue::Num(live_buffer_ms(settings) as f64),
+        // 优先读持久化值；从未写过时回退 App 当前模式（可能来自 NP_TUI_VISUAL）。
+        SettingsKind::VisualMode => SettingValue::Str(
+            settings
+                .get_str(&field.key)
+                .and_then(|id| VisualMode::from_id(&id))
+                .unwrap_or(visual)
+                .id()
+                .to_owned(),
+        ),
         SettingsKind::ReadOnly => settings
             .get(&field.key)
             .unwrap_or(SettingValue::Bool(false)),
@@ -427,6 +437,19 @@ fn step_value(
             );
             Ok(SettingValue::Num(next as f64))
         }
+        SettingsKind::VisualMode => {
+            let mode = match current {
+                SettingValue::Str(id) => VisualMode::from_id(id).unwrap_or_default(),
+                _ => VisualMode::default(),
+            };
+            let index = VisualMode::ALL
+                .iter()
+                .position(|candidate| *candidate == mode)
+                .unwrap_or(0) as i32;
+            let next =
+                VisualMode::ALL[(index + delta).rem_euclid(VisualMode::ALL.len() as i32) as usize];
+            Ok(SettingValue::Str(next.id().to_owned()))
+        }
         SettingsKind::ReadOnly => Err("只读配置不能修改".to_owned()),
     }
 }
@@ -456,6 +479,13 @@ fn draft_text(
         SettingsKind::BufferMs => match value {
             SettingValue::Num(number) => format!("{} ms", number.round() as i64),
             _ => "— ms".to_owned(),
+        },
+        SettingsKind::VisualMode => match value {
+            SettingValue::Str(id) => VisualMode::from_id(id)
+                .unwrap_or_default()
+                .label()
+                .to_owned(),
+            _ => VisualMode::default().label().to_owned(),
         },
         SettingsKind::ReadOnly => value.display(),
     };
@@ -553,6 +583,19 @@ fn set_setting_value(
             save(settings, &field.key, SettingValue::Num(milliseconds as f64))?;
             player.set_live_buffer_target(milliseconds as u64);
             app.set_transient_status(format!("直播缓冲 {milliseconds}ms"));
+        }
+        SettingsKind::VisualMode => {
+            let SettingValue::Str(id) = value else {
+                return Err("视觉样式设置类型错误".to_owned());
+            };
+            let mode = VisualMode::from_id(&id).ok_or_else(|| format!("未知视觉样式：{id}"))?;
+            save(
+                settings,
+                &field.key,
+                SettingValue::Str(mode.id().to_owned()),
+            )?;
+            app.visual_mode = mode;
+            app.set_transient_status(format!("视觉样式 {}", mode.label()));
         }
         SettingsKind::ReadOnly => return Err("只读配置不能修改".to_owned()),
     }

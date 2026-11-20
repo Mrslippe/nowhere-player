@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::model::{BrowseKind, ViewData, playback_mode_symbol};
+use crate::model::{BrowseKind, ViewData, VisualMode, playback_mode_symbol};
 use np_app::SettingsHandle;
 use np_core::SettingValue;
 
@@ -11,6 +11,8 @@ pub(crate) enum SettingsKind {
     Bool,
     /// 直播缓冲目标：`live.buffer_ms`，100ms 一档。
     BufferMs,
+    /// Player 视觉样式：`ui.visual`，七种样式循环。
+    VisualMode,
     ReadOnly,
 }
 
@@ -27,7 +29,7 @@ pub(crate) struct SettingsPage {
     pub(crate) fields: Vec<SettingsField>,
 }
 
-const FIELDS: [(&str, &str, &str, SettingsKind); 11] = [
+const FIELDS: [(&str, &str, &str, SettingsKind); 12] = [
     ("播放", "playback.volume", "音量", SettingsKind::Volume),
     (
         "播放",
@@ -55,6 +57,8 @@ const FIELDS: [(&str, &str, &str, SettingsKind); 11] = [
     // T-0124：追加在末尾，避免既有设置行号与测试整体偏移。
     ("界面", "ui.motion", "动效", SettingsKind::Bool),
     ("界面", "ui.sound", "音效", SettingsKind::Bool),
+    // T-0126：继续追加在末尾，保持既有行号稳定。
+    ("界面", "ui.visual", "视觉样式", SettingsKind::VisualMode),
 ];
 
 pub(crate) fn settings_page(settings: &SettingsHandle) -> SettingsPage {
@@ -107,6 +111,7 @@ pub(crate) fn default_value(key: &str) -> SettingValue {
         "tui.focusMode" | "startup.enabled" => SettingValue::Bool(false),
         "source.bilibili.enabled" | "source.netease.enabled" => SettingValue::Bool(true),
         "live.buffer_ms" => SettingValue::Num(np_core::settings::LIVE_BUFFER_MS_DEFAULT as f64),
+        "ui.visual" => SettingValue::Str(VisualMode::Spectrum.id().to_owned()),
         _ => SettingValue::Bool(false),
     }
 }
@@ -160,6 +165,12 @@ fn settings_value_text(settings: &SettingsHandle, key: &str, kind: SettingsKind)
             },
         )),
         SettingsKind::BufferMs => format!("{} ms", live_buffer_ms(settings)),
+        SettingsKind::VisualMode => settings
+            .get_str(key)
+            .and_then(|id| VisualMode::from_id(&id))
+            .unwrap_or_default()
+            .label()
+            .to_owned(),
         SettingsKind::ReadOnly => settings
             .get(key)
             .map(|value| value.display())
