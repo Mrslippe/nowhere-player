@@ -316,6 +316,92 @@ fn splash_cycles_themes_and_wraps() {
     assert_eq!(splash_theme_ids(), vec!["milkgreen"]);
 }
 
+fn splash_text_at(phase: Option<f32>, width: u16, height: u16) -> String {
+    let api = crate::theme::TuiThemeApi::new(std::env::temp_dir().join("np-tui-splash-motion"));
+    let mut app = App::new();
+    app.load_theme(&api, "milkgreen");
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("splash terminal");
+    match phase {
+        Some(phase) => crate::splash::draw_splash_at(&mut terminal, &app, phase).expect("splash"),
+        None => crate::splash::draw_splash(&mut terminal, &app).expect("splash"),
+    }
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// LOGO 行首个 `█` / `╚` 的 (行, 列)；6 行 LOGO 都各有一个。
+fn logo_anchors(text: &str) -> Vec<(usize, usize)> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(row, line)| {
+            line.chars()
+                .position(|character| character == '█' || character == '╚')
+                .map(|column| (row, column))
+        })
+        .collect()
+}
+
+#[test]
+fn static_splash_is_phase_zero_grid() {
+    assert_eq!(
+        splash_text_at(None, 80, 24),
+        splash_text_at(Some(0.0), 80, 24)
+    );
+    assert_eq!(
+        splash_text_at(None, 60, 20),
+        splash_text_at(Some(0.0), 60, 20)
+    );
+}
+
+#[test]
+fn splash_animation_moves_only_the_logo_by_one_cell() {
+    let frozen = splash_text_at(Some(0.0), 80, 24);
+    // phase=0.9：bob=+1 行，sway=+1 列。
+    let moved = splash_text_at(Some(0.9), 80, 24);
+    assert_ne!(frozen, moved);
+    let frozen_lines: Vec<&str> = frozen.lines().collect();
+    let moved_lines: Vec<&str> = moved.lines().collect();
+    assert_eq!(frozen_lines.len(), moved_lines.len());
+    // 主题名（第 15 行）与 Press Enter（第 17 行）不跟着晃。
+    assert_eq!(frozen_lines[14], moved_lines[14]);
+    assert_eq!(frozen_lines[16], moved_lines[16]);
+    assert_eq!(logo_anchors(&frozen).len(), 6);
+    let moved_anchors = logo_anchors(&moved);
+    assert_eq!(moved_anchors.len(), 6);
+    for (frozen, moved) in logo_anchors(&frozen).iter().zip(&moved_anchors) {
+        assert_eq!(moved.0, frozen.0 + 1, "LOGO 只下移 1 行");
+        assert_eq!(moved.1, frozen.1 + 1, "LOGO 只右移 1 列");
+    }
+}
+
+#[test]
+fn splash_motion_degrades_in_small_terminals_without_panicking() {
+    // 窄（LOGO 退化为 NOWHERE）、矮（11 行动效布局放不下）、刚好 70 列。
+    for (width, height) in [(40, 10), (20, 8), (13, 8), (100, 8), (72, 20), (80, 3)] {
+        for phase in [0.9_f32, 2.6, 3.6] {
+            let text = splash_text_at(Some(phase), width, height);
+            assert_eq!(
+                text.lines().count(),
+                usize::from(height),
+                "{width}x{height} phase {phase}"
+            );
+            if height >= 10 {
+                assert!(
+                    text.contains("NOWHERE") || text.contains('█'),
+                    "{width}x{height} phase {phase} lost the logo"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn missing_theme_setting_defaults_to_milkgreen() {
     let dir =
@@ -1648,6 +1734,85 @@ fn settings_bool_enter_toggles_and_commits_without_edit_mode() {
 }
 
 #[test]
+fn settings_motion_and_sound_are_appended_and_default_on() {
+    let root = std::env::temp_dir().join(format!(
+        "np-tui-settings-t0124-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let settings = SettingsHandle::load(root.clone());
+    let page = crate::settings_page::settings_page(&settings);
+    let keys: Vec<&str> = page.fields.iter().map(|field| field.key.as_str()).collect();
+    assert_eq!(
+        &keys[keys.len() - 2..],
+        &["ui.motion", "ui.sound"],
+        "新设置必须追加在末尾，避免既有行号偏移"
+    );
+    for field in &page.fields[keys.len() - 2..] {
+        assert_eq!(field.kind, crate::settings_page::SettingsKind::Bool);
+        assert_eq!(field.default, Some(np_core::SettingValue::Bool(true)));
+    }
+    assert_eq!(
+        crate::settings_page::default_value("ui.motion"),
+        np_core::SettingValue::Bool(true)
+    );
+    assert_eq!(
+        crate::settings_page::default_value("ui.sound"),
+        np_core::SettingValue::Bool(true)
+    );
+    let motion_row = page
+        .view
+        .rows
+        .iter()
+        .find(|row| row.get(1).is_some_and(|label| label == "动效"))
+        .expect("动效 row");
+    assert_eq!(motion_row[2], "开");
+    let sound_row = page
+        .view
+        .rows
+        .iter()
+        .find(|row| row.get(1).is_some_and(|label| label == "音效"))
+        .expect("音效 row");
+    assert_eq!(sound_row[2], "开");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn motion_setting_reports_next_launch() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "ui.motion")
+        .expect("ui.motion");
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(settings.get_bool("ui.motion"), Some(false));
+    assert_eq!(app.status, "动效 关 · 下次启动生效");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn sound_setting_toggle_applies_immediately() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "ui.sound")
+        .expect("ui.sound");
+    // 未写过的设置默认开；第一次 Enter 关掉并立即静音。
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(settings.get_bool("ui.sound"), Some(false));
+    assert_eq!(app.status, "音效 关");
+    assert!(!app.sound.should_play_at(Instant::now()));
+    // 再切回开：立即恢复。
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(settings.get_bool("ui.sound"), Some(true));
+    assert!(app.sound.should_play_at(Instant::now()));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn settings_read_only_enter_never_enters_edit() {
     let (mut app, settings, audio, theme, root) = settings_fixture();
     app.settings_fields
@@ -1806,10 +1971,11 @@ fn browse_tree_scrolls_the_ninth_view_into_seven_rows() {
 #[test]
 fn settings_list_scrolls_the_ninth_field_into_six_rows() {
     let (mut app, settings, _audio, _theme, root) = settings_fixture();
-    assert_eq!(app.views[0].rows.len(), 9);
+    // T-0124 在末尾追加「动效 / 音效」两行，第 9 项仍是「直播缓冲」。
+    assert_eq!(app.views[0].rows.len(), 11);
     app.row_index = 8;
     let mut scroll = ScrollState::new(6);
-    scroll.follow(8, 9);
+    scroll.follow(8, 11);
     assert_eq!(scroll.first, 3);
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();

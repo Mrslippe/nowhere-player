@@ -38,6 +38,7 @@ mod search_ui;
 mod selftest;
 mod settings_editor;
 mod settings_page;
+mod sound;
 mod splash;
 mod startup;
 mod status;
@@ -151,6 +152,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_selftest(&script, &player, &library, &settings, &theme_api);
     }
     let mut app = App::new();
+    // 音效开关立即生效；未写过设置时默认开启。
+    app.sound
+        .set_enabled(settings.get_bool("ui.sound").unwrap_or(true));
     let (remote_tx, remote_rx) = std::sync::mpsc::channel();
     app.remote_tx = Some(remote_tx);
     if first_run {

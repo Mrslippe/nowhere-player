@@ -2,4 +2,5 @@
 
 pub(crate) mod bars;
 pub(crate) mod chrome;
+pub(crate) mod motion;
 pub(crate) mod scroll;

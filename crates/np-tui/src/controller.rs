@@ -5,14 +5,75 @@ use std::sync::Arc;
 
 use crate::app::{App, parse_search_input};
 use crate::audio::TuiAudio;
-use crate::keymap::Action;
+use crate::keymap::{Action, TRANSPORT_ACTIONS};
 use crate::model::*;
 use crate::playback::{QueueItem, TrackKey};
+use crate::sound::SoundCue;
 use crate::transport::TransportAvailability;
 use np_app::{LibraryHandle, PlayerApi, SettingsHandle, ThemeApi};
 use np_core::Block;
 
+/// 执行一个语义动作，并在状态实际变化时播放 UI 音效。
+///
+/// 音效规则（T-0124）：焦点变 → Focus；行 / 视图变 → Move；Enter → Confirm；
+/// Esc → Back；退出与播放控制不响。打字 / 搜索 / 命令 / 弹幕输入不走这里。
 pub(crate) fn execute(
+    action: Action,
+    app: &mut App,
+    player: &mut TuiAudio,
+    library: &Arc<LibraryHandle>,
+    search_tx: &std::sync::mpsc::Sender<(u64, Block)>,
+    theme: &dyn ThemeApi,
+    settings: &SettingsHandle,
+) {
+    let before = SoundState::capture(app);
+    execute_action(action, app, player, library, search_tx, theme, settings);
+    if let Some(cue) = cue_for(action, before, app) {
+        app.sound.play(cue);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SoundState {
+    focus: Focus,
+    view_index: usize,
+    row_index: usize,
+}
+
+impl SoundState {
+    fn capture(app: &App) -> Self {
+        Self {
+            focus: app.focus,
+            view_index: app.view_index,
+            row_index: app.row_index,
+        }
+    }
+}
+
+fn cue_for(action: Action, before: SoundState, app: &App) -> Option<SoundCue> {
+    // 退出与播放控制（含音量 / 模式）不响，避免听感噪音盖住音乐。
+    if matches!(
+        action,
+        Action::Quit | Action::VolumeUp | Action::VolumeDown | Action::CycleMode
+    ) || TRANSPORT_ACTIONS.contains(&action)
+    {
+        return None;
+    }
+    match action {
+        Action::Enter => return Some(SoundCue::Confirm),
+        Action::Escape => return Some(SoundCue::Back),
+        _ => {}
+    }
+    if app.focus != before.focus {
+        return Some(SoundCue::Focus);
+    }
+    if app.view_index != before.view_index || app.row_index != before.row_index {
+        return Some(SoundCue::Move);
+    }
+    None
+}
+
+fn execute_action(
     action: Action,
     app: &mut App,
     player: &mut TuiAudio,

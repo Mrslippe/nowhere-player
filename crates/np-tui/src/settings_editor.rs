@@ -12,6 +12,7 @@ use crate::model::playback_mode_symbol;
 use crate::settings_page::{
     SettingsField, SettingsKind, bool_text, default_value, live_buffer_ms, set_row_value,
 };
+use crate::sound::SoundCue;
 use crate::startup;
 use np_app::{SettingsHandle, ThemeApi};
 use np_core::SettingValue;
@@ -277,6 +278,13 @@ pub(crate) fn handle_settings_edit_key(
     let outcome =
         app.settings_editor
             .handle_key(code, &app.settings_fields, settings, theme, &app.theme_id);
+    // 设置编辑态只给 ←/→/Enter/Esc 配提示音；其它键被吞掉但不发声。
+    let cue = match code {
+        KeyCode::Left | KeyCode::Right => Some(SoundCue::Move),
+        KeyCode::Enter => Some(SoundCue::Confirm),
+        KeyCode::Esc => Some(SoundCue::Back),
+        _ => None,
+    };
     match outcome {
         Ok(SettingsOutcome::Handled) => paint_draft_row(app),
         Ok(SettingsOutcome::Submit(field, value)) => {
@@ -293,6 +301,9 @@ pub(crate) fn handle_settings_edit_key(
             app.set_transient_status("已取消修改");
         }
         Err(error) => app.set_status(error),
+    }
+    if let Some(cue) = cue {
+        app.sound.play(cue);
     }
     true
 }
@@ -509,7 +520,13 @@ fn set_setting_value(
                 }
             }
             save(settings, &field.key, SettingValue::Bool(enabled))?;
-            if field.key == "tui.focusMode" {
+            if field.key == "ui.sound" {
+                // 音效开关立即生效，不等到下次启动。
+                app.sound.set_enabled(enabled);
+                app.set_transient_status(format!("{} {}", field.label, bool_text(enabled)));
+                return Ok(());
+            }
+            if field.key == "tui.focusMode" || field.key == "ui.motion" {
                 app.set_transient_status(format!(
                     "{} {} · 下次启动生效",
                     field.label,

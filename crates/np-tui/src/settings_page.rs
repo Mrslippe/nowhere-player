@@ -27,7 +27,7 @@ pub(crate) struct SettingsPage {
     pub(crate) fields: Vec<SettingsField>,
 }
 
-const FIELDS: [(&str, &str, &str, SettingsKind); 9] = [
+const FIELDS: [(&str, &str, &str, SettingsKind); 11] = [
     ("播放", "playback.volume", "音量", SettingsKind::Volume),
     (
         "播放",
@@ -52,6 +52,9 @@ const FIELDS: [(&str, &str, &str, SettingsKind); 9] = [
         "直播缓冲",
         SettingsKind::BufferMs,
     ),
+    // T-0124：追加在末尾，避免既有设置行号与测试整体偏移。
+    ("界面", "ui.motion", "动效", SettingsKind::Bool),
+    ("界面", "ui.sound", "音效", SettingsKind::Bool),
 ];
 
 pub(crate) fn settings_page(settings: &SettingsHandle) -> SettingsPage {
@@ -100,7 +103,7 @@ pub(crate) fn default_value(key: &str) -> SettingValue {
         "playback.volume" => SettingValue::Num(1.0),
         "playback.mode" => SettingValue::Str("sequential".to_owned()),
         "theme.id" => SettingValue::Str("milkgreen".to_owned()),
-        "ui.splash" => SettingValue::Bool(true),
+        "ui.splash" | "ui.motion" | "ui.sound" => SettingValue::Bool(true),
         "tui.focusMode" | "startup.enabled" => SettingValue::Bool(false),
         "source.bilibili.enabled" | "source.netease.enabled" => SettingValue::Bool(true),
         "live.buffer_ms" => SettingValue::Num(np_core::settings::LIVE_BUFFER_MS_DEFAULT as f64),

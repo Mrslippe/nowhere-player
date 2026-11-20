@@ -69,6 +69,7 @@ pub(crate) struct App {
     pub(crate) transport_feedback: Option<(Action, Instant)>,
     pub(crate) settings_fields: Vec<SettingsField>,
     pub(crate) settings_editor: SettingsEditor,
+    pub(crate) sound: crate::sound::SoundPlayer, // 默认开启；main 从 ui.sound 同步
     pub(crate) no_color_ignored: bool,
     playlist_prepare_tx: std::sync::mpsc::Sender<PlaylistReady>,
     playlist_prepare_rx: std::sync::mpsc::Receiver<PlaylistReady>,
@@ -132,6 +133,7 @@ impl App {
             transport_feedback: None,
             settings_fields: Vec::new(),
             settings_editor: SettingsEditor::new(),
+            sound: crate::sound::SoundPlayer::new(),
             no_color_ignored: false,
             playlist_prepare_tx,
             playlist_prepare_rx,
@@ -190,13 +192,11 @@ impl App {
     pub(crate) fn left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
-
     pub(crate) fn right(&mut self) {
         if self.cursor < self.input.len() {
             self.cursor += 1;
         }
     }
-
     pub(crate) fn history_up(&mut self) {
         if self.history.is_empty() {
             return;
