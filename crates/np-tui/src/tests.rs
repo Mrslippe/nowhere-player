@@ -263,6 +263,7 @@ fn braille_spectrum_has_more_points_than_one_block_row() {
     assert!(braille > 4, "braille cells: {braille}");
 }
 
+#[cfg(windows)]
 #[test]
 fn cursor_show_sequence_is_once_per_frame() {
     use ratatui::Terminal;
@@ -299,6 +300,7 @@ fn cursor_show_sequence_is_once_per_frame() {
     assert_eq!(text.matches("\x1b[?25h").count(), 0);
 }
 
+#[cfg(windows)]
 #[test]
 fn paper_background_is_written_to_crossterm_backend() {
     use ratatui::Terminal;

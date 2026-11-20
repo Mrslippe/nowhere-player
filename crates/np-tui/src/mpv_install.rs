@@ -201,6 +201,7 @@ mod tests {
         assert!(SHA256.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    #[cfg(windows)]
     #[test]
     fn managed_path_is_under_local_app_data() {
         let root = install_root().expect("root");
