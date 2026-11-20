@@ -11,6 +11,7 @@ use crate::keymap::{self, Action};
 use crate::layout::{layout_areas, layout_inner};
 use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
+use crate::settings_page::SettingsKind;
 use crate::theme::PaletteToken;
 use crate::ui::chrome::{self, StatusHints, StatusState};
 use crate::ui::scroll::ScrollState;
@@ -569,13 +570,29 @@ pub(crate) fn draw_list(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     // 列表扣掉表头：72×24 下 Settings 等列表可见 6 行。
     let mut scroll = ScrollState::new(usize::from(inner.height.saturating_sub(1)));
     scroll.follow(app.row_index, rows.len());
+    let settings = matches!(
+        app.view_kind.get(app.view_index),
+        Some(BrowseKind::Settings)
+    );
     for index in scroll.range(rows.len()) {
         let row = &rows[index];
         let selected = app.focus == Focus::List && index == app.row_index;
+        let category = settings
+            && app
+                .settings_fields
+                .get(index)
+                .is_some_and(|field| field.kind == SettingsKind::Category);
         let style = if selected {
             app.palette.selection_style()
+        } else if category {
+            Style::default().fg(app.palette.color(PaletteToken::Accent))
         } else {
             Style::default().fg(app.palette.color(PaletteToken::Text))
+        };
+        let style = if category {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
         };
         lines.push(Line::styled(
             truncate_width(&format_row(row, &widths), inner.width as usize),

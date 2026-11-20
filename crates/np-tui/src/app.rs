@@ -7,7 +7,7 @@ use crate::audio::TuiAudio;
 use crate::keymap::Action;
 use crate::playback::{QueueItem, TrackKey};
 use crate::settings_editor::SettingsEditor;
-use crate::settings_page::{SettingsField, settings_page};
+use crate::settings_page::{SettingsField, row_for, settings_page_with};
 use crate::status::BlockStatusExt;
 pub(crate) use crate::status::now_millis;
 use crate::theme::Palette;
@@ -68,6 +68,7 @@ pub(crate) struct App {
     pub(crate) show_key_hints: bool,
     pub(crate) transport_feedback: Option<(Action, Instant)>,
     pub(crate) settings_fields: Vec<SettingsField>,
+    pub(crate) settings_collapsed: std::collections::BTreeSet<String>,
     pub(crate) settings_editor: SettingsEditor,
     pub(crate) sound: crate::sound::SoundPlayer, // 默认开启；main 从 ui.sound 同步
     pub(crate) no_color_ignored: bool,
@@ -135,6 +136,7 @@ impl App {
             show_key_hints: false,
             transport_feedback: None,
             settings_fields: Vec::new(),
+            settings_collapsed: std::collections::BTreeSet::new(),
             settings_editor: SettingsEditor::new(),
             sound: crate::sound::SoundPlayer::new(),
             no_color_ignored: false,
@@ -308,7 +310,7 @@ impl App {
         self.queue_marker = player.queue_list().ok().and_then(|view| view.index);
         let search = ViewData::titled("搜索");
         let live = ViewData::titled("直播");
-        let settings_page = settings_page(settings);
+        let settings_page = settings_page_with(settings, &self.settings_collapsed);
         self.settings_fields = settings_page.fields;
         self.settings_editor = SettingsEditor::new();
         let settings_view = settings_page.view;
@@ -353,9 +355,10 @@ impl App {
         self.view_index = 0;
         self.row_index = 0;
     }
-
     pub(crate) fn refresh_settings_view(&mut self, settings: &SettingsHandle) {
-        let page = settings_page(settings);
+        let previous = self.settings_fields.get(self.row_index);
+        let key = previous.map(|field| field.key.clone());
+        let page = settings_page_with(settings, &self.settings_collapsed);
         self.settings_fields = page.fields;
         if let Some(index) = self
             .view_kind
@@ -364,14 +367,12 @@ impl App {
         {
             self.views[index] = page.view;
             if self.view_index == index {
-                self.row_index = self
-                    .row_index
-                    .min(self.settings_fields.len().saturating_sub(1));
+                let fields = &self.settings_fields;
+                self.row_index = row_for(fields, key.as_deref(), self.row_index);
                 self.settings_editor.select(self.row_index);
             }
         }
     }
-
     pub(crate) fn toggle_playlist(&mut self) {
         if self.playlist_children.is_empty() {
             return;

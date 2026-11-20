@@ -170,6 +170,21 @@ pub(crate) fn begin_settings_edit(
         .selected_field(&app.settings_fields)?
         .clone();
     match field.kind {
+        SettingsKind::Category => {
+            let folded = if app.settings_collapsed.remove(&field.key) {
+                false
+            } else {
+                app.settings_collapsed.insert(field.key.clone());
+                true
+            };
+            app.set_transient_status(format!(
+                "{} {}",
+                field.label,
+                if folded { "已折叠" } else { "已展开" }
+            ));
+            app.refresh_settings_view(settings);
+            Ok(())
+        }
         SettingsKind::ReadOnly => {
             app.set_transient_status(format!("{} 是只读配置", field.field_label()));
             Ok(())
@@ -197,6 +212,9 @@ pub(crate) fn adjust_setting(
         .settings_editor
         .selected_field(&app.settings_fields)?
         .clone();
+    if field.kind == SettingsKind::Category {
+        return Err("分类不能直接调整".to_owned());
+    }
     if field.kind == SettingsKind::ReadOnly {
         return Err(format!("{} 是只读配置", field.field_label()));
     }
@@ -319,6 +337,9 @@ pub(crate) fn reset_setting(
         .settings_editor
         .selected_field(&app.settings_fields)?
         .clone();
+    if field.kind == SettingsKind::Category {
+        return Err("分类不能直接重置".to_owned());
+    }
     let Some(value) = field.default.clone() else {
         return Err(format!("{} 是只读配置", field.field_label()));
     };
@@ -346,6 +367,7 @@ fn current_value(
     visual: VisualMode,
 ) -> SettingValue {
     match field.kind {
+        SettingsKind::Category => SettingValue::Bool(false),
         SettingsKind::Volume => SettingValue::Num(f64::from(player.volume().clamp(0.0, 1.0))),
         SettingsKind::PlaybackMode => SettingValue::Str(player.mode_id().to_owned()),
         SettingsKind::Theme => SettingValue::Str(theme_id.to_owned()),
@@ -380,6 +402,7 @@ fn step_value(
 ) -> Result<SettingValue, String> {
     let delta = direction.signum();
     match field.kind {
+        SettingsKind::Category => Err("分类不能直接调整".to_owned()),
         SettingsKind::Volume => {
             let number = match current {
                 SettingValue::Num(value) => *value,
@@ -462,6 +485,7 @@ fn draft_text(
     theme_name: &str,
 ) -> String {
     let text = match field.kind {
+        SettingsKind::Category => String::new(),
         SettingsKind::Volume => match value {
             SettingValue::Num(number) => format!("{}%", (number * 100.0).round() as i64),
             _ => "100%".to_owned(),
@@ -508,6 +532,7 @@ fn set_setting_value(
     theme: &dyn ThemeApi,
 ) -> Result<(), String> {
     match field.kind {
+        SettingsKind::Category => return Err("分类不能直接修改".to_owned()),
         SettingsKind::Volume => {
             let SettingValue::Num(number) = value else {
                 return Err("音量设置类型错误".to_owned());

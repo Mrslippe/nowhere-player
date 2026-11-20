@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::app::App;
 use crate::model::{BrowseKind, ViewData, VisualMode, playback_mode_symbol};
 use np_app::SettingsHandle;
@@ -5,6 +7,8 @@ use np_core::SettingValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsKind {
+    /// 分类伪字段：只用于树形展开/折叠，不是真实配置。
+    Category,
     Volume,
     PlaybackMode,
     Theme,
@@ -29,77 +33,148 @@ pub(crate) struct SettingsPage {
     pub(crate) fields: Vec<SettingsField>,
 }
 
-const FIELDS: [(&str, &str, &str, SettingsKind); 12] = [
-    ("播放", "playback.volume", "音量", SettingsKind::Volume),
+type SettingSpec = (&'static str, &'static str, SettingsKind);
+type CategorySpec = (&'static str, &'static [SettingSpec]);
+
+/// 分类顺序固定：播放 / 界面 / 启动 / 音源 / 直播；「其他」只收纳未知键。
+const CATEGORIES: [CategorySpec; 5] = [
     (
         "播放",
-        "playback.mode",
-        "播放模式",
-        SettingsKind::PlaybackMode,
+        &[
+            ("playback.volume", "音量", SettingsKind::Volume),
+            ("playback.mode", "播放模式", SettingsKind::PlaybackMode),
+        ],
     ),
-    ("界面", "theme.id", "主题", SettingsKind::Theme),
-    ("界面", "ui.splash", "启动页", SettingsKind::Bool),
-    ("界面", "tui.focusMode", "专注模式", SettingsKind::Bool),
-    ("启动", "startup.enabled", "开机自启", SettingsKind::Bool),
-    ("音源", "source.bilibili.enabled", "B站", SettingsKind::Bool),
+    (
+        "界面",
+        &[
+            ("theme.id", "主题", SettingsKind::Theme),
+            ("ui.splash", "启动页", SettingsKind::Bool),
+            ("tui.focusMode", "专注模式", SettingsKind::Bool),
+            ("ui.motion", "动效", SettingsKind::Bool),
+            ("ui.sound", "音效", SettingsKind::Bool),
+            ("ui.visual", "视觉样式", SettingsKind::VisualMode),
+        ],
+    ),
+    (
+        "启动",
+        &[("startup.enabled", "开机自启", SettingsKind::Bool)],
+    ),
     (
         "音源",
-        "source.netease.enabled",
-        "网易云",
-        SettingsKind::Bool,
+        &[
+            ("source.bilibili.enabled", "B站", SettingsKind::Bool),
+            ("source.netease.enabled", "网易云", SettingsKind::Bool),
+        ],
     ),
     (
         "直播",
-        np_core::settings::LIVE_BUFFER_MS_KEY,
-        "直播缓冲",
-        SettingsKind::BufferMs,
+        &[(
+            np_core::settings::LIVE_BUFFER_MS_KEY,
+            "直播缓冲",
+            SettingsKind::BufferMs,
+        )],
     ),
-    // T-0124：追加在末尾，避免既有设置行号与测试整体偏移。
-    ("界面", "ui.motion", "动效", SettingsKind::Bool),
-    ("界面", "ui.sound", "音效", SettingsKind::Bool),
-    // T-0126：继续追加在末尾，保持既有行号稳定。
-    ("界面", "ui.visual", "视觉样式", SettingsKind::VisualMode),
 ];
 
+/// 测试与快照用包装：默认全部展开。
+#[cfg(test)]
 pub(crate) fn settings_page(settings: &SettingsHandle) -> SettingsPage {
+    settings_page_with(settings, &BTreeSet::new())
+}
+
+/// 生成可见行；`rows` 与 `fields` 一一对齐，分类行也是伪字段。
+pub(crate) fn settings_page_with(
+    settings: &SettingsHandle,
+    collapsed: &BTreeSet<String>,
+) -> SettingsPage {
     let mut rows = Vec::new();
     let mut fields = Vec::new();
-    for (category, key, label, kind) in FIELDS {
+    for (category, entries) in CATEGORIES {
+        let key = format!("category:{category}");
+        let folded = collapsed.contains(&key);
         rows.push(vec![
-            category.to_owned(),
-            label.to_owned(),
-            settings_value_text(settings, key, kind),
+            category_row_text(category, entries.len(), folded),
+            String::new(),
         ]);
         fields.push(SettingsField {
-            key: key.to_owned(),
-            label: label.to_owned(),
-            kind,
-            default: Some(default_value(key)),
-        });
-    }
-    let known: Vec<&str> = FIELDS.iter().map(|(_, key, _, _)| *key).collect();
-    for (key, value) in settings.entries() {
-        if known.contains(&key.as_str()) {
-            continue;
-        }
-        rows.push(vec!["其他".to_owned(), key.clone(), value.display()]);
-        fields.push(SettingsField {
             key,
-            label: String::new(),
-            kind: SettingsKind::ReadOnly,
+            label: category.to_owned(),
+            kind: SettingsKind::Category,
             default: None,
         });
+        if folded {
+            continue;
+        }
+        for &(field_key, label, kind) in entries {
+            rows.push(vec![
+                format!("  {label}"),
+                settings_value_text(settings, field_key, kind),
+            ]);
+            fields.push(SettingsField {
+                key: field_key.to_owned(),
+                label: label.to_owned(),
+                kind,
+                default: Some(default_value(field_key)),
+            });
+        }
+    }
+    let known: Vec<&str> = CATEGORIES
+        .iter()
+        .flat_map(|(_, entries)| entries.iter().map(|(key, _, _)| *key))
+        .collect();
+    let unknown: Vec<(String, SettingValue)> = settings
+        .entries()
+        .into_iter()
+        .filter(|(key, _)| !known.contains(&key.as_str()))
+        .collect();
+    if !unknown.is_empty() {
+        let key = "category:其他".to_owned();
+        let folded = collapsed.contains(&key);
+        rows.push(vec![
+            category_row_text("其他", unknown.len(), folded),
+            String::new(),
+        ]);
+        fields.push(SettingsField {
+            key,
+            label: "其他".to_owned(),
+            kind: SettingsKind::Category,
+            default: None,
+        });
+        if !folded {
+            for (child_key, value) in unknown {
+                rows.push(vec![format!("  {child_key}"), value.display()]);
+                fields.push(SettingsField {
+                    key: child_key,
+                    label: String::new(),
+                    kind: SettingsKind::ReadOnly,
+                    default: None,
+                });
+            }
+        }
     }
     SettingsPage {
         view: ViewData {
             title: "设置".to_owned(),
-            columns: vec!["分类".to_owned(), "设置项".to_owned(), "值".to_owned()],
+            columns: vec!["设置".to_owned(), "值".to_owned()],
             rows,
             refs: Vec::new(),
             durations: Vec::new(),
         },
         fields,
     }
+}
+
+fn category_row_text(label: &str, count: usize, folded: bool) -> String {
+    let marker = if folded { "▸" } else { "▾" };
+    format!("{marker} {label} ({count})")
+}
+
+/// 重建 Settings 树后按字段 key 找回选中行；找不到时回退并夹取下标。
+pub(crate) fn row_for(fields: &[SettingsField], key: Option<&str>, fallback: usize) -> usize {
+    key.and_then(|key| fields.iter().position(|field| field.key == key))
+        .unwrap_or(fallback)
+        .min(fields.len().saturating_sub(1))
 }
 
 pub(crate) fn default_value(key: &str) -> SettingValue {
@@ -132,6 +207,7 @@ pub(crate) fn live_buffer_ms(settings: &SettingsHandle) -> u64 {
 
 fn settings_value_text(settings: &SettingsHandle, key: &str, kind: SettingsKind) -> String {
     match kind {
+        SettingsKind::Category => String::new(),
         SettingsKind::Volume => {
             let value = settings
                 .get(key)
@@ -194,9 +270,9 @@ pub(crate) fn set_row_value(app: &mut App, index: usize, text: String) {
         .views
         .get_mut(view_index)
         .and_then(|view| view.rows.get_mut(index))
-        && row.len() >= 3
+        && row.len() >= 2
     {
-        row[2] = text;
+        row[1] = text;
     }
 }
 

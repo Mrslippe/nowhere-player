@@ -64,4 +64,35 @@ docs/30-计划/任务卡/T-0128-Settings分类树.md（仅结果段）
 
 ## 5. 结果
 
-待实现。
+2026-11-21：
+
+- 数据模型：`SettingsKind` 新增 `Category`；分类行以伪字段进入 `fields`，与 `view.rows`
+  一一对齐，`row_index` 仍是两者共同下标。分类顺序固定
+  播放 (2) / 界面 (6) / 启动 (1) / 音源 (2) / 直播 (1)；未知键追加「其他」根，只读，
+  无未知键时不显示。`view.columns` 改为「设置 / 值」，`set_row_value` 写 `row[1]`。
+- 生成：`settings_page_with(settings, &BTreeSet<String>)` 按折叠集合生成可见行，分类根
+  `▾ 播放 (2)` / `▸ 播放 (2)`，子字段两格缩进；`settings_page(settings)` 保留为默认
+  全展开的测试/快照包装。`App` 只新增 `settings_collapsed` 字段与初始化，
+  `load_views` / `refresh_settings_view` 改走 `settings_page_with`；刷新按选中字段 key
+  找回行，找不到时回退夹取 `row_index` 并同步 `settings_editor.select`。`app.rs` 1800 行
+  （≤1800 硬上限）。
+- 交互：分类行 `Enter` 只切换折叠集合并刷新，状态「播放 已折叠 / 已展开」，不进入编辑、
+  不写设置；普通字段原逻辑不变。`adjust_setting` / `reset_setting` 对分类分别返回
+  「分类不能直接调整 / 重置」；`current_value` / `step_value` / `draft_text` /
+  `set_setting_value` 均有 Category 安全分支，分类不会进入编辑态。
+- 渲染：分类行 accent + BOLD；选中时 selection 反白并保留 BOLD；子字段缩进来自行文本，
+  选中态不变；表头、总数、滚动沿用通用列表（72×24 可见 6 行，total 17）。
+- 测试（新增 6 项，更新 11 项）：分类顺序/默认全展开/行字段对齐、折叠后子字段消失与
+  再展开恢复、「其他」只读根、分类 Enter 不编辑不写设置、分类调整/重置报错、分类
+  accent+BOLD 与选中保留 BOLD、60×20 冒烟；旧测试的列头、行值下标与硬编码行号改为
+  按字段 key 定位。
+- 金标：`crates/np-tui/tests/golden/settings_72x24.txt` 更新为树形（本卡授权）。
+- 验证（2026-11-21）：
+  - `cargo fmt --all`：通过（`--check` 无差异）；
+  - `cargo test -p np-tui`：379 passed / 0 failed / 1 ignored；
+  - `cargo clippy -p np-tui --all-targets -- -D warnings`：通过；
+  - 未跑全量 `scripts/check.ps1`（按本卡要求）。
+- 未决风险：折叠状态不持久化（非目标）；`settings_page` 包装只在 `cfg(test)` 编译；
+  `app.rs` 恰好 1800 行，后续改动需先腾行。
+- 文档影响：`docs/10-设计/TUI交互模型.md` §11.4 已改为分类树、默认展开、Enter 折叠、
+  字段编辑/重置保持。

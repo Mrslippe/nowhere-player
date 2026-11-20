@@ -177,6 +177,30 @@ fn golden_settings_72x24() {
 }
 
 #[test]
+fn settings_tree_smoke_at_60x20() {
+    let mut app = settings_app();
+    let audio = TuiAudio::empty();
+    let mut terminal =
+        Terminal::new(ratatui::backend::TestBackend::new(60, 20)).expect("test terminal");
+    terminal
+        .draw(|frame| draw(frame, &mut app, &audio))
+        .expect("draw");
+    let compact: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    assert!(compact.contains("Settings"), "{compact}");
+    assert!(compact.contains("▾播放(2)"), "{compact}");
+    assert!(compact.contains("音量"), "{compact}");
+}
+
+#[test]
 fn golden_search_72x24() {
     let mut app = search_app();
     let audio = TuiAudio::empty();
