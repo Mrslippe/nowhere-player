@@ -31,8 +31,13 @@ impl TuiAudio {
         self.login.borrow_mut().handle_key(key)
     }
 
-    pub(crate) fn draw_login(&self, frame: &mut ratatui::Frame, palette: &crate::theme::Palette) {
-        self.login.borrow().draw(frame, frame.area(), palette);
+    pub(crate) fn draw_login(
+        &self,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        palette: &crate::theme::Palette,
+    ) {
+        self.login.borrow().draw(frame, area, palette);
     }
 
     pub(super) fn auth_for_live(&self) -> Option<np_live::BiliAuth> {

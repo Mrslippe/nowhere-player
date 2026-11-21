@@ -99,6 +99,23 @@ fn vectorscope_draws_reference_or_samples() {
 }
 
 #[test]
+fn content_area_is_capped_and_centered_at_144x48() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = App::new();
+    let audio = TuiAudio::empty();
+    let mut terminal = Terminal::new(TestBackend::new(200, 60)).unwrap();
+    let _ = draw_text(&mut app, &mut terminal, &audio);
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(0, 0)].symbol(), " ");
+    assert_eq!(buffer[(28, 6)].symbol(), "┏");
+    assert_eq!(buffer[(171, 6)].symbol(), "┓");
+    assert_eq!(buffer[(28, 53)].symbol(), "┗");
+    assert_eq!(buffer[(171, 53)].symbol(), "┛");
+}
+
+#[test]
 fn waveform_mode_draws_braille_points() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

@@ -177,8 +177,8 @@ pub(crate) fn pitch_fill(spectrum: &[f32], cells: usize) -> usize {
 ///
 /// 视觉区始终按完整宽度绘制（72×24 下 66×19）；弹幕浮层只是叠在右侧
 /// 34×18 的一块覆盖层，不再压缩左侧频谱（T-0100b2 / T-0100b3）。
-pub(crate) fn draw(frame: &mut ratatui::Frame, app: &App, player: &TuiAudio) {
-    let layout = layout(frame.area());
+pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App, player: &TuiAudio) {
+    let layout = layout(area);
     if layout.outer.width < 8 || layout.outer.height < 4 {
         return;
     }
@@ -565,7 +565,10 @@ mod tests {
     fn draw_live(width: u16, height: u16, app: &App, audio: &TuiAudio) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|frame| draw(frame, app, audio))
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, area, app, audio);
+            })
             .expect("draw");
         terminal
     }

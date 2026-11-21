@@ -8,7 +8,7 @@ use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::*;
 use crate::keymap::{self, Action};
-use crate::layout::{layout_areas, layout_inner};
+use crate::layout::{content_area, layout_areas, layout_inner};
 use crate::model::{BrowseKind, SearchDisplay};
 use crate::player_bar::draw_player_strip;
 use crate::settings_page::SettingsKind;
@@ -17,19 +17,22 @@ use crate::ui::chrome::{self, StatusHints, StatusState};
 use crate::ui::scroll::ScrollState;
 
 pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio) {
-    let full = frame.area();
-    frame.render_widget(Clear, full);
+    let terminal = frame.area();
+    frame.render_widget(Clear, terminal);
     if let Some(bg) = app.palette.canvas() {
-        frame.buffer_mut().set_style(full, Style::default().bg(bg));
+        frame
+            .buffer_mut()
+            .set_style(terminal, Style::default().bg(bg));
     }
+    let full = content_area(terminal);
     if full.width < 4 || full.height < 6 {
         return;
     }
     // 直播独占整屏：不再画 Browse/List/Player 三区。
     if player.is_live() {
-        crate::live_page::draw(frame, app, player);
+        crate::live_page::draw(frame, full, app, player);
         draw_controller_overlay(frame, full, app);
-        player.draw_login(frame, &app.palette);
+        player.draw_login(frame, full, &app.palette);
         return;
     }
     // UI 专注模式：隐藏 Browse/List，Player 占满内区。小终端回退普通布局，
@@ -47,7 +50,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, app: &mut App, player: &TuiAudio)
     draw_player_strip(frame, player_area, app, player);
     draw_controller_overlay(frame, full, app);
     draw_status_border(frame, full, app);
-    player.draw_login(frame, &app.palette);
+    player.draw_login(frame, full, &app.palette);
 }
 
 fn outer_title() -> String {
@@ -61,7 +64,7 @@ fn draw_focus(frame: &mut ratatui::Frame, full: Rect, app: &mut App, player: &Tu
     draw_player_strip(frame, layout_inner(full), app, player);
     draw_controller_overlay(frame, full, app);
     draw_status_border(frame, full, app);
-    player.draw_login(frame, &app.palette);
+    player.draw_login(frame, full, &app.palette);
 }
 
 /// `/` 命令浮层：主界面和 Live 页共用。

@@ -1,5 +1,22 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+/// 内容区上限：终端可以更大，但 UI 只画在居中的 144×48 内。
+pub(crate) const MAX_CONTENT_WIDTH: u16 = 144;
+pub(crate) const MAX_CONTENT_HEIGHT: u16 = 48;
+
+pub(crate) fn content_area(area: Rect) -> Rect {
+    let width = area.width.min(MAX_CONTENT_WIDTH);
+    let height = area.height.min(MAX_CONTENT_HEIGHT);
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        y: area
+            .y
+            .saturating_add(area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    }
+}
+
 /// 主区域高度：Controller 改为按需浮层，不再常驻占位。
 /// 原来 Controller 的 3 行全部给 Player；顶部保持原 9/19 比例。
 /// 状态栏嵌在外框下边线，不占主区域。
@@ -54,6 +71,30 @@ mod tests {
         assert_eq!(main_heights(22), (9, 13, 0));
         assert_eq!(main_heights(28), (12, 16, 0));
         assert_eq!(main_heights(38), (17, 21, 0));
+    }
+
+    #[test]
+    fn content_area_caps_the_ui_at_144x48() {
+        assert_eq!(
+            content_area(Rect::new(0, 0, 72, 24)),
+            Rect::new(0, 0, 72, 24)
+        );
+        assert_eq!(
+            content_area(Rect::new(0, 0, 100, 30)),
+            Rect::new(0, 0, 100, 30)
+        );
+        assert_eq!(
+            content_area(Rect::new(0, 0, 200, 60)),
+            Rect::new(28, 6, 144, 48)
+        );
+        assert_eq!(
+            content_area(Rect::new(0, 0, 160, 50)),
+            Rect::new(8, 1, 144, 48)
+        );
+        assert_eq!(
+            content_area(Rect::new(0, 0, 20, 10)),
+            Rect::new(0, 0, 20, 10)
+        );
     }
 
     #[test]
