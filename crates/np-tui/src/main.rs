@@ -140,6 +140,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fallback = std::env::var_os(launcher::FALLBACK_ENV).is_some();
     let dirs = app_dirs::app_dirs();
     let first_run = dirs.first_run;
+    if let Some(original) = dirs.fallback_from.as_ref() {
+        app_dirs::copy_fallback_state(original, &dirs.data);
+    }
+    let fallback_note = dirs.fallback_from.as_ref().map(|original| {
+        format!(
+            "配置目录不可写（{}），本次已改用 {}",
+            original.display(),
+            dirs.config.display()
+        )
+    });
     std::fs::create_dir_all(&dirs.config)?;
     std::fs::create_dir_all(&dirs.cache)?;
     let config_dir = dirs.config;
@@ -149,6 +159,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| data_dir.join("logs"));
     let log_path = logging::init_from_env(&log_dir);
+    if let Some(note) = &fallback_note {
+        log::warn!(target: "app", "{note}");
+    }
     match &log_path {
         Ok(path) => log::info!(
             target: "app",
@@ -205,6 +218,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.remote_tx = Some(remote_tx);
     if first_run {
         app.status = "首次运行：用 library add <目录> 添加音乐".to_owned();
+    }
+    if let Some(note) = fallback_note {
+        app.set_status(note);
     }
     app.no_color_ignored = no_color;
     if fallback {
