@@ -16,6 +16,9 @@ use crate::truncate_width;
 use crate::ui::bars::draw_block_bar;
 use np_core::{PlaybackMode, RepeatMode};
 
+/// 每次频谱更新的最大下降量；让柱形从峰值自然落下来。
+const SPECTRUM_FALLOFF: f32 = 0.05;
+
 pub(crate) fn draw_player_strip(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -477,6 +480,12 @@ pub(crate) fn format_time(ms: u64) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
+/// 一次频谱更新：上升平滑，下降最多 `SPECTRUM_FALLOFF`，形成可见回落。
+fn next_spectrum(old: f32, new: f32) -> f32 {
+    let attack = old * 0.55 + new * 0.45;
+    attack.max((old - SPECTRUM_FALLOFF).max(0.0))
+}
+
 pub(crate) fn update_spectrum(app: &mut App, player: &TuiAudio) {
     let Some(tap) = player.tap() else {
         return;
@@ -491,7 +500,7 @@ pub(crate) fn update_spectrum(app: &mut App, player: &TuiAudio) {
     tap.latest_stereo(&mut left, &mut right);
     let next = spectrum(&samples, tap.sample_rate(), 16);
     for (old, new) in app.spectrum.iter_mut().zip(next) {
-        *old = *old * 0.65 + new * 0.35;
+        *old = next_spectrum(*old, new);
     }
     app.waveform = samples;
     app.stereo_left = left;
@@ -501,7 +510,7 @@ pub(crate) fn update_spectrum(app: &mut App, player: &TuiAudio) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_info_title, live_time_label};
+    use super::{SPECTRUM_FALLOFF, format_info_title, live_time_label, next_spectrum};
     use unicode_width::UnicodeWidthStr;
 
     #[test]
@@ -516,5 +525,12 @@ mod tests {
         assert_eq!(live_time_label(None), "LIVE");
         assert_eq!(live_time_label(Some(0)), "LIVE");
         assert_eq!(live_time_label(Some(900)), "LIVE 900ms");
+    }
+
+    #[test]
+    fn spectrum_falls_at_a_bounded_rate_and_rises_smoothly() {
+        assert!((next_spectrum(1.0, 0.0) - (1.0 - SPECTRUM_FALLOFF)).abs() < 1e-6);
+        assert!(next_spectrum(0.0, 1.0) > 0.0);
+        assert!(next_spectrum(0.0, 1.0) < 1.0);
     }
 }

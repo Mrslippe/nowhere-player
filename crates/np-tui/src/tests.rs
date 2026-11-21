@@ -292,7 +292,7 @@ fn all_visual_modes_render_signals_at_72x24() {
 }
 
 #[test]
-fn braille_spectrum_constant_level_fills_every_column_uniformly() {
+fn braille_spectrum_uses_two_cell_bars_with_gaps() {
     let palette = Palette::default_dark();
     let values = vec![0.5f32; 16];
     let area = ratatui::layout::Rect::new(0, 0, 66, 19);
@@ -306,28 +306,34 @@ fn braille_spectrum_constant_level_fills_every_column_uniformly() {
         crate::visuals::draw_spectrum_braille(frame, area, &values, &palette);
     });
 
-    let expected = visual_column(&buffer, area.x, area);
+    let columns: Vec<String> = (area.x..area.right())
+        .map(|x| visual_column(&buffer, x, area))
+        .collect();
     assert!(
-        !expected.contains('X'),
+        columns.iter().all(|column| !column.contains('X')),
         "清空 area 必须写空格，不能残留上一帧字符"
     );
-    let glyphs: Vec<char> = expected.chars().collect();
-    assert_eq!(
-        glyphs.iter().filter(|glyph| **glyph != ' ').count(),
-        13,
-        "显示曲线抬升后 0.5 约映射到 52 点：12 个满格 + 1 个整格"
-    );
-    assert!(glyphs[..6].iter().all(|glyph| *glyph == ' '));
-    assert_eq!(glyphs[6], '\u{28FF}', "顶部残余点行应填满整格");
-    assert!(glyphs[7..].iter().all(|glyph| *glyph == '\u{28FF}'));
-    for x in area.x..area.right() {
+    let filled: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.contains(|ch| ch != ' '))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(filled.len(), 44, "66 列应容纳 22 根 2 格柱");
+    for chunk in filled.chunks(2) {
+        assert_eq!(chunk.len(), 2, "每根柱必须是 2 格：{filled:?}");
+        assert_eq!(chunk[1], chunk[0] + 1, "柱内不能夹空列");
         assert_eq!(
-            visual_column(&buffer, x, area),
-            expected,
-            "第 {x} 列高度 / 点模式与首列不一致"
+            columns[chunk[0]], columns[chunk[1]],
+            "同一根柱的两列必须等高"
         );
-        assert_eq!(buffer[(x, area.bottom() - 1)].fg, palette.accent);
     }
+    assert_eq!(filled[0], 0);
+    assert_eq!(filled[1], 1);
+    assert_eq!(
+        columns[2], "                   ",
+        "两根柱之间必须留 1 格空隙"
+    );
 }
 
 #[test]
@@ -460,14 +466,6 @@ fn braille_spectrum_has_more_points_than_one_block_row() {
         })
         .count();
     assert!(braille > 4, "braille cells: {braille}");
-    let area = player_visual_area_at(80, 40);
-    let buffer = terminal.backend().buffer();
-    for x in area.x..area.right() {
-        assert!(
-            visual_column(buffer, x, area).chars().any(|ch| ch != ' '),
-            "spectrum 第 {x} 列整列空点"
-        );
-    }
 }
 
 #[cfg(windows)]

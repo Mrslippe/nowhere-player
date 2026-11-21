@@ -79,10 +79,10 @@ pub(crate) fn draw_bars(frame: &mut ratatui::Frame, area: Rect, values: &[f32], 
     }
 }
 
-/// 按终端格子栅格化的频谱：16 段线性插值到每一列，列内从底部填 Braille 点。
+/// 按终端格子栅格化的频谱：16 段插值成 2 格柱、1 格间隔。
 ///
-/// 每列的两个 Braille 子列同时填点，因此任意宽度下都不会出现旧的
-/// “65 条浮点线只落在部分子列”造成的周期性疏密带。
+/// 每根柱的两个 Braille 子列同时填点；柱间留空，避免 66 列连续实心块。
+/// 窗口变宽时增加柱数，不改变柱宽。
 pub(crate) fn draw_spectrum_braille(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -97,14 +97,18 @@ pub(crate) fn draw_spectrum_braille(
     if values.is_empty() {
         return;
     }
+    let width = usize::from(area.width);
+    let bars = (width / usize::from(BAR_PITCH)).clamp(1, MAX_BARS);
+    let used = bars * usize::from(BAR_PITCH) - usize::from(BAR_GAP);
+    let start = width.saturating_sub(used) / 2;
+    let bar_width = usize::from(BAR_WIDTH).min(width);
     let total_dots = usize::from(area.height) * 4;
     let style = Style::default()
         .fg(palette.color(PaletteToken::Accent))
         .bg(background);
-    let width = usize::from(area.width);
-    let heights: Vec<usize> = (0..width)
-        .map(|column| {
-            let value = display_spectrum(spectrum_at(values, column, width));
+    let heights: Vec<usize> = (0..bars)
+        .map(|bar| {
+            let value = display_spectrum(spectrum_at(values, bar, bars));
             if value <= 0.0 {
                 0
             } else {
@@ -113,14 +117,18 @@ pub(crate) fn draw_spectrum_braille(
         })
         .collect();
 
-    let mut line = String::with_capacity(width * 3);
     for row in 0..area.height {
-        line.clear();
+        let mut chars = vec![' '; width];
         let below = usize::from(area.height - 1 - row) * 4;
-        for &height in &heights {
+        for (bar, &height) in heights.iter().enumerate() {
             let filled = height.saturating_sub(below).min(4);
-            line.push(braille_cell(BRAILLE_BOTTOM[filled]));
+            let glyph = braille_cell(BRAILLE_BOTTOM[filled]);
+            let x = start + bar * usize::from(BAR_PITCH);
+            for offset in 0..bar_width.min(width.saturating_sub(x)) {
+                chars[x + offset] = glyph;
+            }
         }
+        let line: String = chars.into_iter().collect();
         frame
             .buffer_mut()
             .set_string(area.x, area.y + row, &line, style);
@@ -185,9 +193,9 @@ pub(crate) fn draw_waveform_braille(
 }
 
 /// 16 段频谱在 `column` 处的线性插值，结果落在 `0.0..=1.0`。
-/// 显示曲线：抬升低电平频段，但保持 0..=1 和相对频率结构。
+/// 显示曲线：只做轻微压缩，避免把低电平频段全部推到顶部。
 fn display_spectrum(value: f32) -> f32 {
-    (finite(value).clamp(0.0, 1.0).powf(0.65) * 1.08).clamp(0.0, 1.0)
+    finite(value).clamp(0.0, 1.0).powf(0.9)
 }
 
 /// 波形自动增益：安静音乐也能看见波形；噪声底不无限放大。
