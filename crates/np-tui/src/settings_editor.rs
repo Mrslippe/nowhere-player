@@ -671,7 +671,13 @@ fn set_setting_value(
 }
 
 fn save(settings: &SettingsHandle, key: &str, value: SettingValue) -> Result<(), String> {
-    settings
-        .set_and_save(key, value)
-        .map_err(|error| error.message)
+    settings.set_and_save(key, value).map_err(|error| {
+        // 状态栏只有 24 列，完整 IO 错误必须留在日志里才能定位共享冲突。
+        log::warn!(
+            target: "settings",
+            "event=save_failed key={key} error={}",
+            error.message
+        );
+        error.message
+    })
 }
