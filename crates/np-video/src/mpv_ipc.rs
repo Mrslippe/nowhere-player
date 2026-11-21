@@ -30,6 +30,8 @@ pub struct MpvIpc {
     sender: Sender<String>,
     cache_ms: Arc<AtomicU64>,
     load: LoadSlot,
+    /// 最近一次 loadfile 的 request id；reader 只接受这个 id 的回复。
+    expected_load: Arc<AtomicU64>,
 }
 
 impl MpvIpc {
@@ -41,16 +43,28 @@ impl MpvIpc {
         let speed_sender = sender.clone();
         let cache_ms = Arc::new(AtomicU64::new(NO_CACHE));
         let load: LoadSlot = Arc::new(Mutex::new(None));
+        let expected_load = Arc::new(AtomicU64::new(0));
         let thread_cache = cache_ms.clone();
         let thread_load = load.clone();
+        let thread_expected = expected_load.clone();
         std::thread::Builder::new()
             .name("np-video-mpv-ipc".to_owned())
-            .spawn(move || run(receiver, speed_sender, target_ms, thread_cache, thread_load))
+            .spawn(move || {
+                run(
+                    receiver,
+                    speed_sender,
+                    target_ms,
+                    thread_cache,
+                    thread_load,
+                    thread_expected,
+                )
+            })
             .ok();
         Self {
             sender,
             cache_ms,
             load,
+            expected_load,
         }
     }
 
@@ -75,6 +89,7 @@ impl MpvIpc {
         if let Ok(mut slot) = self.load.lock() {
             *slot = None;
         }
+        self.expected_load.store(request_id, Ordering::Relaxed);
         // 只记录请求 id / 长度，URL 不进日志。
         log::info!(
             target: "mpv-ipc",
@@ -242,6 +257,11 @@ impl SpeedChange {
         format!(r#"{{"command":["set_property","speed",{:.2}]}}"#, self.to)
     }
 
+    /// `file-loaded` 后把速度归位到正常档；和普通 `SpeedChange` 一样是一条 IPC 行。
+    fn normal_command() -> String {
+        format!(r#"{{"command":["set_property","speed",{NORMAL_SPEED:.2}]}}"#)
+    }
+
     fn log(&self, target_ms: u64) {
         log::info!(
             target: "mpv-cache",
@@ -265,6 +285,16 @@ impl SpeedTuner {
             target_ms,
             speed: NORMAL_SPEED,
         }
+    }
+
+    /// `file-loaded` 后归位到 1.0；返回被替换掉的旧速度（已经是 1.0 时 None）。
+    fn reset(&mut self) -> Option<f64> {
+        if self.speed == NORMAL_SPEED {
+            return None;
+        }
+        let from = self.speed;
+        self.speed = NORMAL_SPEED;
+        Some(from)
     }
 
     /// `cache_ms` 未知时保持 mpv 默认 1.0，不改变速度。
@@ -316,6 +346,11 @@ fn parse_json_number(text: &str) -> Option<f64> {
     text[..end].parse::<f64>().ok()
 }
 
+/// 只接受最近一次 loadfile 的 request id；旧回复必须丢弃。
+fn accept_load_reply(expected: u64, actual: u64) -> bool {
+    expected != 0 && expected == actual
+}
+
 /// 解析 mpv 的命令回复 `{"request_id":N,"error":"success"}`。
 ///
 /// 回复里的 error 文本只是 mpv 的错误码（例如 `loading failed`），不含 URL。
@@ -345,6 +380,7 @@ fn run(
     target_ms: u64,
     cache_ms: Arc<AtomicU64>,
     load: LoadSlot,
+    expected_load: Arc<AtomicU64>,
 ) {
     let Some(file) = connect_with_retry() else {
         log::error!(target: "mpv-ipc", "connect failed");
@@ -361,6 +397,7 @@ fn run(
     if let Some(file) = reader_file {
         let thread_cache = cache_ms.clone();
         let thread_load = load.clone();
+        let thread_expected = expected_load.clone();
         std::thread::Builder::new()
             .name("np-video-mpv-ipc-read".to_owned())
             .spawn(move || {
@@ -375,6 +412,20 @@ fn run(
                             // 换流成功：旧文件的缓存 / 速度统计作废，新流重新上报。
                             telemetry.reset();
                             thread_cache.store(NO_CACHE, Ordering::Relaxed);
+                            // loadfile replace 不会替我们重置 speed；如果不归位，
+                            // 上一次低缓存留下的 0.60x 会被新流继承。
+                            if let Some(from) = tuner.reset() {
+                                log::info!(
+                                    target: "mpv-cache",
+                                    "event=speed_reset from={from:.2} to=1.00 target_ms={target_ms}"
+                                );
+                                if speed_sender.send(SpeedChange::normal_command()).is_err() {
+                                    log::debug!(
+                                        target: "mpv-ipc",
+                                        "speed reset send failed: ipc thread stopped"
+                                    );
+                                }
+                            }
                             log::info!(target: "mpv-ipc", "event=file-loaded");
                         } else if let Some((name, value)) = parse_property_change(text) {
                             telemetry.update(name, value);
@@ -395,8 +446,18 @@ fn run(
                                 }
                             }
                         } else if let Some((request_id, result)) = parse_command_reply(text) {
-                            if let Ok(mut slot) = thread_load.lock() {
-                                *slot = Some((request_id, result));
+                            let expected = thread_expected.load(Ordering::Relaxed);
+                            if accept_load_reply(expected, request_id) {
+                                if let Ok(mut slot) = thread_load.lock() {
+                                    *slot = Some((request_id, result));
+                                }
+                            } else {
+                                // 旧 loadfile 的迟到回复不能覆盖新请求；否则新流
+                                // 会一直等不到 reply，最后 5s 超时回退。
+                                log::debug!(
+                                    target: "mpv-ipc",
+                                    "event=stale_load_reply request_id={request_id}"
+                                );
                             }
                         } else {
                             log::debug!(target: "mpv-ipc", "reply received");
@@ -582,6 +643,26 @@ mod tests {
         assert_eq!((change.from, change.to), (1.10, 1.0));
         let change = tuner.update(Some(300.0)).expect("slow down");
         assert_eq!((change.from, change.to), (1.0, 0.60));
+    }
+
+    #[test]
+    fn file_loaded_resets_the_carried_speed() {
+        let mut tuner = SpeedTuner::new(900);
+        let change = tuner.update(Some(300.0)).expect("slow down");
+        assert_eq!(change.to, 0.60);
+        assert_eq!(tuner.reset(), Some(0.60));
+        assert_eq!(tuner.reset(), None, "already normal must stay quiet");
+        assert_eq!(
+            SpeedChange::normal_command(),
+            r#"{"command":["set_property","speed",1.00]}"#
+        );
+    }
+
+    #[test]
+    fn stale_load_replies_are_dropped() {
+        assert!(!accept_load_reply(0, 1000));
+        assert!(!accept_load_reply(1001, 1000));
+        assert!(accept_load_reply(1001, 1001));
     }
 
     #[test]

@@ -69,6 +69,8 @@ const CONTROL_CLASS: &str = "NowherePlayerVideoControls";
 const TIMER_ID: usize = 1;
 /// 16ms：滑入 / 滑出期间约 60fps 的 SetWindowPos；静止时一次 tick 也很轻。
 const TIMER_INTERVAL_MS: u32 = 16;
+/// cache 小字最多 2Hz 更新；mpv 的 cache 属性变化频率远高于可见需求。
+const CACHE_TEXT_INTERVAL: Duration = Duration::from_millis(500);
 /// 呼出 overlay 的动画时长（ease-out）。
 const SHOW_DURATION: Duration = Duration::from_millis(160);
 /// 收起 overlay 的动画时长（ease-in）；走完才 `SW_HIDE`，不留残影。
@@ -171,6 +173,8 @@ struct Host {
     current_qn: Option<u64>,
     dragging_volume: bool,
     last_cache_text: Option<String>,
+    /// 上次刷新 cache 小字的时刻；控制条隐藏时不更新。
+    last_cache_text_at: Option<Instant>,
 }
 
 /// 创建窗口、启动 mpv、跑消息循环。成功返回时窗口已销毁，mpv 已回收。
@@ -350,6 +354,7 @@ pub fn run(request: Request, control: Receiver<Control>) -> Result<CloseReason, 
         current_qn: request.current_qn,
         dragging_volume: false,
         last_cache_text: None,
+        last_cache_text_at: None,
     };
     let cell = RefCell::new(host);
     let cell_ptr = (&cell as *const RefCell<Host>) as isize;
@@ -601,6 +606,17 @@ impl Host {
         }
     }
 
+    /// 只重绘控制条右侧 cache 小字；文本变化时避免整条控制条闪烁。
+    fn invalidate_controls_cache(&self) {
+        let Some(rect) = cache_local_rect(self.client_w, self.client_h, self.dpi) else {
+            return;
+        };
+        // SAFETY: controls 有效；rect 是 controls 客户区坐标。
+        unsafe {
+            let _ = InvalidateRect(Some(self.controls), Some(&rect), false);
+        }
+    }
+
     /// 显示标题栏并放到指定偏移（滑入起点或终点）。
     fn show_titlebar_at(&self, offset: i32) {
         // 硬约束 2：只 ShowWindow/SWP overlay，视频子窗口 Rect 完全不动。
@@ -814,11 +830,15 @@ impl Host {
         // 收起动画走完才清 hover（在 advance_controls 内），动画中保持正常。
         self.advance_controls(now);
 
-        // cache 小字每 tick 比对一次；只有显示文本变化才重绘控制条。
-        let cache_text = self.cache_text();
-        if self.last_cache_text.as_deref() != Some(cache_text.as_str()) {
-            self.last_cache_text = Some(cache_text);
-            self.invalidate_controls();
+        // cache 小字是唯一持续变化的控制条内容：限到 2Hz，并且只重绘 cache
+        // 小字矩形。否则 mpv 每次 cache 属性变化都会整条重画，GDI 下表现为闪烁。
+        if self.control_bar.is_visible() && cache_text_due(self.last_cache_text_at, now) {
+            let cache_text = self.cache_text();
+            if self.last_cache_text.as_deref() != Some(cache_text.as_str()) {
+                self.last_cache_text = Some(cache_text);
+                self.invalidate_controls_cache();
+            }
+            self.last_cache_text_at = Some(now);
         }
         None
     }
@@ -1131,6 +1151,27 @@ fn format_cache_ms(cache_ms: Option<u64>) -> String {
         Some(ms) => format!("{:.1}s", ms as f64 / 1_000.0),
         None => "--".to_owned(),
     }
+}
+
+/// cache 文本是否到了下一次允许刷新的时刻；`None` 表示第一次立即允许。
+fn cache_text_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= CACHE_TEXT_INTERVAL)
+}
+
+/// 控制条 cache 小字在 controls 客户区内的局部矩形；退化时返回 `None`。
+fn cache_local_rect(width: i32, height: i32, dpi: u32) -> Option<RECT> {
+    let layout = layout::control_layout(width, height, dpi);
+    let bar = layout.bar;
+    let cache = layout.cache;
+    if cache.right <= cache.left || cache.bottom <= cache.top {
+        return None;
+    }
+    Some(RECT {
+        left: cache.left.saturating_sub(bar.left),
+        top: cache.top.saturating_sub(bar.top),
+        right: cache.right.saturating_sub(bar.left),
+        bottom: cache.bottom.saturating_sub(bar.top),
+    })
 }
 
 /// 原生清晰度 popup menu：当前 qn 打勾，返回用户选中的 qn。
@@ -1740,6 +1781,29 @@ mod tests {
         assert_eq!(format_cache_ms(Some(0)), "0.0s");
         assert_eq!(format_cache_ms(Some(1_500)), "1.5s");
         assert_eq!(format_cache_ms(Some(940)), "0.9s");
+    }
+
+    #[test]
+    fn cache_text_refresh_is_throttled_to_two_hz() {
+        let now = Instant::now();
+        assert!(cache_text_due(None, now));
+        assert!(!cache_text_due(
+            Some(now),
+            now + CACHE_TEXT_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(cache_text_due(Some(now), now + CACHE_TEXT_INTERVAL));
+    }
+
+    #[test]
+    fn cache_rect_is_local_and_non_degenerate() {
+        let layout = layout::control_layout(1280, 720, 96);
+        let rect = cache_local_rect(1280, 720, 96).expect("cache rect");
+        assert_eq!(rect.left, layout.cache.left - layout.bar.left);
+        assert_eq!(rect.top, layout.cache.top - layout.bar.top);
+        assert_eq!(rect.right, layout.cache.right - layout.bar.left);
+        assert_eq!(rect.bottom, layout.cache.bottom - layout.bar.top);
+        assert!(rect.right > rect.left && rect.bottom > rect.top);
+        assert_eq!(cache_local_rect(8, 8, 96), None);
     }
 
     #[test]
