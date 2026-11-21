@@ -41,7 +41,7 @@ $env:NP_TUI_SELFTEST = "search 晴天;play 2"
 target\release\np-tui.exe
 ```
 
-数据目录默认在 `%APPDATA%\com.nowhere.player`；可用 `NP_TUI_DATA_DIR=<dir>` 隔离。若该目录不可写，启动时会自动退到 `%LOCALAPPDATA%` 或 `%TEMP%` 下的 `com.nowhere.player`，并在状态栏/日志提示，不需要管理员权限。
+数据目录默认在 `%APPDATA%\com.nowhere.player`；可用 `NP_TUI_DATA_DIR=<dir>` 隔离。若该目录不可写，启动时会依次退到 `%LOCALAPPDATA%`、`AppData\LocalLow` 或 `%TEMP%` 下的 `com.nowhere.player`，并在状态栏/日志提示，不需要管理员权限。从低完整性目录启动的便携包会使用 LocalLow。
 
 ## 常用键位
 

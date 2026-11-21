@@ -50,6 +50,19 @@ pub fn app_dirs() -> AppDirs {
             std::env::consts::OS,
         ));
     }
+    // 从低完整性目录（例如带 Low Mandatory Label 的便携包目录）启动时，
+    // 进程不能写中等完整性的 LocalAppData；LocalLow 是专门允许低完整性写的。
+    if std::env::consts::OS == "windows"
+        && let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from)
+    {
+        candidates.push(app_dirs_from_env(
+            Some(profile.join("AppData").join("LocalLow")),
+            None,
+            None,
+            None,
+            std::env::consts::OS,
+        ));
+    }
     let temp = std::env::temp_dir();
     candidates.push(app_dirs_from_env(
         Some(temp.clone()),
