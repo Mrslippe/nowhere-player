@@ -20,11 +20,11 @@ const BAR_PITCH: u16 = BAR_WIDTH + BAR_GAP;
 /// 144×48 上限下最多 144/3 = 48 根；留一点余量给更宽的终端截图。
 const MAX_BARS: usize = 64;
 /// 环形图固定圈数。
-const RING_COUNT: usize = 3;
+const RING_COUNT: usize = 5;
 /// 单圈最大分段数（基础圆与信号弧共用）。
-const RING_SEGMENTS: usize = 24;
+const RING_SEGMENTS: usize = 32;
 /// 星野固定星点数。
-const STAR_COUNT: u64 = 48;
+const STAR_COUNT: u64 = 96;
 
 /// Braille 左列 4 个点行对应的位：上到下 `0x01, 0x02, 0x04, 0x40`。
 const BRAILLE_LEFT: [u16; 4] = [0x01, 0x02, 0x04, 0x40];
@@ -53,7 +53,7 @@ pub(crate) fn draw_bars(frame: &mut ratatui::Frame, area: Rect, values: &[f32], 
     let accent = Style::default().fg(palette.color(PaletteToken::Accent));
     let max_units = usize::from(area.height) * 8;
     for index in 0..bars {
-        let value = spectrum_at(values, index, bars);
+        let value = display_spectrum(spectrum_at(values, index, bars));
         let scaled = (value * max_units as f32).round() as usize;
         let units = if value > 0.0 {
             scaled.max(1).min(max_units)
@@ -104,7 +104,7 @@ pub(crate) fn draw_spectrum_braille(
     let width = usize::from(area.width);
     let heights: Vec<usize> = (0..width)
         .map(|column| {
-            let value = spectrum_at(values, column, width);
+            let value = display_spectrum(spectrum_at(values, column, width));
             if value <= 0.0 {
                 0
             } else {
@@ -150,11 +150,12 @@ pub(crate) fn draw_waveform_braille(
     let style = Style::default().fg(color).bg(background);
     let total_dots = usize::from(area.height) * 4;
     let width = usize::from(area.width);
+    let gain = waveform_gain(samples);
     let mut previous: Option<usize> = None;
     // 每列的纵向区间覆盖“上一列 y → 当前列 y”，保证折线不断列。
     let spans: Vec<(usize, usize)> = (0..width)
         .map(|column| {
-            let y = waveform_dot(sample_at(samples, column, width), total_dots);
+            let y = waveform_dot(sample_at(samples, column, width) * gain, total_dots);
             let top = previous.map_or(y, |previous| previous.min(y));
             let bottom = previous.map_or(y, |previous| previous.max(y));
             previous = Some(y);
@@ -184,6 +185,23 @@ pub(crate) fn draw_waveform_braille(
 }
 
 /// 16 段频谱在 `column` 处的线性插值，结果落在 `0.0..=1.0`。
+/// 显示曲线：抬升低电平频段，但保持 0..=1 和相对频率结构。
+fn display_spectrum(value: f32) -> f32 {
+    (finite(value).clamp(0.0, 1.0).powf(0.65) * 1.08).clamp(0.0, 1.0)
+}
+
+/// 波形自动增益：安静音乐也能看见波形；噪声底不无限放大。
+fn waveform_gain(samples: &[f32]) -> f32 {
+    let peak = samples
+        .iter()
+        .map(|sample| finite(*sample).abs())
+        .fold(0.0f32, f32::max);
+    if peak <= 1.0e-3 {
+        return 1.0;
+    }
+    (0.85 / peak).clamp(1.0, 6.0)
+}
+
 fn spectrum_at(values: &[f32], column: usize, columns: usize) -> f32 {
     let Some(first) = values.first() else {
         return 0.0;
@@ -257,6 +275,7 @@ pub(crate) fn draw_mirror(
     let accent = palette.color(PaletteToken::Accent);
     let background = palette.color(PaletteToken::Canvas);
     let silent = samples.iter().all(|sample| *sample == 0.0);
+    let gain = waveform_gain(samples);
     let canvas = Canvas::default()
         .x_bounds([0.0, 64.0])
         .y_bounds([-1.0, 1.0])
@@ -278,8 +297,8 @@ pub(crate) fn draw_mirror(
             let mut previous_bottom: Option<(f64, f64)> = None;
             for index in 0..=64 {
                 let sample_index = index * (count - 1) / 64;
-                let value =
-                    finite(samples.get(sample_index).copied().unwrap_or(0.0)).clamp(-1.0, 1.0);
+                let value = (finite(samples.get(sample_index).copied().unwrap_or(0.0)) * gain)
+                    .clamp(-1.0, 1.0);
                 let x = index as f64;
                 let y = f64::from(value);
                 if let Some((x1, y1)) = previous_top {
@@ -322,8 +341,11 @@ pub(crate) fn draw_rings(
     let background = palette.color(PaletteToken::Canvas);
     // 终端字符约 2:1；按可视区宽高压缩 y 轴，圆看起来才是圆。
     let y_half = (2.0 * f64::from(area.height) / f64::from(area.width)).clamp(0.15, 1.0);
-    let radii = [0.4, 0.7, 1.0];
+    let radii = [0.22, 0.4, 0.58, 0.78, 1.0];
     let energies = ring_energies(values);
+    // 整个环缓慢旋转；有低频能量时转得更快，避免画面完全静止。
+    let energy = energies.iter().copied().fold(0.0f32, f32::max);
+    let rotation = now_millis() as f64 / 1000.0 * (0.15 + f64::from(energy) * 0.65);
     let canvas = Canvas::default()
         .x_bounds([-1.0, 1.0])
         .y_bounds([-y_half, y_half])
@@ -332,16 +354,16 @@ pub(crate) fn draw_rings(
         .paint(move |ctx| {
             let step = std::f64::consts::TAU / RING_SEGMENTS as f64;
             for (ring, fraction) in radii.iter().enumerate() {
-                let radius = y_half * fraction;
+                let ring_energy = energies.get(ring).copied().unwrap_or(0.0);
+                let radius = y_half * fraction * (0.92 + f64::from(ring_energy) * 0.12);
                 for segment in 0..RING_SEGMENTS {
-                    let start = segment as f64 * step;
+                    let start = rotation + segment as f64 * step;
                     ctx.draw(&arc(radius, start, start + step, faint));
                 }
-                let energy = energies.get(ring).copied().unwrap_or(0.0);
-                let lit = ((f64::from(energy) * RING_SEGMENTS as f64).round() as usize)
+                let lit = ((f64::from(ring_energy) * RING_SEGMENTS as f64).round() as usize)
                     .min(RING_SEGMENTS);
                 for segment in 0..lit {
-                    let start = -std::f64::consts::FRAC_PI_2 + segment as f64 * step;
+                    let start = -std::f64::consts::FRAC_PI_2 + rotation + segment as f64 * step;
                     ctx.draw(&arc(radius, start, start + step, accent));
                 }
             }
@@ -366,16 +388,16 @@ pub(crate) fn draw_starfield(
         .iter()
         .take(4)
         .copied()
-        .filter(|value| value.is_finite())
-        .fold(0.0f32, f32::max)
-        .clamp(0.0, 1.0);
+        .map(display_spectrum)
+        .fold(0.0f32, f32::max);
     // 用毫秒时间算相位；静音时 speed=0，星点完全静止，不产生额外闪烁。
     let speed = if energy <= 0.001 {
         0.0
     } else {
-        0.05 + f64::from(energy) * 0.35
+        0.05 + f64::from(energy) * 0.55
     };
     let phase = now_millis() as f64 / 1000.0 * speed;
+    let trail = 0.015 + f64::from(energy) * 0.08;
     let canvas = Canvas::default()
         .x_bounds([0.0, 1.0])
         .y_bounds([0.0, 1.0])
@@ -387,14 +409,14 @@ pub(crate) fn draw_starfield(
                 let base_y = star_unit(index * 3 + 2);
                 let drift = 0.5 + base_y * 0.8;
                 let y = (base_y - phase * drift).rem_euclid(1.0);
-                let color = if index.is_multiple_of(4) {
+                let color = if index.is_multiple_of(3) {
                     accent
                 } else {
                     faint
                 };
                 ctx.draw(&CanvasLine {
                     x1: x,
-                    y1: y,
+                    y1: (y + trail).min(1.0),
                     x2: x,
                     y2: y,
                     color,
@@ -457,9 +479,8 @@ fn ring_energies(values: &[f32]) -> [f32; RING_COUNT] {
         *energy = values[start..end]
             .iter()
             .copied()
-            .filter(|value| value.is_finite())
-            .fold(0.0f32, f32::max)
-            .clamp(0.0, 1.0);
+            .map(display_spectrum)
+            .fold(0.0f32, f32::max);
     }
     energies
 }

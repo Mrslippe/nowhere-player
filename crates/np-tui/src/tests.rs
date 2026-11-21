@@ -297,12 +297,12 @@ fn braille_spectrum_constant_level_fills_every_column_uniformly() {
     let glyphs: Vec<char> = expected.chars().collect();
     assert_eq!(
         glyphs.iter().filter(|glyph| **glyph != ' ').count(),
-        10,
-        "0.5 × 76 点 = 38 点，应覆盖 9 个满格 + 1 个半格"
+        13,
+        "显示曲线抬升后 0.5 约映射到 52 点：12 个满格 + 1 个整格"
     );
-    assert!(glyphs[..9].iter().all(|glyph| *glyph == ' '));
-    assert_eq!(glyphs[9], '\u{28E4}', "半格只填底部两个点行");
-    assert!(glyphs[10..].iter().all(|glyph| *glyph == '\u{28FF}'));
+    assert!(glyphs[..6].iter().all(|glyph| *glyph == ' '));
+    assert_eq!(glyphs[6], '\u{28FF}', "顶部残余点行应填满整格");
+    assert!(glyphs[7..].iter().all(|glyph| *glyph == '\u{28FF}'));
     for x in area.x..area.right() {
         assert_eq!(
             visual_column(&buffer, x, area),
@@ -334,18 +334,37 @@ fn braille_waveform_constant_level_fills_every_column() {
         "清空 area 必须写空格，不能残留上一帧字符"
     );
     let glyphs: Vec<char> = expected.chars().collect();
-    // 0.5 映射到 y = round((1 - 0.5) × 0.5 × 76) = 19，即第 4 格最后一行。
-    assert!(glyphs[..4].iter().all(|glyph| *glyph == ' '));
-    assert_eq!(glyphs[4], '\u{28C0}', "常量波形只应点亮一个点行");
-    assert!(glyphs[5..].iter().all(|glyph| *glyph == ' '));
+    // 自动增益把 0.5 抬到 0.85，映射到 y = round((1 - 0.85) × 0.5 × 76) = 6。
+    assert!(glyphs[..1].iter().all(|glyph| *glyph == ' '));
+    assert_eq!(glyphs[1], '\u{2824}', "常量波形只应点亮一个点行");
+    assert!(glyphs[2..].iter().all(|glyph| *glyph == ' '));
     for x in area.x..area.right() {
         assert_eq!(
             visual_column(&buffer, x, area),
             expected,
             "第 {x} 列没有点或高度不一致"
         );
-        assert_eq!(buffer[(x, area.y + 4)].fg, palette.accent);
+        assert_eq!(buffer[(x, area.y + 1)].fg, palette.accent);
     }
+}
+
+#[test]
+fn quiet_waveform_is_lifted_by_auto_gain() {
+    let palette = Palette::default_dark();
+    let samples = vec![0.05f32; 256];
+    let area = ratatui::layout::Rect::new(0, 0, 66, 19);
+    let buffer = braille_visual_buffer(66, 19, |frame, area| {
+        crate::visuals::draw_waveform_braille(frame, area, &samples, &palette);
+    });
+    let glyphs: Vec<char> = visual_column(&buffer, area.x, area).chars().collect();
+    assert_eq!(
+        glyphs.iter().filter(|glyph| **glyph != ' ').count(),
+        1,
+        "安静波形应被增益抬到可见行"
+    );
+    assert!(glyphs[..6].iter().all(|glyph| *glyph == ' '));
+    assert_eq!(glyphs[6], '\u{28C0}');
+    assert!(glyphs[7..].iter().all(|glyph| *glyph == ' '));
 }
 
 #[test]

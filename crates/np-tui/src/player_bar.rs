@@ -418,29 +418,45 @@ pub(crate) fn draw_vectorscope(
     accent: Color,
     background: Color,
 ) {
+    let count = left.len().min(right.len());
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .map(|sample| sample.abs())
+        .fold(0.0f32, f32::max);
+    let gain = if peak <= 1.0e-3 {
+        1.0
+    } else {
+        (0.9 / peak).clamp(1.0, 4.0)
+    };
+    // 短延迟让单声道也能形成回环，而不是永远压在同一条 y=x 对角线上。
+    let delay = (count / 28).max(1);
+    let sqrt_half = std::f64::consts::FRAC_1_SQRT_2;
     let canvas = Canvas::default()
         .x_bounds([-1.0, 1.0])
         .y_bounds([-1.0, 1.0])
         .background_color(background)
         .marker(Marker::Braille)
         .paint(move |ctx| {
-            // 45° reference line; no signal / mono source naturally lies here.
+            // 旋转 45° 后的水平中心线：静音/单声道也有稳定参考。
             ctx.draw(&CanvasLine {
                 x1: -1.0,
-                y1: -1.0,
+                y1: 0.0,
                 x2: 1.0,
-                y2: 1.0,
+                y2: 0.0,
                 color: accent,
             });
-            let count = left.len().min(right.len());
             if count == 0 {
                 return;
             }
             let step = (count / 256).max(1);
             let mut previous: Option<(f64, f64)> = None;
             for index in (0..count).step_by(step) {
-                let x = left[index].clamp(-1.0, 1.0) as f64;
-                let y = right[index].clamp(-1.0, 1.0) as f64;
+                let l = (left[index] * gain).clamp(-1.0, 1.0) as f64;
+                let r = (right[(index + delay) % count] * gain).clamp(-1.0, 1.0) as f64;
+                // 旋转到水平轴；单声道延迟后形成细小回环，而不是一条斜线。
+                let x = ((l + r) * sqrt_half).clamp(-1.0, 1.0);
+                let y = ((r - l) * sqrt_half).clamp(-1.0, 1.0);
                 if let Some((x1, y1)) = previous {
                     ctx.draw(&CanvasLine {
                         x1,
