@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -173,22 +175,28 @@ impl Settings {
         }
     }
 
-    /// 原子写：先写 `settings.json.tmp`，再 rename 到 `settings.json`。
+    /// 原子写：唯一临时文件 + 重试 + rename 到 `settings.json`。
+    ///
+    /// Windows Defender / 索引器可能短暂占用刚创建的文件；固定 `settings.json.tmp`
+    /// 还会让并发写入互相覆盖。这里每次用唯一 tmp，只对暂时性 IO 错误重试。
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
         fs::create_dir_all(dir).map_err(|error| {
             SettingsError::new(format!("无法创建设置目录 {}：{error}", dir.display()))
         })?;
 
         let path = dir.join(SETTINGS_FILE);
-        let tmp = dir.join(format!("{SETTINGS_FILE}.tmp"));
+        let tmp = temporary_path(dir);
         let json = serde_json::to_string_pretty(self)
             .map_err(|error| SettingsError::new(format!("设置序列化失败：{error}")))?;
 
-        if let Err(error) = fs::write(&tmp, json) {
+        if let Err(error) = write_temp_with_retry(&tmp, &json) {
             let _ = fs::remove_file(&tmp);
-            return Err(SettingsError::new(format!("写入临时设置文件失败：{error}")));
+            return Err(SettingsError::new(format!(
+                "写入临时设置文件失败（{}）：{error}",
+                tmp.display()
+            )));
         }
-        if let Err(error) = fs::rename(&tmp, &path) {
+        if let Err(error) = rename_with_retry(&tmp, &path) {
             let _ = fs::remove_file(&tmp);
             return Err(SettingsError::new(format!("替换设置文件失败：{error}")));
         }
@@ -238,6 +246,62 @@ impl Settings {
     pub fn live_buffer_ms(&self) -> u64 {
         resolve_live_buffer_ms(self.get(LIVE_BUFFER_MS_KEY))
     }
+}
+
+static SETTINGS_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temporary_path(dir: &Path) -> PathBuf {
+    let sequence = SETTINGS_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        "{SETTINGS_FILE}.{}.{sequence}.tmp",
+        std::process::id()
+    ))
+}
+
+fn write_temp_with_retry(path: &Path, json: &str) -> io::Result<()> {
+    let mut last = None;
+    for attempt in 0..3 {
+        let result = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .and_then(|mut file| {
+                file.write_all(json.as_bytes())?;
+                file.sync_all()
+            });
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) if transient_io(&error) && attempt < 2 => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("设置临时文件写入重试失败")))
+}
+
+fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+    let mut last = None;
+    for attempt in 0..3 {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if transient_io(&error) && attempt < 2 => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("设置文件替换重试失败")))
+}
+
+fn transient_io(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock
+    ) || matches!(error.raw_os_error(), Some(5 | 32 | 33))
 }
 
 fn resolve_live_buffer_ms(value: Option<&SettingValue>) -> u64 {
@@ -544,7 +608,51 @@ mod tests {
         let dir = TempDir::new("tmp");
         Settings::new().save(dir.path()).expect("save");
         assert!(!dir.path().join(format!("{SETTINGS_FILE}.tmp")).exists());
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&format!("{SETTINGS_FILE}.")) && name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
         assert!(dir.path().join(SETTINGS_FILE).is_file());
+    }
+
+    #[test]
+    fn concurrent_saves_use_unique_tmp_files_and_stay_valid() {
+        let dir = TempDir::new("concurrent");
+        let handles: Vec<_> = (0..8)
+            .map(|index| {
+                let path = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    let mut settings = Settings::new();
+                    settings.set(format!("key{index}"), SettingValue::Num(f64::from(index)));
+                    settings.save(&path)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread").expect("save");
+        }
+        let (loaded, warnings) = Settings::load(dir.path());
+        assert!(warnings.is_empty());
+        assert_eq!(loaded.len(), 1, "last writer wins, file stays valid");
+    }
+
+    #[test]
+    fn failed_replace_keeps_the_original_and_cleans_tmp() {
+        let dir = TempDir::new("replace-fail");
+        let target = dir.path().join(SETTINGS_FILE);
+        fs::create_dir(&target).expect("make target dir");
+        assert!(Settings::new().save(dir.path()).is_err());
+        assert!(target.is_dir(), "original path must not be removed");
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(&format!("{SETTINGS_FILE}.")) && name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
