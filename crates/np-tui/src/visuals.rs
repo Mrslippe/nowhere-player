@@ -13,8 +13,12 @@ use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
 use crate::status::now_millis;
 use crate::theme::{Palette, PaletteToken};
 
-/// 柱状图频段数，与 `update_spectrum` 的 16 段一致。
-const BAR_COUNT: usize = 16;
+/// 柱状图每根柱固定 2 格宽、1 格间隔，拉伸窗口时增加柱数而不是加粗。
+const BAR_WIDTH: u16 = 2;
+const BAR_GAP: u16 = 1;
+const BAR_PITCH: u16 = BAR_WIDTH + BAR_GAP;
+/// 144×48 上限下最多 144/3 = 48 根；留一点余量给更宽的终端截图。
+const MAX_BARS: usize = 64;
 /// 环形图固定圈数。
 const RING_COUNT: usize = 3;
 /// 单圈最大分段数（基础圆与信号弧共用）。
@@ -29,22 +33,27 @@ const BRAILLE_RIGHT: [u16; 4] = [0x08, 0x10, 0x20, 0x80];
 /// 一个格子从底部往上填 0..=4 个点行时的点位；两列同时点，避免半列疏密带。
 const BRAILLE_BOTTOM: [u16; 5] = [0x00, 0xC0, 0xE4, 0xF6, 0xFF];
 
-/// 16 段块状柱：宽度自适应，静音时只在底部画 faint 基线。
+/// 固定柱宽柱状图：每根 2 格、间隔 1 格；窗口变宽时增加柱数。
+///
+/// 16 段频谱插值到当前柱数；静音时只在底部画 faint 基线。
 pub(crate) fn draw_bars(frame: &mut ratatui::Frame, area: Rect, values: &[f32], palette: &Palette) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    if values.iter().all(|value| *value == 0.0) {
+    if values.is_empty() || values.iter().all(|value| *value == 0.0) {
         draw_faint_baseline_at(frame, area, palette, area.bottom().saturating_sub(1));
         return;
     }
+    let bars = (usize::from(area.width) / usize::from(BAR_PITCH)).clamp(1, MAX_BARS);
+    let used = u16::try_from(bars)
+        .unwrap_or(area.width)
+        .saturating_mul(BAR_PITCH)
+        .saturating_sub(BAR_GAP);
+    let start_x = area.x + area.width.saturating_sub(used) / 2;
     let accent = Style::default().fg(palette.color(PaletteToken::Accent));
-    let bars = BAR_COUNT.min(usize::from(area.width)).max(1);
-    let width = u32::from(area.width);
     let max_units = usize::from(area.height) * 8;
     for index in 0..bars {
-        let band = index * BAR_COUNT / bars;
-        let value = finite(values.get(band).copied().unwrap_or(0.0)).clamp(0.0, 1.0);
+        let value = spectrum_at(values, index, bars);
         let scaled = (value * max_units as f32).round() as usize;
         let units = if value > 0.0 {
             scaled.max(1).min(max_units)
@@ -54,22 +63,18 @@ pub(crate) fn draw_bars(frame: &mut ratatui::Frame, area: Rect, values: &[f32], 
         if units == 0 {
             continue;
         }
-        let start = (width * index as u32 / bars as u32) as u16;
-        let end = (width * (index + 1) as u32 / bars as u32) as u16;
-        let x = area.x.saturating_add(start);
-        let slot = end.saturating_sub(start).max(1);
-        let bar_width = if slot > 1 { slot - 1 } else { 1 };
+        let x = start_x.saturating_add(u16::try_from(index).unwrap_or(0) * BAR_PITCH);
         let bottom = area.bottom().saturating_sub(1);
         let full_rows = units / 8;
         for row in 0..full_rows {
             let y = bottom.saturating_sub(row as u16);
-            draw_block_row(frame, x, y, bar_width, "█", accent);
+            draw_block_row(frame, x, y, BAR_WIDTH.min(area.width), "█", accent);
         }
         let remainder = units % 8;
         if remainder > 0 {
             let y = bottom.saturating_sub(full_rows as u16);
             let glyph = ["", "▁", "▂", "▃", "▄", "▅", "▆", "▇"][remainder];
-            draw_block_row(frame, x, y, bar_width, glyph, accent);
+            draw_block_row(frame, x, y, BAR_WIDTH.min(area.width), glyph, accent);
         }
     }
 }
@@ -472,4 +477,49 @@ fn star_unit(seed: u64) -> f64 {
 
 fn finite(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn bar_groups(width: u16) -> Vec<u16> {
+        let area = Rect::new(0, 0, width, 19);
+        let palette = Palette::default_dark();
+        let values = vec![0.5f32; 16];
+        let mut terminal = Terminal::new(TestBackend::new(width, 19)).unwrap();
+        terminal
+            .draw(|frame| draw_bars(frame, area, &values, &palette))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut groups = Vec::new();
+        let mut current = 0u16;
+        for x in 0..width {
+            let filled = (0..19).any(|y| buffer[(x, y)].symbol() != " ");
+            if filled {
+                current += 1;
+            } else if current > 0 {
+                groups.push(current);
+                current = 0;
+            }
+        }
+        if current > 0 {
+            groups.push(current);
+        }
+        groups
+    }
+
+    #[test]
+    fn bars_keep_a_fixed_two_cell_width_as_the_window_grows() {
+        for (width, expected_bars) in [(66u16, 22usize), (100, 33), (144, 48)] {
+            let groups = bar_groups(width);
+            assert_eq!(groups.len(), expected_bars, "width={width}");
+            assert!(
+                groups.iter().all(|group| *group == BAR_WIDTH),
+                "width={width} groups={groups:?}"
+            );
+        }
+    }
 }
