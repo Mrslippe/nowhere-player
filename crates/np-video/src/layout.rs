@@ -428,6 +428,30 @@ pub fn control_hotzone_rect(width: i32, height: i32, dpi: u32) -> Rect {
     Rect::new(0, (client_h - hotzone_height).max(0), width, client_h)
 }
 
+/// cache 小字最多 2Hz 更新；mpv 的 cache 属性变化频率远高于可见需求。
+pub const CACHE_TEXT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// cache 文本是否到了下一次允许刷新的时刻；`None` 表示第一次立即允许。
+pub fn cache_text_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= CACHE_TEXT_INTERVAL)
+}
+
+/// 控制条 cache 小字在 controls 客户区内的局部矩形；退化时返回 `None`。
+pub fn cache_local_rect(width: i32, height: i32, dpi: u32) -> Option<Rect> {
+    let layout = control_layout(width, height, dpi);
+    let bar = layout.bar;
+    let cache = layout.cache;
+    if cache.right <= cache.left || cache.bottom <= cache.top {
+        return None;
+    }
+    Some(Rect::new(
+        cache.left.saturating_sub(bar.left),
+        cache.top.saturating_sub(bar.top),
+        cache.right.saturating_sub(bar.left),
+        cache.bottom.saturating_sub(bar.top),
+    ))
+}
+
 /// 控制条内部各控件的 Rect（客户区坐标）。
 ///
 /// 顺序从左到右：播放 / 暂停、刷新、静音、音量滑杆；右侧是清晰度与 cache。
@@ -841,6 +865,29 @@ mod tests {
             control_bar_rect(1440, 810, 144),
             Rect::new(18, 732, 1422, 792)
         );
+    }
+
+    #[test]
+    fn cache_text_refresh_is_throttled_to_two_hz() {
+        let now = Instant::now();
+        assert!(cache_text_due(None, now));
+        assert!(!cache_text_due(
+            Some(now),
+            now + CACHE_TEXT_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(cache_text_due(Some(now), now + CACHE_TEXT_INTERVAL));
+    }
+
+    #[test]
+    fn cache_rect_is_local_and_non_degenerate() {
+        let layout = control_layout(1280, 720, 96);
+        let rect = cache_local_rect(1280, 720, 96).expect("cache rect");
+        assert_eq!(rect.left, layout.cache.left - layout.bar.left);
+        assert_eq!(rect.top, layout.cache.top - layout.bar.top);
+        assert_eq!(rect.right, layout.cache.right - layout.bar.left);
+        assert_eq!(rect.bottom, layout.cache.bottom - layout.bar.top);
+        assert!(rect.right > rect.left && rect.bottom > rect.top);
+        assert_eq!(cache_local_rect(8, 8, 96), None);
     }
 
     #[test]

@@ -69,8 +69,6 @@ const CONTROL_CLASS: &str = "NowherePlayerVideoControls";
 const TIMER_ID: usize = 1;
 /// 16ms：滑入 / 滑出期间约 60fps 的 SetWindowPos；静止时一次 tick 也很轻。
 const TIMER_INTERVAL_MS: u32 = 16;
-/// cache 小字最多 2Hz 更新；mpv 的 cache 属性变化频率远高于可见需求。
-const CACHE_TEXT_INTERVAL: Duration = Duration::from_millis(500);
 /// 呼出 overlay 的动画时长（ease-out）。
 const SHOW_DURATION: Duration = Duration::from_millis(160);
 /// 收起 overlay 的动画时长（ease-in）；走完才 `SW_HIDE`，不留残影。
@@ -86,23 +84,19 @@ const LOAD_FAILED_MESSAGE: &str = "清晰度切换失败，已恢复原画面";
 fn host_style() -> WINDOW_STYLE {
     WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN
 }
-
 /// 视频子窗口：**必须**带 WS_CLIPSIBLINGS，否则它重绘时会把上方的
 /// titlebar overlay 盖掉（mpv 的子窗口也在它的客户区里）。
 fn surface_style() -> WINDOW_STYLE {
     WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
 }
-
 /// 标题栏 overlay：顶部 32px，初始不显示。
 fn overlay_style() -> WINDOW_STYLE {
     WS_CHILD | WS_CLIPSIBLINGS
 }
-
 /// 底部控制条 overlay：盖在视频上，初始不显示。
 fn control_style() -> WINDOW_STYLE {
     WS_CHILD | WS_CLIPSIBLINGS
 }
-
 /// TUI 通过 stdin 发来的控制消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Control {
@@ -114,7 +108,6 @@ pub enum Control {
     /// 清晰度切换：TUI 已按 qn 取到新 URL，让现有 mpv 进程换流。
     Load(String),
 }
-
 /// 窗口结束的原因；`run` 返回给 main 决定最后一行协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {
@@ -123,7 +116,6 @@ pub enum CloseReason {
     MpvExited(Option<i32>),
     LoopError,
 }
-
 /// 一次等待 mpv 回复的换流请求。
 struct PendingLoad {
     request_id: u64,
@@ -176,7 +168,6 @@ struct Host {
     /// 上次刷新 cache 小字的时刻；控制条隐藏时不更新。
     last_cache_text_at: Option<Instant>,
 }
-
 /// 创建窗口、启动 mpv、跑消息循环。成功返回时窗口已销毁，mpv 已回收。
 pub fn run(request: Request, control: Receiver<Control>) -> Result<CloseReason, String> {
     // 先解析 mpv，失败时不要先弹一个空窗口。
@@ -608,8 +599,14 @@ impl Host {
 
     /// 只重绘控制条右侧 cache 小字；文本变化时避免整条控制条闪烁。
     fn invalidate_controls_cache(&self) {
-        let Some(rect) = cache_local_rect(self.client_w, self.client_h, self.dpi) else {
+        let Some(rect) = layout::cache_local_rect(self.client_w, self.client_h, self.dpi) else {
             return;
+        };
+        let rect = RECT {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
         };
         // SAFETY: controls 有效；rect 是 controls 客户区坐标。
         unsafe {
@@ -832,7 +829,7 @@ impl Host {
 
         // cache 小字是唯一持续变化的控制条内容：限到 2Hz，并且只重绘 cache
         // 小字矩形。否则 mpv 每次 cache 属性变化都会整条重画，GDI 下表现为闪烁。
-        if self.control_bar.is_visible() && cache_text_due(self.last_cache_text_at, now) {
+        if self.control_bar.is_visible() && layout::cache_text_due(self.last_cache_text_at, now) {
             let cache_text = self.cache_text();
             if self.last_cache_text.as_deref() != Some(cache_text.as_str()) {
                 self.last_cache_text = Some(cache_text);
@@ -1151,27 +1148,6 @@ fn format_cache_ms(cache_ms: Option<u64>) -> String {
         Some(ms) => format!("{:.1}s", ms as f64 / 1_000.0),
         None => "--".to_owned(),
     }
-}
-
-/// cache 文本是否到了下一次允许刷新的时刻；`None` 表示第一次立即允许。
-fn cache_text_due(last: Option<Instant>, now: Instant) -> bool {
-    last.is_none_or(|last| now.saturating_duration_since(last) >= CACHE_TEXT_INTERVAL)
-}
-
-/// 控制条 cache 小字在 controls 客户区内的局部矩形；退化时返回 `None`。
-fn cache_local_rect(width: i32, height: i32, dpi: u32) -> Option<RECT> {
-    let layout = layout::control_layout(width, height, dpi);
-    let bar = layout.bar;
-    let cache = layout.cache;
-    if cache.right <= cache.left || cache.bottom <= cache.top {
-        return None;
-    }
-    Some(RECT {
-        left: cache.left.saturating_sub(bar.left),
-        top: cache.top.saturating_sub(bar.top),
-        right: cache.right.saturating_sub(bar.left),
-        bottom: cache.bottom.saturating_sub(bar.top),
-    })
 }
 
 /// 原生清晰度 popup menu：当前 qn 打勾，返回用户选中的 qn。
@@ -1740,7 +1716,6 @@ fn toggle_maximized(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn wire_protocol_names_are_stable() {
         // 窗口类名 / 高度与 layout 绑定；改名会破坏单实例检测。
@@ -1751,7 +1726,6 @@ mod tests {
         assert_eq!(TIMER_INTERVAL_MS, 16);
         assert_eq!(QUALITY_MENU_ID_BASE, 1000);
     }
-
     #[test]
     fn overlay_animation_constants_match_the_card() {
         // T-0120：呼出 160ms ease-out，收起 140ms；16ms 定时器约 60fps。
@@ -1774,7 +1748,6 @@ mod tests {
         );
         assert_eq!(layout::video_rect(width, height).height(), height);
     }
-
     #[test]
     fn cache_text_shows_seconds_or_a_placeholder() {
         assert_eq!(format_cache_ms(None), "--");
@@ -1782,30 +1755,6 @@ mod tests {
         assert_eq!(format_cache_ms(Some(1_500)), "1.5s");
         assert_eq!(format_cache_ms(Some(940)), "0.9s");
     }
-
-    #[test]
-    fn cache_text_refresh_is_throttled_to_two_hz() {
-        let now = Instant::now();
-        assert!(cache_text_due(None, now));
-        assert!(!cache_text_due(
-            Some(now),
-            now + CACHE_TEXT_INTERVAL - Duration::from_millis(1)
-        ));
-        assert!(cache_text_due(Some(now), now + CACHE_TEXT_INTERVAL));
-    }
-
-    #[test]
-    fn cache_rect_is_local_and_non_degenerate() {
-        let layout = layout::control_layout(1280, 720, 96);
-        let rect = cache_local_rect(1280, 720, 96).expect("cache rect");
-        assert_eq!(rect.left, layout.cache.left - layout.bar.left);
-        assert_eq!(rect.top, layout.cache.top - layout.bar.top);
-        assert_eq!(rect.right, layout.cache.right - layout.bar.left);
-        assert_eq!(rect.bottom, layout.cache.bottom - layout.bar.top);
-        assert!(rect.right > rect.left && rect.bottom > rect.top);
-        assert_eq!(cache_local_rect(8, 8, 96), None);
-    }
-
     #[test]
     fn control_overlay_is_a_clipping_child_on_top_of_the_surface() {
         let controls = control_style();
@@ -1814,7 +1763,6 @@ mod tests {
         assert_ne!(controls.0 & WS_CLIPSIBLINGS.0, 0);
         assert_eq!(controls.0 & WS_VISIBLE.0, 0, "starts hidden");
     }
-
     #[test]
     fn video_surface_and_host_clip_siblings_so_the_overlay_stays_on_top() {
         // 真实 bug：surface 不带 WS_CLIPSIBLINGS 时，它的黑色背景会把上方的
@@ -1829,18 +1777,15 @@ mod tests {
         assert_ne!(host_style().0 & WS_CLIPCHILDREN.0, 0);
         assert_ne!(overlay_style().0 & WS_CLIPSIBLINGS.0, 0);
     }
-
     #[test]
     fn host_keeps_native_resize_and_maximize_styles() {
         use windows::Win32::UI::WindowsAndMessaging::{WS_MAXIMIZEBOX, WS_THICKFRAME};
-
         // T-0106：客户区铺满整个窗口，但原生 THICKFRAME / MAXIMIZEBOX
         // 必须保留，边缘缩放和 Aero Snap 靠它们 + WM_NCHITTEST。
         let style = host_style();
         assert_ne!(style.0 & WS_THICKFRAME.0, 0);
         assert_ne!(style.0 & WS_MAXIMIZEBOX.0, 0);
     }
-
     #[test]
     fn resize_edges_map_to_native_hit_codes() {
         assert_eq!(edge_code(ResizeEdge::Left), HTLEFT as isize);
