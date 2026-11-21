@@ -91,7 +91,7 @@
 - T-0136：音效主题 switch / typewriter / soft，Settings 可切换并持久化
 - T-0137：设置原子写唯一临时文件 + 暂时性 IO 重试，修复偶发“写入临时设置文件失败”
 - T-0138：采样 tap 移到软件音量之前，音量和视觉幅度解耦
-- T-0139：频谱 110Hz 高通、平均能量、0.85 headroom、噪声门、gravity 回落；默认频谱改为 2 格柱 + 1 格间隔
+- T-0139：频谱 110Hz 高通、平均能量、A-weighting + 3dB/oct 倾斜、0.85 headroom、噪声门、gravity 回落；默认频谱改为 2 格柱 + 1 格间隔
 - 配置目录不可写时自动回退到 LOCALAPPDATA / TEMP，不再要求管理员运行
 - 全局 `s` 搜索入口；Search 内 `Tab` 切换平台，平台源短名嵌在 Key Words 输入框下边框右侧
 - Settings 改为可编辑：音量、模式、主题、启动页、专注模式、开机自启、音源开关

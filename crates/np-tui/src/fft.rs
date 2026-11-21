@@ -1,6 +1,6 @@
 //! 2048 点 radix-2 FFT（手写，避免引入 rustfft）。
 
-/// 视觉频谱的低切：去掉 50Hz 以下的隆隆声。
+/// 视觉频谱的低切：去掉 110Hz 以下的隆隆声。
 const MIN_HZ: f32 = 110.0;
 /// 视觉频谱的高切：10kHz 以上对“音乐形状”贡献小。
 const MAX_HZ: f32 = 10_000.0;
@@ -59,7 +59,10 @@ pub fn spectrum(samples: &[f32], sample_rate: u32, bands: usize) -> Vec<f32> {
         for value in &values[start.min(bins)..end] {
             sum += (value.0 * value.0 + value.1 * value.1).sqrt();
         }
-        *slot = sum / count as f32;
+        let center_hz = (low * high).sqrt();
+        // 音乐本身低频能量高；A-weighting 按人耳等响曲线压掉 110–500Hz。
+        // 再叠一条很轻的粉红噪声倾斜，避免 200Hz 仍靠能量压过 2kHz。
+        *slot = (sum / count as f32) * a_weight(center_hz) * spectral_tilt(center_hz);
     }
     let max = out.iter().copied().fold(0.0f32, f32::max);
     if max < 1.0e-4 {
@@ -75,6 +78,25 @@ pub fn spectrum(samples: &[f32], sample_rate: u32, bands: usize) -> Vec<f32> {
         *value = ((db + 60.0) / 60.0).clamp(0.0, 1.0) * HEADROOM;
     }
     out
+}
+
+/// A-weighting 的 dB 值；1kHz 约 0dB，200Hz 约 -11dB，110Hz 约 -18dB。
+fn a_weight_db(hz: f32) -> f32 {
+    let f2 = hz.max(1.0).powi(2);
+    let numerator = 12_194.0f32.powi(2) * f2.powi(2);
+    let denominator = (f2 + 20.6f32.powi(2))
+        * ((f2 + 107.7f32.powi(2)) * (f2 + 737.9f32.powi(2))).sqrt()
+        * (f2 + 12_194.0f32.powi(2));
+    20.0 * (numerator / denominator).log10() + 2.0
+}
+
+fn a_weight(hz: f32) -> f32 {
+    10.0f32.powf(a_weight_db(hz) / 20.0)
+}
+
+/// 以 1kHz 为轴的粉红倾斜；0.5 约等于每倍频程 +3dB。
+fn spectral_tilt(hz: f32) -> f32 {
+    (hz.max(1.0) / 1_000.0).powf(0.5)
 }
 
 fn fft(values: &mut [(f32, f32)]) {
@@ -168,6 +190,38 @@ mod tests {
         assert!(
             bands[0] < bands[peak] * 0.5,
             "low band should be well below the 440Hz band: {bands:?}"
+        );
+    }
+
+    #[test]
+    fn a_weighting_cuts_low_tones_against_a_mid_tone() {
+        assert!((a_weight_db(1_000.0) - 0.0).abs() < 0.2);
+        assert!(a_weight_db(200.0) < -8.0);
+        assert!(a_weight(4_000.0) > a_weight(200.0) * 2.0);
+    }
+
+    #[test]
+    fn equal_low_and_high_tones_peak_toward_the_mid_high_band() {
+        let sample_rate = 48_000;
+        let samples: Vec<f32> = (0..2048)
+            .map(|index| {
+                let time = index as f32 / sample_rate as f32;
+                let low = (2.0 * std::f32::consts::PI * 200.0 * time).sin();
+                let high = (2.0 * std::f32::consts::PI * 2_000.0 * time).sin();
+                (low + high) * 0.5
+            })
+            .collect();
+        let bands = spectrum(&samples, sample_rate, 16);
+        let peak = bands
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.total_cmp(right.1))
+            .map(|(index, _)| index)
+            .unwrap();
+        assert!(peak > 7, "A-weighting must lift 2kHz over 200Hz: {bands:?}");
+        assert!(
+            bands[0] < bands[peak] * 0.7,
+            "low band should not dominate: {bands:?}"
         );
     }
 
