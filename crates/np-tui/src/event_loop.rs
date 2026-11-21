@@ -419,9 +419,11 @@ where
                         draw_needed = true;
                         continue;
                     } else {
-                        // Browse 直播页的输入态：数字 / 历史 / Enter / Delete / Esc
-                        // 由 live_entry 独占，避免 `q` / `s` / `f` 误触全局键。
+                        // Browse 直播页的输入态（List 再 Enter）：数字 / 历史 /
+                        // Enter / Delete / Esc 由 live_entry 独占，避免 `q` / `s` /
+                        // `f` 误触全局键。未激活时数字等按键走全局键位。
                         if !player.is_live()
+                            && app.live_entry.input_active
                             && app.focus == Focus::List
                             && matches!(app.view_kind.get(app.view_index), Some(BrowseKind::Live))
                             && crate::live_entry::handle_key(key.code, key.modifiers, app, player)

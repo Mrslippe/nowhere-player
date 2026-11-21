@@ -86,6 +86,9 @@ fn execute_action(
         Action::NextSearchPlatform => cycle_search_platform(app, library, search_tx),
         Action::FocusLeft | Action::FocusRight => {
             app.search_input_active = false;
+            // 直播输入态只在 Live List 里有效；输入态下 ←/→ 由 live_entry 消费，
+            // 走到这里说明焦点已离开输入框，顺手清掉，避免隐藏的激活态残留。
+            app.live_entry.input_active = false;
             app.focus = match app.focus {
                 Focus::Browse => Focus::List,
                 Focus::List => Focus::Browse,
@@ -358,6 +361,8 @@ fn enter(
     settings: &SettingsHandle,
 ) {
     if app.focus == Focus::Browse {
+        // Browse 的 Enter 只进 List；直播输入框必须保持未激活，等 List 再按一次。
+        app.live_entry.input_active = false;
         app.focus = Focus::List;
         return;
     }
@@ -391,8 +396,14 @@ fn enter(
             }
         }
         Some(BrowseKind::Search) if app.filtered_rows().is_empty() => {}
-        // Live 页的 Enter 由 live_entry 输入态消费；这里只兜底，绝不落到播放。
-        Some(BrowseKind::Live) => {}
+        // 直播页和搜索页同一条节奏：List 的 Enter 只聚焦输入框，输入态由
+        // live_entry 消费；这里绝不落到播放。直播中 Enter 不再拉起隐藏输入框。
+        Some(BrowseKind::Live) => {
+            if !player.is_live() {
+                app.live_entry.input_active = true;
+                app.set_status("输入直播间号".to_owned());
+            }
+        }
         Some(BrowseKind::Settings) => {
             if let Err(error) =
                 crate::settings_editor::begin_settings_edit(app, player, settings, theme)

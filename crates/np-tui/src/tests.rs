@@ -3167,6 +3167,21 @@ fn live_entry_app() -> App {
     app
 }
 
+/// 返回 72×24 下 Room ID 输入框的（边框色，标题色）。
+fn live_input_colors(terminal: &Terminal<TestBackend>) -> (Color, Color) {
+    let area = terminal.backend().buffer().area;
+    let (y, row) = (area.y..area.bottom())
+        .map(|y| (y, row_text(terminal, y)))
+        .find(|(_, row)| row.contains("Room ID"))
+        .expect("Room ID title row");
+    let border_x = row.find('┌').expect("input top-left corner") as u16;
+    let title_x = row.find("Room").expect("input title") as u16;
+    (
+        terminal.backend().buffer()[(border_x, y)].fg,
+        terminal.backend().buffer()[(title_x, y)].fg,
+    )
+}
+
 #[test]
 fn live_page_draws_room_input_and_three_history_rows_on_72x24() {
     let mut app = live_entry_app();
@@ -3206,16 +3221,50 @@ fn live_page_draws_room_input_and_three_history_rows_on_72x24() {
         "历史越界写到 List 内区之外：{third_row}"
     );
     assert!(!row_text(&terminal, third_row + 1).contains('·'));
-    // List 边框标题与状态栏提示都接到 Live。
+    // List 边框标题接到 Live。
     assert!(row_text(&terminal, 1).contains(" Live "));
+
+    // 未激活：边框 Border / 标题 Muted，提示「Enter 输入」，不出历史操作。
     let status_row = compact(&row_text(&terminal, 23));
+    assert!(status_row.contains("Enter输入"), "{status_row}");
+    assert!(status_row.contains("↑↓选择"), "{status_row}");
+    assert!(status_row.contains("Esc返回"), "{status_row}");
+    assert!(!status_row.contains("输入房间号"), "{status_row}");
+    assert!(!status_row.contains("Delete删除"), "{status_row}");
+    let (border_fg, title_fg) = live_input_colors(&terminal);
+    assert_eq!(
+        border_fg,
+        app.palette.color(crate::theme::PaletteToken::Border)
+    );
+    assert_eq!(
+        title_fg,
+        app.palette.color(crate::theme::PaletteToken::Muted)
+    );
+
+    // 激活：边框 Focus / 标题 Accent，提示切到输入房间号与历史操作。
+    // 用新终端画第二帧：TestBackend 的差分不会替宽字符清掉旧格。
+    app.live_entry.input_active = true;
+    let mut active_terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
+    let _ = draw_text(&mut app, &mut active_terminal, &audio);
+    let status_row = compact(&row_text(&active_terminal, 23));
     assert!(status_row.contains("输入房间号"), "{status_row}");
     assert!(status_row.contains("Enter开始"), "{status_row}");
+    assert!(status_row.contains("↑↓历史"), "{status_row}");
     assert!(status_row.contains("Delete删除"), "{status_row}");
+    assert!(status_row.contains("Esc返回"), "{status_row}");
+    let (border_fg, title_fg) = live_input_colors(&active_terminal);
+    assert_eq!(
+        border_fg,
+        app.palette.color(crate::theme::PaletteToken::Focus)
+    );
+    assert_eq!(
+        title_fg,
+        app.palette.color(crate::theme::PaletteToken::Accent)
+    );
 }
 
 #[test]
-fn enter_on_live_page_does_not_start_playback() {
+fn live_page_enter_rhythm_matches_search_page() {
     let root = std::env::temp_dir().join(format!(
         "np-tui-live-enter-{}-{}",
         std::process::id(),
@@ -3233,6 +3282,50 @@ fn enter_on_live_page_does_not_start_playback() {
     let (tx, _rx) = std::sync::mpsc::channel::<(u64, Block)>();
     let mut audio = TuiAudio::empty();
     let mut app = live_entry_app();
+    app.focus = Focus::Browse;
+    // 即使有残留的激活态，Browse Enter 也必须只进 List。
+    app.live_entry.input_active = true;
+
+    // Browse Enter 只进 List，输入框保持未激活。
+    crate::controller::execute(
+        Action::Enter,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.focus, Focus::List);
+    assert!(!app.live_entry.input_active);
+    assert_eq!(app.status, "就绪");
+
+    // Browse → 同样只进 List。
+    app.focus = Focus::Browse;
+    app.live_entry.input_active = true;
+    crate::controller::execute(
+        Action::FocusRight,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.focus, Focus::List);
+    assert!(!app.live_entry.input_active);
+    assert_eq!(app.status, "就绪");
+
+    // 未激活时数字不写入（handle_key 直接让给全局键位）。
+    assert!(!crate::live_entry::handle_key(
+        KeyCode::Char('7'),
+        KeyModifiers::NONE,
+        &mut app,
+        &audio
+    ));
+    assert!(app.live_entry.input.is_empty());
+
+    // List Enter 才聚焦输入框，且不落到播放。
     crate::controller::execute(
         Action::Enter,
         &mut app,
@@ -3243,8 +3336,51 @@ fn enter_on_live_page_does_not_start_playback() {
         &settings,
     );
     assert_eq!(app.focus, Focus::List, "Live 的 Enter 不能把焦点带走");
-    assert_eq!(app.status, "就绪", "Live 的 Enter 不能落到 play_selected");
-    assert!(!audio.is_live());
+    assert!(app.live_entry.input_active);
+    assert_eq!(app.status, "输入直播间号");
+    assert!(!audio.is_live(), "Live 的 Enter 不能落到 play_selected");
+
+    // 激活后数字才写入。
+    assert!(crate::live_entry::handle_key(
+        KeyCode::Char('2'),
+        KeyModifiers::NONE,
+        &mut app,
+        &audio
+    ));
+    assert_eq!(app.live_entry.input, "2");
+
+    // 输入态 Esc 只退出输入，焦点仍 List；再 Esc 才回 Browse。
+    assert!(crate::live_entry::handle_key(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        &mut app,
+        &audio
+    ));
+    assert!(!app.live_entry.input_active);
+    assert_eq!(app.focus, Focus::List);
+    assert_eq!(app.status, "已退出直播输入");
+    crate::controller::execute(
+        Action::Escape,
+        &mut app,
+        &mut audio,
+        &library,
+        &tx,
+        &theme,
+        &settings,
+    );
+    assert_eq!(app.focus, Focus::Browse);
+
+    // 开播成功走 record_start：清输入并退出输入态。
+    app.live_entry.input_active = true;
+    app.live_entry.input = "21622811".to_owned();
+    app.live_entry.cursor = app.live_entry.input.len();
+    assert!(
+        app.live_entry.record_start(21622811).is_none(),
+        "path None 不写盘"
+    );
+    assert!(app.live_entry.input.is_empty());
+    assert!(!app.live_entry.input_active);
+
     let _ = std::fs::remove_dir_all(root);
 }
 

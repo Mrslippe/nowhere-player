@@ -234,13 +234,16 @@ fn base_status_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ],
         },
         Some(BrowseKind::Search) => vec![(enter, "进入"), (tab, "平台")],
-        Some(BrowseKind::Live) if list => vec![
+        // 直播页和搜索页同一条节奏：List 未激活先提示 Enter 输入，激活后才显示
+        // 房间号 / 历史 / Delete 的操作提示。
+        Some(BrowseKind::Live) if list && app.live_entry.input_active => vec![
             ("", "输入房间号"),
             (enter, "开始"),
             ("↑↓", "历史"),
             ("Delete", "删除"),
             (esc, "返回"),
         ],
+        Some(BrowseKind::Live) if list => vec![(enter, "输入"), ("↑↓", "选择"), (esc, "返回")],
         Some(BrowseKind::Live) => vec![(enter, "进入"), ("↑↓", "选择")],
         Some(BrowseKind::Settings) if list => vec![(enter, "编辑"), (reset, "重置"), (esc, "返回")],
         Some(BrowseKind::Settings) => vec![(enter, "进入"), ("↑↓", "选择")],

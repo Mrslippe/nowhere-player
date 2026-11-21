@@ -16,7 +16,6 @@ use crate::audio::TuiAudio;
 use crate::glyphs;
 use crate::input::{display_width, input_window, truncate_width};
 use crate::live_history::LiveHistory;
-use crate::model::Focus;
 use crate::theme::PaletteToken;
 
 /// 房间号最多 12 位；B 站房间号实际远小于这个上限。
@@ -38,6 +37,8 @@ pub(crate) struct LiveEntry {
     pub(crate) history: LiveHistory,
     /// 已开播、等主播名回填的房间号。
     pub(crate) pending_anchor: Option<u64>,
+    /// 输入态：List 再按一次 `Enter` 才置真；未激活时数字 / Esc 都交回全局键位。
+    pub(crate) input_active: bool,
 }
 
 impl LiveEntry {
@@ -58,6 +59,7 @@ impl LiveEntry {
         self.input.clear();
         self.cursor = 0;
         self.selected = None;
+        self.input_active = false;
         self.pending_anchor = Some(room);
         self.history.record(room, "");
         self.history.save().err()
@@ -156,14 +158,19 @@ impl LiveEntry {
 
 /// Live 页的按键入口；返回 `true` 表示已消费。
 ///
-/// 只处理数字、Backspace、←→、↑↓、Enter、Esc、Delete；`Ctrl+*` 全部放行给
-/// 全局键位（`Ctrl+F` 专注模式），其它普通字符吞掉，避免 `q` / `s` / `f` 误触。
+/// 只有 `input_active` 时本页才接管键盘：数字、Backspace、←→、↑↓、Enter、Esc、
+/// Delete；`Ctrl+*` 全部放行给全局键位（`Ctrl+F` 专注模式），其它普通字符吞掉，
+/// 避免 `q` / `s` / `f` 误触。未激活时返回 `false`，让全局 `Enter` / `→` / `Esc`
+/// 走搜索页同一条节奏。
 pub(crate) fn handle_key(
     code: KeyCode,
     modifiers: KeyModifiers,
     app: &mut App,
     player: &TuiAudio,
 ) -> bool {
+    if !app.live_entry.input_active {
+        return false;
+    }
     if modifiers.contains(KeyModifiers::CONTROL) {
         return false;
     }
@@ -202,7 +209,9 @@ pub(crate) fn handle_key(
             true
         }
         KeyCode::Esc => {
-            app.focus = Focus::Browse;
+            // 输入态 Esc 只退出输入，焦点留在 List；再按一次才由全局键回 Browse。
+            app.live_entry.input_active = false;
+            app.set_transient_status("已退出直播输入");
             true
         }
         _ => false,
@@ -262,7 +271,7 @@ pub(crate) fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
     let entry = &app.live_entry;
-    let active = app.focus == Focus::List;
+    let active = entry.input_active;
     let box_width = INPUT_WIDTH.min(area.width);
     let box_height = INPUT_HEIGHT.min(area.height);
     let rows = if area.height < MIN_WITH_HISTORY {
@@ -318,7 +327,7 @@ fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App, entry: &LiveEnt
             app.palette.color(PaletteToken::Border)
         }))
         .title_style(Style::default().fg(if active {
-            app.palette.color(PaletteToken::Focus)
+            app.palette.color(PaletteToken::Accent)
         } else {
             app.palette.color(PaletteToken::Muted)
         }))
@@ -376,6 +385,7 @@ fn draw_input(frame: &mut ratatui::Frame, area: Rect, app: &App, entry: &LiveEnt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Focus;
 
     fn entry_with_history(rooms: &[u64]) -> LiveEntry {
         let mut entry = LiveEntry::default();
@@ -488,13 +498,17 @@ mod tests {
     }
 
     #[test]
-    fn record_start_clears_input_and_sets_pending_anchor() {
-        let mut entry = LiveEntry::default();
+    fn record_start_clears_input_and_exits_input_mode() {
+        let mut entry = LiveEntry {
+            input_active: true,
+            ..LiveEntry::default()
+        };
         for digit in "123".chars() {
             entry.insert_digit(digit);
         }
         assert!(entry.record_start(21622811).is_none(), "path None 不写盘");
         assert!(entry.input.is_empty());
+        assert!(!entry.input_active, "开播成功后必须退出输入态");
         assert_eq!(entry.cursor, 0);
         assert_eq!(entry.pending_anchor, Some(21622811));
         assert_eq!(entry.history.entries.len(), 1);
@@ -541,8 +555,34 @@ mod tests {
     }
 
     #[test]
+    fn handle_key_is_inert_until_input_active() {
+        let mut app = App::new();
+        app.focus = Focus::List;
+        let audio = TuiAudio::empty();
+        // 未激活：数字 / Enter / Esc 都交回全局键位，页面状态不变。
+        for code in [KeyCode::Char('7'), KeyCode::Enter, KeyCode::Esc] {
+            assert!(!handle_key(code, KeyModifiers::NONE, &mut app, &audio));
+        }
+        assert!(app.live_entry.input.is_empty());
+        assert_eq!(app.focus, Focus::List);
+        assert_eq!(app.status, "就绪");
+
+        // 激活后数字才写入。
+        app.live_entry.input_active = true;
+        assert!(handle_key(
+            KeyCode::Char('7'),
+            KeyModifiers::NONE,
+            &mut app,
+            &audio
+        ));
+        assert_eq!(app.live_entry.input, "7");
+    }
+
+    #[test]
     fn handle_key_owns_digits_delete_esc_and_lets_ctrl_through() {
         let mut app = App::new();
+        app.focus = Focus::List;
+        app.live_entry.input_active = true;
         app.live_entry.history.record(1, "主播A");
         app.live_entry.history.record(2, "");
         app.live_entry.selected = Some(1);
@@ -576,13 +616,40 @@ mod tests {
             &mut app,
             &audio
         ));
+        // 输入态 Esc 只退出输入：焦点留在 List，状态给出提示。
         assert!(handle_key(
             KeyCode::Esc,
             KeyModifiers::NONE,
             &mut app,
             &audio
         ));
-        assert_eq!(app.focus, Focus::Browse);
+        assert!(!app.live_entry.input_active);
+        assert_eq!(app.focus, Focus::List);
+        assert_eq!(app.status, "已退出直播输入");
+        // 退出输入后本页不再接管，Esc 回到全局键位（controller 负责回 Browse）。
+        assert!(!handle_key(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            &mut app,
+            &audio
+        ));
+    }
+
+    #[test]
+    fn enter_with_empty_input_keeps_input_active_and_shows_error() {
+        let mut app = App::new();
+        app.focus = Focus::List;
+        app.live_entry.input_active = true;
+        let audio = TuiAudio::empty();
+        assert!(handle_key(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            &mut app,
+            &audio
+        ));
+        assert!(app.live_entry.input_active, "开播失败保持输入态，方便重试");
+        assert_eq!(app.status, "输入房间号再按 Enter");
+        assert!(!audio.is_live());
     }
 
     fn draw_area(area: Rect, app: &App) -> String {
