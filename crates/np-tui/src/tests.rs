@@ -430,7 +430,7 @@ fn splash_cycles_themes_and_wraps() {
     assert_eq!(splash_theme_ids(), vec!["milkgreen"]);
 }
 
-fn splash_text_at(phase: Option<f32>, width: u16, height: u16) -> String {
+fn splash_buffer_at(phase: Option<f32>, width: u16, height: u16) -> ratatui::buffer::Buffer {
     let api = crate::theme::TuiThemeApi::new(std::env::temp_dir().join("np-tui-splash-motion"));
     let mut app = App::new();
     app.load_theme(&api, "milkgreen");
@@ -439,7 +439,14 @@ fn splash_text_at(phase: Option<f32>, width: u16, height: u16) -> String {
         Some(phase) => crate::splash::draw_splash_at(&mut terminal, &app, phase).expect("splash"),
         None => crate::splash::draw_splash(&mut terminal, &app).expect("splash"),
     }
-    let buffer = terminal.backend().buffer();
+    terminal.backend().buffer().clone()
+}
+
+fn splash_text_at(phase: Option<f32>, width: u16, height: u16) -> String {
+    buffer_text(&splash_buffer_at(phase, width, height))
+}
+
+fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
     let mut text = String::new();
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
@@ -450,57 +457,106 @@ fn splash_text_at(phase: Option<f32>, width: u16, height: u16) -> String {
     text
 }
 
-/// LOGO 行首个 `█` / `╚` 的 (行, 列)；6 行 LOGO 都各有一个。
-fn logo_anchors(text: &str) -> Vec<(usize, usize)> {
-    text.lines()
-        .enumerate()
-        .filter_map(|(row, line)| {
-            line.chars()
-                .position(|character| character == '█' || character == '╚')
-                .map(|column| (row, column))
+/// LOGO 6 行各取首个 `█` / `╚` 的 (行, 列) 作为锚点。
+fn logo_anchor_cells(buffer: &ratatui::buffer::Buffer) -> Vec<(u16, u16)> {
+    (0..buffer.area.height)
+        .filter_map(|y| {
+            (0..buffer.area.width)
+                .find(|&x| matches!(buffer[(x, y)].symbol(), "█" | "╚"))
+                .map(|x| (y, x))
         })
         .collect()
 }
 
 #[test]
 fn static_splash_is_phase_zero_grid() {
-    assert_eq!(
-        splash_text_at(None, 80, 24),
-        splash_text_at(Some(0.0), 80, 24)
-    );
-    assert_eq!(
-        splash_text_at(None, 60, 20),
-        splash_text_at(Some(0.0), 60, 20)
-    );
-}
-
-#[test]
-fn splash_animation_moves_only_the_logo_by_one_cell() {
-    let frozen = splash_text_at(Some(0.0), 80, 24);
-    // phase=0.9：bob=+1 行，sway=+1 列。
-    let moved = splash_text_at(Some(0.9), 80, 24);
-    assert_ne!(frozen, moved);
-    let frozen_lines: Vec<&str> = frozen.lines().collect();
-    let moved_lines: Vec<&str> = moved.lines().collect();
-    assert_eq!(frozen_lines.len(), moved_lines.len());
-    // 主题名（第 15 行）与 Press Enter（第 17 行）不跟着晃。
-    assert_eq!(frozen_lines[14], moved_lines[14]);
-    assert_eq!(frozen_lines[16], moved_lines[16]);
-    assert_eq!(logo_anchors(&frozen).len(), 6);
-    let moved_anchors = logo_anchors(&moved);
-    assert_eq!(moved_anchors.len(), 6);
-    for (frozen, moved) in logo_anchors(&frozen).iter().zip(&moved_anchors) {
-        assert_eq!(moved.0, frozen.0 + 1, "LOGO 只下移 1 行");
-        assert_eq!(moved.1, frozen.1 + 1, "LOGO 只右移 1 列");
+    for (width, height) in [(80, 24), (60, 20)] {
+        let static_buffer = splash_buffer_at(None, width, height);
+        let zero_buffer = splash_buffer_at(Some(0.0), width, height);
+        assert_eq!(
+            buffer_text(&static_buffer),
+            buffer_text(&zero_buffer),
+            "{width}x{height}"
+        );
+        // phase=0 时 fade 与 breath 都为 0，样式也应与静态入口完全一致。
+        for y in 0..height {
+            for x in 0..width {
+                let left = &static_buffer[(x, y)];
+                let right = &zero_buffer[(x, y)];
+                assert_eq!(
+                    (left.fg, left.bg),
+                    (right.fg, right.bg),
+                    "{width}x{height} ({x},{y})"
+                );
+            }
+        }
     }
 }
 
 #[test]
-fn splash_motion_degrades_in_small_terminals_without_panicking() {
-    // 窄（LOGO 退化为 NOWHERE）、矮（11 行动效布局放不下）、刚好 70 列。
+fn logo_anchors_never_move_for_any_phase() {
+    let base = splash_buffer_at(Some(0.0), 80, 24);
+    let anchors = logo_anchor_cells(&base);
+    assert_eq!(anchors.len(), 6, "full logo has six anchor rows");
+    let base_text = buffer_text(&base);
+    for phase in [
+        0.4_f32,
+        0.9,
+        1.3,
+        1.8,
+        2.1,
+        2.6,
+        3.6,
+        5.2,
+        7.7,
+        10.0,
+        123.4,
+        f32::NAN,
+        f32::INFINITY,
+    ] {
+        let buffer = splash_buffer_at(Some(phase), 80, 24);
+        assert_eq!(logo_anchor_cells(&buffer), anchors, "phase {phase}");
+        assert_eq!(buffer_text(&buffer), base_text, "phase {phase}");
+    }
+}
+
+#[test]
+fn splash_phase_changes_logo_colours_only() {
+    let base = splash_buffer_at(Some(0.0), 80, 24);
+    // phase 2.1：450ms 淡入已完成，breath 到峰值；LOGO 应向 accent 偏 35%。
+    let breathed = splash_buffer_at(Some(2.1), 80, 24);
+    let anchors = logo_anchor_cells(&base);
+    assert_eq!(anchors.len(), 6);
+    for (y, x) in &anchors {
+        assert_ne!(
+            breathed[(*x, *y)].fg,
+            base[(*x, *y)].fg,
+            "phase 2.1 should tint the logo"
+        );
+    }
+    // LOGO 6 行以外（边框、主题名、Press Enter）的字符和颜色都不变。
+    let logo_rows: Vec<u16> = anchors.iter().map(|(y, _)| *y).collect();
+    for y in 0..base.area.height {
+        if logo_rows.contains(&y) {
+            continue;
+        }
+        for x in 0..base.area.width {
+            let left = &base[(x, y)];
+            let right = &breathed[(x, y)];
+            assert_eq!(left.symbol(), right.symbol(), "row {y} col {x}");
+            assert_eq!((left.fg, left.bg), (right.fg, right.bg), "row {y} col {x}");
+        }
+    }
+}
+
+#[test]
+fn splash_is_stable_in_small_terminals() {
+    // 窄（LOGO 退化为 NOWHERE）、矮（11 行布局放不下）、刚好 70 列。
     for (width, height) in [(40, 10), (20, 8), (13, 8), (100, 8), (72, 20), (80, 3)] {
-        for phase in [0.9_f32, 2.6, 3.6] {
+        let base = splash_text_at(Some(0.0), width, height);
+        for phase in [0.9_f32, 2.6, 3.6, 10.0] {
             let text = splash_text_at(Some(phase), width, height);
+            assert_eq!(text, base, "{width}x{height} phase {phase}");
             assert_eq!(
                 text.lines().count(),
                 usize::from(height),

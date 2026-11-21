@@ -22,10 +22,10 @@ use np_app::ThemeApi;
 
 pub(crate) use crate::logo::splash_art;
 
-/// LOGO 行数；只有这 6 行参与浮动 / 摇摆。
+/// LOGO 行数。
 const LOGO_LINES: u16 = 6;
-/// 动效布局总行数：空行 + LOGO + 空行 + 主题 + 空行 + Press。
-const ANIMATED_LINES: u16 = LOGO_LINES + 5;
+/// 启动页整块行数：空行 + LOGO + 空行 + 主题 + 空行 + Press。
+const SPLASH_BLOCK_LINES: u16 = LOGO_LINES + 5;
 /// 30fps 重绘间隔。
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// 静态回退的轮询间隔。
@@ -102,9 +102,9 @@ fn draw_splash_content(frame: &mut Frame, app: &App, phase: f32) {
     frame.render_widget(block, area);
     let art = splash_art(inner.width);
     let full_logo = art.contains('\n');
-    if full_logo && inner.height >= ANIMATED_LINES {
-        // 左对齐、按精确 x 坐标画 LOGO；主题名与 Press Enter 单独居中，
-        // 不跟着 LOGO 晃。
+    if full_logo && inner.height >= SPLASH_BLOCK_LINES {
+        // LOGO 位置完全固定：只按精确 x 坐标居中画一次，不计算任何行 / 列
+        // 位移；主题名与 Press Enter 单独居中，两者都不参与动效。
         let logo_width = u16::try_from(
             art.lines()
                 .map(UnicodeWidthStr::width)
@@ -112,29 +112,12 @@ fn draw_splash_content(frame: &mut Frame, app: &App, phase: f32) {
                 .unwrap_or_default(),
         )
         .unwrap_or(inner.width);
-        let top = inner.height.saturating_sub(ANIMATED_LINES) / 2;
+        let top = inner.height.saturating_sub(SPLASH_BLOCK_LINES) / 2;
         let content_y = inner.y.saturating_add(top);
-        // 终端太矮 / 太窄时自动禁止位移，保持原居中位置，绝不越界。
-        let can_bob = inner.height >= ANIMATED_LINES.saturating_add(2);
-        let can_sway = inner.width >= logo_width.saturating_add(4);
-        let delta_x = if can_sway { motion::sway(phase) } else { 0 };
-        let delta_y = if can_bob { motion::bob(phase) } else { 0 };
-        let base_x = inner.x + inner.width.saturating_sub(logo_width) / 2;
-        let x = shifted(
-            base_x,
-            delta_x,
-            inner.x,
-            inner.right().saturating_sub(logo_width),
-        );
-        let base_y = content_y.saturating_add(1);
-        let y = shifted(
-            base_y,
-            delta_y,
-            inner.y,
-            inner.bottom().saturating_sub(LOGO_LINES),
-        );
+        let x = inner.x + inner.width.saturating_sub(logo_width) / 2;
+        let y = content_y.saturating_add(1);
         // phase=0 时就是正文色（旧静态外观），450ms 内渐入，随后在 accent
-        // 与正文色之间呼吸；幅度只到 35%，不做闪烁。
+        // 与正文色之间呼吸；幅度只到 35%，不做闪烁。只改颜色，不改位置。
         let fade_in = if phase.is_finite() {
             (phase / FADE_IN_SECONDS).clamp(0.0, 1.0)
         } else {
@@ -203,12 +186,6 @@ fn draw_splash_content(frame: &mut Frame, app: &App, phase: f32) {
             .style(Style::default().bg(canvas).fg(text)),
         content_area,
     );
-}
-
-/// 把 `base + delta` 夹到 `min..=max`，避免 LOGO 画到缓冲区外。
-fn shifted(base: u16, delta: i16, min: u16, max: u16) -> u16 {
-    let value = i32::from(base) + i32::from(delta);
-    value.clamp(i32::from(min), i32::from(max).max(i32::from(min))) as u16
 }
 
 pub(crate) fn run_splash<B: Backend>(

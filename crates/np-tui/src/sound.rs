@@ -1,7 +1,9 @@
 //! UI 音效：Windows `PlaySoundW` + 内存合成 WAV；零 crate、零资源文件。
 //!
-//! 4 个音色在首次使用时由 Rust 合成（44.1kHz / mono / 16-bit），非 Windows
-//! 平台只保留数据与开关，不发声。音效只做短促提示，不参与播放状态。
+//! 4 个音色在首次使用时由 Rust 合成（44.1kHz / mono / 16-bit），全部来自
+//! 老式打字机的机械声：确定性 LCG 噪声 + 一阶低通 / 高通 + 指数衰减，再叠
+//! 一层低频 thump 或高频金属共振。非 Windows 平台只保留数据与开关，不发声。
+//! 音效只做短促提示，不参与播放状态。
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -12,8 +14,24 @@ pub(crate) const SAMPLE_RATE: u32 = 44_100;
 /// 连按去抖窗口：35ms 内的第二次提示不再发声。
 pub(crate) const DEBOUNCE: Duration = Duration::from_millis(35);
 
-/// attack 包络长度；其余部分是线性 decay。
-const ATTACK_MS: u32 = 2;
+/// 起音包络：1.5ms 线性上升，避免波形从 0 跳到峰值产生爆点。
+const ATTACK_SECONDS: f32 = 0.0015;
+
+/// 归一化后的峰值必须落在 i16 上限的 15%–25%：听得见，但不削顶。
+const PEAK_LOW: f32 = 0.15;
+const PEAK_HIGH: f32 = 0.25;
+
+/// 各 cue 的总时长（毫秒）：按键 25–35ms、确认 100–140ms。
+const MOVE_MS: u32 = 32;
+const FOCUS_MS: u32 = 21;
+const CONFIRM_MS: u32 = 130;
+const BACK_MS: u32 = 40;
+
+/// 各 cue 的归一化目标：Focus 最轻，Confirm 最饱满。
+const MOVE_PEAK: f32 = 0.20;
+const FOCUS_PEAK: f32 = 0.16;
+const CONFIRM_PEAK: f32 = 0.22;
+const BACK_PEAK: f32 = 0.18;
 
 #[cfg(windows)]
 /// `SND_ASYNC | SND_NODEFAULT | SND_MEMORY`：异步、不落默认提示音、播放内存 WAV。
@@ -125,48 +143,221 @@ struct SoundBank {
 impl SoundBank {
     fn synthesise() -> Self {
         Self {
-            // 低振幅、短促：峰值约为 i16 上限的 14%–20%。
-            move_: tone_wav(&[Tone::new(1_800.0, 12)], 0.14),
-            focus: tone_wav(&[Tone::new(1_200.0, 18)], 0.18),
-            // 确认音两段：880Hz → 1320Hz，各 35ms，共约 70ms。
-            confirm: tone_wav(&[Tone::new(880.0, 35), Tone::new(1_320.0, 35)], 0.20),
-            back: tone_wav(&[Tone::new(600.0, 18)], 0.18),
+            // 键帽咔哒：宽带噪声点击 + 2.4kHz 金属短鸣。
+            move_: typewriter_wav(
+                MOVE_MS,
+                MOVE_PEAK,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: MOVE_MS,
+                    gain: 1.0,
+                    lowpass_hz: 6_500.0,
+                    highpass_hz: 1_400.0,
+                    resonance_hz: 2_400.0,
+                    resonance_gain: 0.5,
+                    decay_ms: 5.0,
+                    seed: 0x00C0_FFEE,
+                }],
+            ),
+            // 轻触：更短、更细，中高频为主。
+            focus: typewriter_wav(
+                FOCUS_MS,
+                FOCUS_PEAK,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: FOCUS_MS,
+                    gain: 1.0,
+                    lowpass_hz: 9_000.0,
+                    highpass_hz: 2_600.0,
+                    resonance_hz: 3_200.0,
+                    resonance_gain: 0.4,
+                    decay_ms: 3.2,
+                    seed: 0x0FAC_0DE5,
+                }],
+            ),
+            // 回车：三下字车棘轮 + 55ms 起的 2.8kHz 打字机铃，总长 130ms。
+            confirm: typewriter_wav(
+                CONFIRM_MS,
+                CONFIRM_PEAK,
+                &[
+                    Hit {
+                        start_ms: 0,
+                        milliseconds: 12,
+                        gain: 0.8,
+                        lowpass_hz: 7_000.0,
+                        highpass_hz: 1_600.0,
+                        resonance_hz: 1_900.0,
+                        resonance_gain: 0.5,
+                        decay_ms: 3.0,
+                        seed: 0x1A2B_3C4D,
+                    },
+                    Hit {
+                        start_ms: 20,
+                        milliseconds: 12,
+                        gain: 0.7,
+                        lowpass_hz: 7_000.0,
+                        highpass_hz: 1_600.0,
+                        resonance_hz: 1_900.0,
+                        resonance_gain: 0.5,
+                        decay_ms: 3.0,
+                        seed: 0x2B3C_4D5E,
+                    },
+                    Hit {
+                        start_ms: 40,
+                        milliseconds: 12,
+                        gain: 0.75,
+                        lowpass_hz: 7_000.0,
+                        highpass_hz: 1_600.0,
+                        resonance_hz: 1_900.0,
+                        resonance_gain: 0.5,
+                        decay_ms: 3.0,
+                        seed: 0x3C4D_5E6F,
+                    },
+                    Hit {
+                        start_ms: 55,
+                        milliseconds: 75,
+                        gain: 1.0,
+                        lowpass_hz: 8_000.0,
+                        highpass_hz: 1_800.0,
+                        resonance_hz: 2_800.0,
+                        resonance_gain: 1.6,
+                        decay_ms: 20.0,
+                        seed: 0x5E6F_7081,
+                    },
+                ],
+            ),
+            // 退格：低频 thump + 一点闷噪声，像字车回弹。
+            back: typewriter_wav(
+                BACK_MS,
+                BACK_PEAK,
+                &[
+                    Hit {
+                        start_ms: 0,
+                        milliseconds: BACK_MS,
+                        gain: 1.0,
+                        lowpass_hz: 1_200.0,
+                        highpass_hz: 160.0,
+                        resonance_hz: 190.0,
+                        resonance_gain: 1.2,
+                        decay_ms: 9.0,
+                        seed: 0x6F70_8192,
+                    },
+                    Hit {
+                        start_ms: 0,
+                        milliseconds: 18,
+                        gain: 0.6,
+                        lowpass_hz: 3_000.0,
+                        highpass_hz: 900.0,
+                        resonance_hz: 1_200.0,
+                        resonance_gain: 0.25,
+                        decay_ms: 4.0,
+                        seed: 0x7081_92A3,
+                    },
+                ],
+            ),
         }
     }
 }
 
-struct Tone {
-    hz: f32,
+/// 一次机械敲击：噪声点击 + 一个共振峰，各自按指数衰减。
+struct Hit {
+    /// 在整段音效中的起始偏移（毫秒）。
+    start_ms: u32,
+    /// 持续长度（毫秒）；末尾必须已衰减到听不见。
     milliseconds: u32,
+    /// 该次敲击的峰值权重。
+    gain: f32,
+    /// 噪声的低通截止频率：越低越闷。
+    lowpass_hz: f32,
+    /// 噪声的高通截止频率：越高越脆。
+    highpass_hz: f32,
+    /// 机械共振频率（低频 thump 或高频金属声）。
+    resonance_hz: f32,
+    /// 共振相对噪声的权重；0 表示纯噪声。
+    resonance_gain: f32,
+    /// 指数衰减时间常数（毫秒）。
+    decay_ms: f32,
+    /// 每次敲击独立的 LCG 种子，保证音色固定可复现。
+    seed: u32,
 }
 
-impl Tone {
-    const fn new(hz: f32, milliseconds: u32) -> Self {
-        Self { hz, milliseconds }
+/// 确定性 LCG：不用 rand，也不让每次启动的噪声音色漂移。
+struct Lcg(u32);
+
+impl Lcg {
+    const fn new(seed: u32) -> Self {
+        Self(seed)
+    }
+
+    /// 归一化到 `-1..=1` 的白噪声。
+    fn noise(&mut self) -> f32 {
+        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (self.0 as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 }
 
-fn tone_wav(tones: &[Tone], amplitude: f32) -> Vec<u8> {
-    let mut samples = Vec::new();
-    for tone in tones {
-        append_tone(&mut samples, tone.hz, tone.milliseconds, amplitude);
+/// 合成一整段打字机音效，并归一化到 `target_peak`（夹在 15%–25% 内）。
+fn typewriter_wav(total_ms: u32, target_peak: f32, hits: &[Hit]) -> Vec<u8> {
+    let frames = frames_for(total_ms);
+    let mut mix = vec![0.0_f32; frames];
+    for hit in hits {
+        render_hit(&mut mix, hit);
     }
+    normalise(&mut mix, target_peak);
+    let samples: Vec<i16> = mix
+        .iter()
+        .map(|value| (value * f32::from(i16::MAX)).round() as i16)
+        .collect();
     wav_bytes(&samples)
 }
 
-fn append_tone(samples: &mut Vec<i16>, hz: f32, milliseconds: u32, amplitude: f32) {
-    let frames = frames_for(milliseconds);
-    let attack = frames_for(ATTACK_MS).max(1);
-    let decay = frames.saturating_sub(attack).max(1);
-    for index in 0..frames {
-        let envelope = if index < attack {
-            index as f32 / attack as f32
-        } else {
-            1.0 - (index - attack) as f32 / decay as f32
-        };
-        let wave = (std::f32::consts::TAU * hz * index as f32 / SAMPLE_RATE as f32).sin();
-        let value = amplitude * envelope * wave * f32::from(i16::MAX);
-        samples.push(value.round().clamp(-32_767.0, 32_767.0) as i16);
+fn render_hit(mix: &mut [f32], hit: &Hit) {
+    let start = frames_for(hit.start_ms);
+    let end = start
+        .saturating_add(frames_for(hit.milliseconds))
+        .min(mix.len());
+    if start >= end {
+        return;
+    }
+    let sample_rate = SAMPLE_RATE as f32;
+    let low_alpha = 1.0 - (-std::f32::consts::TAU * hit.lowpass_hz / sample_rate).exp();
+    let high_rc = 1.0 / (std::f32::consts::TAU * hit.highpass_hz.max(1.0));
+    let high_alpha = high_rc / (high_rc + 1.0 / sample_rate);
+    let attack = attack_frames();
+    let decay_seconds = (hit.decay_ms / 1000.0).max(0.001);
+    let mut rng = Lcg::new(hit.seed);
+    let mut low_state = 0.0_f32;
+    let mut high_input = 0.0_f32;
+    let mut high_state = 0.0_f32;
+    for (offset, frame) in mix[start..end].iter_mut().enumerate() {
+        let noise = rng.noise();
+        low_state += low_alpha * (noise - low_state);
+        high_state = high_alpha * (high_state + low_state - high_input);
+        high_input = low_state;
+        let attack_ramp = (offset.min(attack) as f32) / attack as f32;
+        let decay = (-(offset as f32 / sample_rate) / decay_seconds).exp();
+        let resonance =
+            (std::f32::consts::TAU * hit.resonance_hz * offset as f32 / sample_rate).sin();
+        let envelope = attack_ramp * decay * hit.gain;
+        *frame += (high_state + resonance * hit.resonance_gain) * envelope;
+    }
+}
+
+fn attack_frames() -> usize {
+    (SAMPLE_RATE as f32 * ATTACK_SECONDS).round().max(1.0) as usize
+}
+
+fn normalise(mix: &mut [f32], target_peak: f32) {
+    let peak = mix
+        .iter()
+        .fold(0.0_f32, |peak, value| peak.max(value.abs()));
+    if peak <= f32::EPSILON {
+        return;
+    }
+    let target = target_peak.clamp(PEAK_LOW, PEAK_HIGH);
+    let scale = target / peak;
+    for sample in mix.iter_mut() {
+        *sample *= scale;
     }
 }
 
@@ -215,13 +406,22 @@ mod tests {
         ])
     }
 
+    fn samples_of(bytes: &[u8]) -> Vec<i16> {
+        bytes[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| i16::from_le_bytes(*pair))
+            .collect()
+    }
+
     #[test]
     fn every_cue_is_a_pcm_riff_wav_with_matching_data_size() {
         for (cue, milliseconds) in [
-            (SoundCue::Move, 12),
-            (SoundCue::Focus, 18),
-            (SoundCue::Confirm, 70),
-            (SoundCue::Back, 18),
+            (SoundCue::Move, 32),
+            (SoundCue::Focus, 21),
+            (SoundCue::Confirm, 130),
+            (SoundCue::Back, 40),
         ] {
             let bytes = wav_for(cue);
             assert_eq!(&bytes[0..4], b"RIFF", "{cue:?}");
@@ -259,14 +459,21 @@ mod tests {
             SoundCue::Confirm,
             SoundCue::Back,
         ] {
-            let bytes = wav_for(cue);
-            let peak = bytes[44..]
-                .chunks(2)
-                .map(|pair| i32::from(i16::from_le_bytes([pair[0], pair[1]])).abs())
+            let samples = samples_of(wav_for(cue));
+            let peak = samples
+                .iter()
+                .map(|sample| i32::from(*sample).abs())
                 .max()
                 .unwrap_or(0);
             assert!(peak > 0, "{cue:?} must not be silent");
-            assert!(peak < 10_000, "{cue:?} peak {peak} too close to i16::MAX");
+            assert_eq!(samples[0], 0, "{cue:?} attack starts at zero");
+            let ratio = peak as f32 / f32::from(i16::MAX);
+            assert!(
+                (0.15..=0.25).contains(&ratio),
+                "{cue:?} peak {peak} ({:.1}%) outside 15%–25%",
+                ratio * 100.0
+            );
+            assert!(peak < i32::from(i16::MAX), "{cue:?} clipping");
         }
     }
 
