@@ -2000,6 +2000,7 @@ fn settings_page_lists_editable_fields_by_category() {
             "专注模式",
             "动效",
             "音效",
+            "音效主题",
             "视觉样式",
             "开机自启",
             "B站",
@@ -2027,7 +2028,7 @@ fn settings_tree_collapses_and_expands_categories() {
     let (settings, dir) = settings_page_fixture();
     let collapsed = BTreeSet::from(["category:播放".to_owned()]);
     let page = crate::settings_page::settings_page_with(&settings, &collapsed);
-    assert_eq!(page.view.rows.len(), 15);
+    assert_eq!(page.view.rows.len(), 16);
     assert_eq!(page.view.rows[0], vec!["▸ 播放 (2)", ""]);
     assert!(
         !page
@@ -2038,7 +2039,7 @@ fn settings_tree_collapses_and_expands_categories() {
     assert!(page.fields.iter().any(|field| field.key == "category:播放"));
 
     let expanded = crate::settings_page::settings_page_with(&settings, &BTreeSet::new());
-    assert_eq!(expanded.view.rows.len(), 17);
+    assert_eq!(expanded.view.rows.len(), 18);
     assert_eq!(expanded.view.rows[0], vec!["▾ 播放 (2)", ""]);
     assert_eq!(expanded.view.rows[1], vec!["  音量", "100%"]);
     assert!(
@@ -2060,9 +2061,9 @@ fn settings_tree_puts_unknown_keys_under_read_only_other() {
         )
         .unwrap();
     let page = crate::settings_page::settings_page(&settings);
-    assert_eq!(page.view.rows.len(), 19);
-    assert_eq!(page.view.rows[17], vec!["▾ 其他 (1)", ""]);
-    assert_eq!(page.view.rows[18], vec!["  custom.readonly", "值"]);
+    assert_eq!(page.view.rows.len(), 20);
+    assert_eq!(page.view.rows[18], vec!["▾ 其他 (1)", ""]);
+    assert_eq!(page.view.rows[19], vec!["  custom.readonly", "值"]);
     let field = page.fields.last().expect("unknown field");
     assert_eq!(field.key, "custom.readonly");
     assert_eq!(field.kind, SettingsKind::ReadOnly);
@@ -2325,6 +2326,16 @@ fn settings_motion_sound_and_visual_are_listed() {
         visual.default,
         Some(np_core::SettingValue::Str("spectrum".to_owned()))
     );
+    let sound_theme = page
+        .fields
+        .iter()
+        .find(|field| field.key == "ui.soundTheme")
+        .expect("ui.soundTheme");
+    assert_eq!(sound_theme.kind, SettingsKind::SoundTheme);
+    assert_eq!(
+        sound_theme.default,
+        Some(np_core::SettingValue::Str("switch".to_owned()))
+    );
     assert_eq!(
         crate::settings_page::default_value("ui.motion"),
         np_core::SettingValue::Bool(true)
@@ -2347,6 +2358,7 @@ fn settings_motion_sound_and_visual_are_listed() {
     };
     assert_eq!(value("动效"), "开");
     assert_eq!(value("音效"), "开");
+    assert_eq!(value("音效主题"), "扳动开关");
     assert_eq!(value("视觉样式"), "频谱");
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2567,6 +2579,40 @@ fn settings_visual_mode_cycles_and_commits() {
 }
 
 #[test]
+fn settings_sound_theme_cycles_and_commits() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "ui.soundTheme")
+        .expect("ui.soundTheme");
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][1], "‹ 扳动开关 ›");
+    crate::settings_editor::adjust_settings_edit(&mut app, 1, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][1], "‹ 打字机 ›");
+    crate::settings_editor::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.sound.theme(), crate::sound::SoundTheme::Typewriter);
+    assert_eq!(
+        settings.get_str("ui.soundTheme").as_deref(),
+        Some("typewriter")
+    );
+    assert_eq!(app.views[0].rows[app.row_index][1], "打字机");
+
+    // 下一轮 ← 回到 switch，持久化走同一路径。
+    app.row_index = app
+        .settings_fields
+        .iter()
+        .position(|field| field.key == "ui.soundTheme")
+        .expect("ui.soundTheme");
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    crate::settings_editor::adjust_settings_edit(&mut app, -1, &settings, &theme).unwrap();
+    crate::settings_editor::commit_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.sound.theme(), crate::sound::SoundTheme::Switch);
+    assert_eq!(settings.get_str("ui.soundTheme").as_deref(), Some("switch"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn startup_visual_mode_reads_ui_visual_then_env_override() {
     let root = std::env::temp_dir().join(format!(
         "np-tui-visual-startup-{}-{}",
@@ -2704,13 +2750,13 @@ fn browse_tree_scrolls_the_ninth_view_into_seven_rows() {
 #[test]
 fn settings_list_scrolls_live_buffer_into_six_rows() {
     let (mut app, _settings, _audio, _theme, root) = settings_fixture();
-    // 分类根 + 12 个字段共 17 行；末尾两行是「直播」根与「直播缓冲」。
-    assert_eq!(app.views[0].rows.len(), 17);
+    // 分类根 + 13 个字段共 18 行；末尾两行是「直播」根与「直播缓冲」。
+    assert_eq!(app.views[0].rows.len(), 18);
     app.row_index = settings_field_row(&app, np_core::settings::LIVE_BUFFER_MS_KEY);
-    assert_eq!(app.row_index, 16);
+    assert_eq!(app.row_index, 17);
     let mut scroll = ScrollState::new(6);
-    scroll.follow(app.row_index, 17);
-    assert_eq!(scroll.first, 11);
+    scroll.follow(app.row_index, 18);
+    assert_eq!(scroll.first, 12);
     let audio = TuiAudio::empty();
     let mut terminal = Terminal::new(TestBackend::new(72, 24)).unwrap();
     let _ = draw_text(&mut app, &mut terminal, &audio);

@@ -12,7 +12,7 @@ use crate::model::{VisualMode, playback_mode_symbol};
 use crate::settings_page::{
     SettingsField, SettingsKind, bool_text, default_value, live_buffer_ms, set_row_value,
 };
-use crate::sound::SoundCue;
+use crate::sound::{SoundCue, SoundTheme};
 use crate::startup;
 use np_app::{SettingsHandle, ThemeApi};
 use np_core::SettingValue;
@@ -386,6 +386,14 @@ fn current_value(
                 .id()
                 .to_owned(),
         ),
+        SettingsKind::SoundTheme => SettingValue::Str(
+            settings
+                .get_str(&field.key)
+                .and_then(|id| SoundTheme::from_id(&id))
+                .unwrap_or_default()
+                .id()
+                .to_owned(),
+        ),
         SettingsKind::ReadOnly => settings
             .get(&field.key)
             .unwrap_or(SettingValue::Bool(false)),
@@ -473,6 +481,19 @@ fn step_value(
                 VisualMode::ALL[(index + delta).rem_euclid(VisualMode::ALL.len() as i32) as usize];
             Ok(SettingValue::Str(next.id().to_owned()))
         }
+        SettingsKind::SoundTheme => {
+            let theme = match current {
+                SettingValue::Str(id) => SoundTheme::from_id(id).unwrap_or_default(),
+                _ => SoundTheme::default(),
+            };
+            let index = SoundTheme::ALL
+                .iter()
+                .position(|candidate| *candidate == theme)
+                .unwrap_or(0) as i32;
+            let next =
+                SoundTheme::ALL[(index + delta).rem_euclid(SoundTheme::ALL.len() as i32) as usize];
+            Ok(SettingValue::Str(next.id().to_owned()))
+        }
         SettingsKind::ReadOnly => Err("只读配置不能修改".to_owned()),
     }
 }
@@ -510,6 +531,13 @@ fn draft_text(
                 .label()
                 .to_owned(),
             _ => VisualMode::default().label().to_owned(),
+        },
+        SettingsKind::SoundTheme => match value {
+            SettingValue::Str(id) => SoundTheme::from_id(id)
+                .unwrap_or_default()
+                .label()
+                .to_owned(),
+            _ => SoundTheme::default().label().to_owned(),
         },
         SettingsKind::ReadOnly => value.display(),
     };
@@ -621,6 +649,21 @@ fn set_setting_value(
             )?;
             app.visual_mode = mode;
             app.set_transient_status(format!("视觉样式 {}", mode.label()));
+        }
+        SettingsKind::SoundTheme => {
+            let SettingValue::Str(id) = value else {
+                return Err("音效主题设置类型错误".to_owned());
+            };
+            let theme = SoundTheme::from_id(&id).ok_or_else(|| format!("未知音效主题：{id}"))?;
+            save(
+                settings,
+                &field.key,
+                SettingValue::Str(theme.id().to_owned()),
+            )?;
+            app.sound.set_theme(theme);
+            app.set_transient_status(format!("音效主题 {}", theme.label()));
+            // 切换后立即试听确认音；总开关关闭时 play 会静默。
+            app.sound.play(SoundCue::Confirm);
         }
         SettingsKind::ReadOnly => return Err("只读配置不能修改".to_owned()),
     }

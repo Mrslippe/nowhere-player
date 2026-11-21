@@ -195,6 +195,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 音效开关立即生效；未写过设置时默认开启。
     app.sound
         .set_enabled(settings.get_bool("ui.sound").unwrap_or(true));
+    if let Some(theme) = settings
+        .get_str("ui.soundTheme")
+        .and_then(|id| crate::sound::SoundTheme::from_id(&id))
+    {
+        app.sound.set_theme(theme);
+    }
     let (remote_tx, remote_rx) = std::sync::mpsc::channel();
     app.remote_tx = Some(remote_tx);
     if first_run {

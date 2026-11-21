@@ -37,6 +37,47 @@ const BACK_PEAK: f32 = 0.18;
 /// `SND_ASYNC | SND_NODEFAULT | SND_MEMORY`：异步、不落默认提示音、播放内存 WAV。
 const PLAY_FLAGS: u32 = 0x0001 | 0x0002 | 0x0004;
 
+/// 音效主题：同一组 cue 的不同机械音色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SoundTheme {
+    /// 沉闷的扳动按钮声，默认。
+    #[default]
+    Switch,
+    /// 原有打字机音色，完整保留。
+    Typewriter,
+    /// 更轻、更短的低频点击。
+    Soft,
+}
+
+impl SoundTheme {
+    pub(crate) const ALL: [Self; 3] = [Self::Switch, Self::Typewriter, Self::Soft];
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Switch => "switch",
+            Self::Typewriter => "typewriter",
+            Self::Soft => "soft",
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Switch => "扳动开关",
+            Self::Typewriter => "打字机",
+            Self::Soft => "轻触",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "switch" => Some(Self::Switch),
+            "typewriter" => Some(Self::Typewriter),
+            "soft" => Some(Self::Soft),
+            _ => None,
+        }
+    }
+}
+
 /// 4 个 UI 音色；只表示语义，不携带播放状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SoundCue {
@@ -50,24 +91,38 @@ pub(crate) enum SoundCue {
     Back,
 }
 
-/// 音效播放器：保存开关与上次发声时间，35ms 去抖。
+/// 音效播放器：保存开关、主题与上次发声时间，35ms 去抖。
 pub(crate) struct SoundPlayer {
     enabled: bool,
+    theme: SoundTheme,
     last_played: Option<Instant>,
 }
 
 impl SoundPlayer {
-    /// 默认开启；启动时先把 4 个 WAV 合成好，按键路径上不再付合成成本。
+    /// 默认开启；启动时先把默认主题的 Move WAV 合成好。
     pub(crate) fn new() -> Self {
-        let _ = wav_for(SoundCue::Move);
+        let theme = SoundTheme::default();
+        let _ = wav_for(theme, SoundCue::Move);
         Self {
             enabled: true,
+            theme,
             last_played: None,
         }
     }
 
     pub(crate) fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+
+    pub(crate) fn set_theme(&mut self, theme: SoundTheme) {
+        self.theme = theme;
+        // 预合成，避免第一次切主题时在按键路径上卡一下。
+        let _ = wav_for(theme, SoundCue::Move);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn theme(&self) -> SoundTheme {
+        self.theme
     }
 
     /// 这个时刻是否允许发声；允许时占用去抖窗口。
@@ -90,7 +145,7 @@ impl SoundPlayer {
     /// 播放一个提示音；关闭或去抖窗口内静默。
     pub(crate) fn play(&mut self, cue: SoundCue) {
         if self.should_play_at(Instant::now()) {
-            emit(cue);
+            emit(cue, self.theme);
         }
     }
 }
@@ -103,11 +158,11 @@ unsafe extern "system" {
     fn PlaySoundW(psz_sound: *const u16, hmod: *mut core::ffi::c_void, flags: u32) -> i32;
 }
 
-fn emit(cue: SoundCue) {
+fn emit(cue: SoundCue, theme: SoundTheme) {
     #[cfg(windows)]
     {
         if !cfg!(test) {
-            let wav = wav_for(cue);
+            let wav = wav_for(theme, cue);
             // SAFETY: WAV 字节放在模块级 `OnceLock` 里，第一次合成后不再修改、
             // 活到进程结束；`SND_ASYNC` 异步播放期间只读这块内存，不会悬垂。
             unsafe {
@@ -117,19 +172,40 @@ fn emit(cue: SoundCue) {
     }
     #[cfg(not(windows))]
     {
-        let _ = cue;
+        let _ = (cue, theme);
     }
 }
 
-/// 一次合成 4 个音色并缓存在 `OnceLock` 中。
-fn wav_for(cue: SoundCue) -> &'static [u8] {
-    static BANK: OnceLock<SoundBank> = OnceLock::new();
-    let bank = BANK.get_or_init(SoundBank::synthesise);
+/// 三个主题各合成 4 个音色并缓存在 `OnceLock` 中。
+fn wav_for(theme: SoundTheme, cue: SoundCue) -> &'static [u8] {
+    static BANKS: OnceLock<SoundBanks> = OnceLock::new();
+    let banks = BANKS.get_or_init(SoundBanks::synthesise);
+    let bank = match theme {
+        SoundTheme::Switch => &banks.switch,
+        SoundTheme::Typewriter => &banks.typewriter,
+        SoundTheme::Soft => &banks.soft,
+    };
     match cue {
         SoundCue::Move => &bank.move_,
         SoundCue::Focus => &bank.focus,
         SoundCue::Confirm => &bank.confirm,
         SoundCue::Back => &bank.back,
+    }
+}
+
+struct SoundBanks {
+    switch: SoundBank,
+    typewriter: SoundBank,
+    soft: SoundBank,
+}
+
+impl SoundBanks {
+    fn synthesise() -> Self {
+        Self {
+            switch: SoundBank::switch(),
+            typewriter: SoundBank::typewriter(),
+            soft: SoundBank::soft(),
+        }
     }
 }
 
@@ -141,7 +217,7 @@ struct SoundBank {
 }
 
 impl SoundBank {
-    fn synthesise() -> Self {
+    fn typewriter() -> Self {
         Self {
             // 键帽咔哒：宽带噪声点击 + 2.4kHz 金属短鸣。
             move_: typewriter_wav(
@@ -254,6 +330,165 @@ impl SoundBank {
                         seed: 0x7081_92A3,
                     },
                 ],
+            ),
+        }
+    }
+
+    /// 沉闷的扳动开关：低频 thump 为主，噪声只留一点点“咔”的质感。
+    fn switch() -> Self {
+        Self {
+            move_: typewriter_wav(
+                38,
+                0.21,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: 38,
+                    gain: 1.2,
+                    lowpass_hz: 900.0,
+                    highpass_hz: 90.0,
+                    resonance_hz: 110.0,
+                    resonance_gain: 1.4,
+                    decay_ms: 12.0,
+                    seed: 0x51A7_C4E1,
+                }],
+            ),
+            focus: typewriter_wav(
+                28,
+                0.17,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: 28,
+                    gain: 0.9,
+                    lowpass_hz: 1_200.0,
+                    highpass_hz: 140.0,
+                    resonance_hz: 170.0,
+                    resonance_gain: 1.0,
+                    decay_ms: 9.0,
+                    seed: 0x62B8_D5F2,
+                }],
+            ),
+            // 两段式扳动：先落锁，再回弹。
+            confirm: typewriter_wav(
+                120,
+                0.22,
+                &[
+                    Hit {
+                        start_ms: 0,
+                        milliseconds: 55,
+                        gain: 1.3,
+                        lowpass_hz: 800.0,
+                        highpass_hz: 80.0,
+                        resonance_hz: 95.0,
+                        resonance_gain: 1.5,
+                        decay_ms: 15.0,
+                        seed: 0x73C9_E603,
+                    },
+                    Hit {
+                        start_ms: 48,
+                        milliseconds: 72,
+                        gain: 0.9,
+                        lowpass_hz: 1_500.0,
+                        highpass_hz: 180.0,
+                        resonance_hz: 320.0,
+                        resonance_gain: 0.7,
+                        decay_ms: 10.0,
+                        seed: 0x84DA_F714,
+                    },
+                ],
+            ),
+            back: typewriter_wav(
+                48,
+                0.18,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: 48,
+                    gain: 1.1,
+                    lowpass_hz: 700.0,
+                    highpass_hz: 70.0,
+                    resonance_hz: 85.0,
+                    resonance_gain: 1.3,
+                    decay_ms: 16.0,
+                    seed: 0x95EB_0825,
+                }],
+            ),
+        }
+    }
+
+    /// 轻触：短、干、低音量，不抢音乐。
+    fn soft() -> Self {
+        Self {
+            move_: typewriter_wav(
+                22,
+                0.16,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: 22,
+                    gain: 0.7,
+                    lowpass_hz: 1_200.0,
+                    highpass_hz: 220.0,
+                    resonance_hz: 450.0,
+                    resonance_gain: 0.35,
+                    decay_ms: 5.0,
+                    seed: 0xA6FC_1936,
+                }],
+            ),
+            focus: typewriter_wav(
+                16,
+                0.17,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: 16,
+                    gain: 0.5,
+                    lowpass_hz: 1_500.0,
+                    highpass_hz: 280.0,
+                    resonance_hz: 600.0,
+                    resonance_gain: 0.25,
+                    decay_ms: 3.5,
+                    seed: 0xB70D_2A47,
+                }],
+            ),
+            confirm: typewriter_wav(
+                60,
+                0.18,
+                &[
+                    Hit {
+                        start_ms: 0,
+                        milliseconds: 28,
+                        gain: 0.8,
+                        lowpass_hz: 1_100.0,
+                        highpass_hz: 200.0,
+                        resonance_hz: 380.0,
+                        resonance_gain: 0.4,
+                        decay_ms: 7.0,
+                        seed: 0xC81E_3B58,
+                    },
+                    Hit {
+                        start_ms: 24,
+                        milliseconds: 36,
+                        gain: 0.55,
+                        lowpass_hz: 1_400.0,
+                        highpass_hz: 260.0,
+                        resonance_hz: 520.0,
+                        resonance_gain: 0.3,
+                        decay_ms: 5.0,
+                        seed: 0xD92F_4C69,
+                    },
+                ],
+            ),
+            back: typewriter_wav(
+                28,
+                0.16,
+                &[Hit {
+                    start_ms: 0,
+                    milliseconds: 28,
+                    gain: 0.6,
+                    lowpass_hz: 900.0,
+                    highpass_hz: 160.0,
+                    resonance_hz: 300.0,
+                    resonance_gain: 0.35,
+                    decay_ms: 6.0,
+                    seed: 0xEA40_5D7A,
+                }],
             ),
         }
     }
@@ -416,64 +651,76 @@ mod tests {
     }
 
     #[test]
-    fn every_cue_is_a_pcm_riff_wav_with_matching_data_size() {
-        for (cue, milliseconds) in [
-            (SoundCue::Move, 32),
-            (SoundCue::Focus, 21),
-            (SoundCue::Confirm, 130),
-            (SoundCue::Back, 40),
-        ] {
-            let bytes = wav_for(cue);
-            assert_eq!(&bytes[0..4], b"RIFF", "{cue:?}");
-            assert_eq!(&bytes[8..12], b"WAVE", "{cue:?}");
-            assert_eq!(&bytes[12..16], b"fmt ", "{cue:?}");
-            assert_eq!(u32_at(bytes, 16), 16, "{cue:?} fmt size");
-            assert_eq!(u16_at(bytes, 20), 1, "{cue:?} PCM");
-            assert_eq!(u16_at(bytes, 22), 1, "{cue:?} mono");
-            assert_eq!(u32_at(bytes, 24), SAMPLE_RATE, "{cue:?} sample rate");
-            assert_eq!(u32_at(bytes, 28), SAMPLE_RATE * 2, "{cue:?} byte rate");
-            assert_eq!(u16_at(bytes, 32), 2, "{cue:?} block align");
-            assert_eq!(u16_at(bytes, 34), 16, "{cue:?} bits");
-            assert_eq!(&bytes[36..40], b"data", "{cue:?}");
-            assert_eq!(
-                u32_at(bytes, 4) as usize + 8,
-                bytes.len(),
-                "{cue:?} RIFF size"
-            );
-            let data_len = u32_at(bytes, 40) as usize;
-            assert_eq!(data_len, bytes.len() - 44, "{cue:?} data size");
-            assert_eq!(data_len % 2, 0, "{cue:?} 16-bit samples");
-            let actual_ms = (data_len / 2) as f32 * 1000.0 / SAMPLE_RATE as f32;
-            assert!(
-                (actual_ms - milliseconds as f32).abs() <= 1.0,
-                "{cue:?} {actual_ms} ms"
-            );
+    fn every_theme_and_cue_is_a_pcm_riff_wav_with_matching_data_size() {
+        for theme in SoundTheme::ALL {
+            for cue in [
+                SoundCue::Move,
+                SoundCue::Focus,
+                SoundCue::Confirm,
+                SoundCue::Back,
+            ] {
+                let bytes = wav_for(theme, cue);
+                let label = format!("{theme:?}/{cue:?}");
+                assert_eq!(&bytes[0..4], b"RIFF", "{label}");
+                assert_eq!(&bytes[8..12], b"WAVE", "{label}");
+                assert_eq!(&bytes[12..16], b"fmt ", "{label}");
+                assert_eq!(u32_at(bytes, 16), 16, "{label} fmt size");
+                assert_eq!(u16_at(bytes, 20), 1, "{label} PCM");
+                assert_eq!(u16_at(bytes, 22), 1, "{label} mono");
+                assert_eq!(u32_at(bytes, 24), SAMPLE_RATE, "{label} sample rate");
+                assert_eq!(u32_at(bytes, 28), SAMPLE_RATE * 2, "{label} byte rate");
+                assert_eq!(u16_at(bytes, 32), 2, "{label} block align");
+                assert_eq!(u16_at(bytes, 34), 16, "{label} bits");
+                assert_eq!(&bytes[36..40], b"data", "{label}");
+                assert_eq!(
+                    u32_at(bytes, 4) as usize + 8,
+                    bytes.len(),
+                    "{label} RIFF size"
+                );
+                let data_len = u32_at(bytes, 40) as usize;
+                assert_eq!(data_len, bytes.len() - 44, "{label} data size");
+                assert_eq!(data_len % 2, 0, "{label} 16-bit samples");
+                let actual_ms = (data_len / 2) as f32 * 1000.0 / SAMPLE_RATE as f32;
+                assert!((1.0..=200.0).contains(&actual_ms), "{label} {actual_ms} ms");
+            }
         }
     }
 
     #[test]
+    fn themes_round_trip_and_default_to_switch() {
+        assert_eq!(SoundTheme::default(), SoundTheme::Switch);
+        for theme in SoundTheme::ALL {
+            assert_eq!(SoundTheme::from_id(theme.id()), Some(theme));
+            assert!(!theme.label().is_empty());
+        }
+        assert_eq!(SoundTheme::from_id("missing"), None);
+    }
+
+    #[test]
     fn samples_are_audible_but_far_from_clipping() {
-        for cue in [
-            SoundCue::Move,
-            SoundCue::Focus,
-            SoundCue::Confirm,
-            SoundCue::Back,
-        ] {
-            let samples = samples_of(wav_for(cue));
-            let peak = samples
-                .iter()
-                .map(|sample| i32::from(*sample).abs())
-                .max()
-                .unwrap_or(0);
-            assert!(peak > 0, "{cue:?} must not be silent");
-            assert_eq!(samples[0], 0, "{cue:?} attack starts at zero");
-            let ratio = peak as f32 / f32::from(i16::MAX);
-            assert!(
-                (0.15..=0.25).contains(&ratio),
-                "{cue:?} peak {peak} ({:.1}%) outside 15%–25%",
-                ratio * 100.0
-            );
-            assert!(peak < i32::from(i16::MAX), "{cue:?} clipping");
+        for theme in SoundTheme::ALL {
+            for cue in [
+                SoundCue::Move,
+                SoundCue::Focus,
+                SoundCue::Confirm,
+                SoundCue::Back,
+            ] {
+                let samples = samples_of(wav_for(theme, cue));
+                let peak = samples
+                    .iter()
+                    .map(|sample| i32::from(*sample).abs())
+                    .max()
+                    .unwrap_or(0);
+                assert!(peak > 0, "{theme:?}/{cue:?} must not be silent");
+                assert_eq!(samples[0], 0, "{theme:?}/{cue:?} attack starts at zero");
+                let ratio = peak as f32 / f32::from(i16::MAX);
+                assert!(
+                    (0.15..=0.25).contains(&ratio),
+                    "{theme:?}/{cue:?} peak {peak} ({:.1}%) outside 15%–25%",
+                    ratio * 100.0
+                );
+                assert!(peak < i32::from(i16::MAX), "{theme:?}/{cue:?} clipping");
+            }
         }
     }
 

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::app::App;
 use crate::model::{BrowseKind, ViewData, VisualMode, playback_mode_symbol};
+use crate::sound::SoundTheme;
 use np_app::SettingsHandle;
 use np_core::SettingValue;
 
@@ -17,6 +18,8 @@ pub(crate) enum SettingsKind {
     BufferMs,
     /// Player 视觉样式：`ui.visual`，七种样式循环。
     VisualMode,
+    /// UI 音效主题：`ui.soundTheme`，switch / typewriter / soft。
+    SoundTheme,
     ReadOnly,
 }
 
@@ -53,6 +56,7 @@ const CATEGORIES: [CategorySpec; 5] = [
             ("tui.focusMode", "专注模式", SettingsKind::Bool),
             ("ui.motion", "动效", SettingsKind::Bool),
             ("ui.sound", "音效", SettingsKind::Bool),
+            ("ui.soundTheme", "音效主题", SettingsKind::SoundTheme),
             ("ui.visual", "视觉样式", SettingsKind::VisualMode),
         ],
     ),
@@ -183,6 +187,7 @@ pub(crate) fn default_value(key: &str) -> SettingValue {
         "playback.mode" => SettingValue::Str("sequential".to_owned()),
         "theme.id" => SettingValue::Str("milkgreen".to_owned()),
         "ui.splash" | "ui.motion" | "ui.sound" => SettingValue::Bool(true),
+        "ui.soundTheme" => SettingValue::Str(SoundTheme::default().id().to_owned()),
         "tui.focusMode" | "startup.enabled" => SettingValue::Bool(false),
         "source.bilibili.enabled" | "source.netease.enabled" => SettingValue::Bool(true),
         "live.buffer_ms" => SettingValue::Num(np_core::settings::LIVE_BUFFER_MS_DEFAULT as f64),
@@ -244,6 +249,12 @@ fn settings_value_text(settings: &SettingsHandle, key: &str, kind: SettingsKind)
         SettingsKind::VisualMode => settings
             .get_str(key)
             .and_then(|id| VisualMode::from_id(&id))
+            .unwrap_or_default()
+            .label()
+            .to_owned(),
+        SettingsKind::SoundTheme => settings
+            .get_str(key)
+            .and_then(|id| SoundTheme::from_id(&id))
             .unwrap_or_default()
             .label()
             .to_owned(),
