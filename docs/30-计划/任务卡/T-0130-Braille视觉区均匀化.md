@@ -56,4 +56,25 @@ docs/30-计划/任务卡/T-0130-Braille视觉区均匀化.md（仅结果段）
 
 ## 5. 结果
 
-待实现。
+2026-11-21：
+
+- 新增 `visuals::draw_spectrum_braille`：
+  - 16 段频谱按终端列线性插值；
+  - 每列两个 Braille 子列同时填点，从底部按 4 个点行量化；
+  - 直接写 Braille 字符，不再用 Canvas 的 65 条浮点竖线。
+- 新增 `visuals::draw_waveform_braille`：
+  - 每列取一个 sample，相邻列纵向连接；
+  - 每列两个子列同时填点；
+  - 静音时用 faint 中心线。
+- `player_bar::draw_spectrum` / `draw_waveform` 删除，Spectrum / Waveform 改走新实现；其他 5 种样式未变。
+- 测试：
+  - 恒定电平频谱每列高度/点模式一致，无空列；
+  - 恒定电平波形每列有点；
+  - 静音波形有 faint 中心线；
+  - 清空区域不残留上一帧字符；
+  - 72×24 / 60×20 全部 7 种样式冒烟。
+- 验证：
+  - `cargo test -p np-tui`：381 passed / 0 failed / 1 ignored；
+  - `cargo clippy -p np-tui --all-targets -- -D warnings`：通过；
+  - `cargo fmt --all -- --check`：通过。
+- 未做：真机 72×24 人眼观感（细点密度在真实字体下的视觉确认）。

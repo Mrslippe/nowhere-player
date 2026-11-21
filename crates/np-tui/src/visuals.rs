@@ -1,9 +1,10 @@
-//! Player 视觉样式（T-0126）：柱状、镜像、环形、星野。
+//! Player 视觉样式（T-0126 / T-0130）：Braille 栅格频谱与波形、柱状、镜像、环形、星野。
 //!
 //! 这里只负责在给定 `Rect` 内绘制，不读写 `App` 状态；颜色一律走
 //! [`PaletteToken`]。静音（数据全零）时给 faint 基线 / 星点，不黑屏；
 //! 每帧只做固定上限的循环，不分配大 `Vec`。
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
@@ -20,6 +21,13 @@ const RING_COUNT: usize = 3;
 const RING_SEGMENTS: usize = 24;
 /// 星野固定星点数。
 const STAR_COUNT: u64 = 48;
+
+/// Braille 左列 4 个点行对应的位：上到下 `0x01, 0x02, 0x04, 0x40`。
+const BRAILLE_LEFT: [u16; 4] = [0x01, 0x02, 0x04, 0x40];
+/// Braille 右列 4 个点行对应的位：上到下 `0x08, 0x10, 0x20, 0x80`。
+const BRAILLE_RIGHT: [u16; 4] = [0x08, 0x10, 0x20, 0x80];
+/// 一个格子从底部往上填 0..=4 个点行时的点位；两列同时点，避免半列疏密带。
+const BRAILLE_BOTTOM: [u16; 5] = [0x00, 0xC0, 0xE4, 0xF6, 0xFF];
 
 /// 16 段块状柱：宽度自适应，静音时只在底部画 faint 基线。
 pub(crate) fn draw_bars(frame: &mut ratatui::Frame, area: Rect, values: &[f32], palette: &Palette) {
@@ -63,6 +71,170 @@ pub(crate) fn draw_bars(frame: &mut ratatui::Frame, area: Rect, values: &[f32], 
             let glyph = ["", "▁", "▂", "▃", "▄", "▅", "▆", "▇"][remainder];
             draw_block_row(frame, x, y, bar_width, glyph, accent);
         }
+    }
+}
+
+/// 按终端格子栅格化的频谱：16 段线性插值到每一列，列内从底部填 Braille 点。
+///
+/// 每列的两个 Braille 子列同时填点，因此任意宽度下都不会出现旧的
+/// “65 条浮点线只落在部分子列”造成的周期性疏密带。
+pub(crate) fn draw_spectrum_braille(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    values: &[f32],
+    palette: &Palette,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let background = palette.color(PaletteToken::Canvas);
+    clear_cells(frame, area, background);
+    if values.is_empty() {
+        return;
+    }
+    let total_dots = usize::from(area.height) * 4;
+    let style = Style::default()
+        .fg(palette.color(PaletteToken::Accent))
+        .bg(background);
+    let width = usize::from(area.width);
+    let heights: Vec<usize> = (0..width)
+        .map(|column| {
+            let value = spectrum_at(values, column, width);
+            if value <= 0.0 {
+                0
+            } else {
+                ((value * total_dots as f32).round() as usize).clamp(1, total_dots)
+            }
+        })
+        .collect();
+
+    let mut line = String::with_capacity(width * 3);
+    for row in 0..area.height {
+        line.clear();
+        let below = usize::from(area.height - 1 - row) * 4;
+        for &height in &heights {
+            let filled = height.saturating_sub(below).min(4);
+            line.push(braille_cell(BRAILLE_BOTTOM[filled]));
+        }
+        frame
+            .buffer_mut()
+            .set_string(area.x, area.y + row, &line, style);
+    }
+}
+
+/// 按终端格子栅格化的波形：每列取一个 sample，相邻列纵向连成折线。
+///
+/// 每列两个 Braille 子列同时填点；全静音时用 faint 画中心基线。
+pub(crate) fn draw_waveform_braille(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    samples: &[f32],
+    palette: &Palette,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let background = palette.color(PaletteToken::Canvas);
+    clear_cells(frame, area, background);
+    let silent = samples.iter().all(|sample| finite(*sample) == 0.0);
+    let color = if silent {
+        palette.color(PaletteToken::Faint)
+    } else {
+        palette.color(PaletteToken::Accent)
+    };
+    let style = Style::default().fg(color).bg(background);
+    let total_dots = usize::from(area.height) * 4;
+    let width = usize::from(area.width);
+    let mut previous: Option<usize> = None;
+    // 每列的纵向区间覆盖“上一列 y → 当前列 y”，保证折线不断列。
+    let spans: Vec<(usize, usize)> = (0..width)
+        .map(|column| {
+            let y = waveform_dot(sample_at(samples, column, width), total_dots);
+            let top = previous.map_or(y, |previous| previous.min(y));
+            let bottom = previous.map_or(y, |previous| previous.max(y));
+            previous = Some(y);
+            (top, bottom)
+        })
+        .collect();
+
+    let mut line = String::with_capacity(width * 3);
+    for row in 0..area.height {
+        line.clear();
+        let cell_top = usize::from(row) * 4;
+        let cell_bottom = cell_top + 3;
+        for &(top, bottom) in &spans {
+            let from = top.max(cell_top);
+            let to = bottom.min(cell_bottom);
+            let bits = if from > to {
+                0
+            } else {
+                braille_range_bits(from - cell_top, to - cell_top)
+            };
+            line.push(braille_cell(bits));
+        }
+        frame
+            .buffer_mut()
+            .set_string(area.x, area.y + row, &line, style);
+    }
+}
+
+/// 16 段频谱在 `column` 处的线性插值，结果落在 `0.0..=1.0`。
+fn spectrum_at(values: &[f32], column: usize, columns: usize) -> f32 {
+    let Some(first) = values.first() else {
+        return 0.0;
+    };
+    if columns <= 1 || values.len() == 1 {
+        return finite(*first).clamp(0.0, 1.0);
+    }
+    let position = column as f32 * (values.len() - 1) as f32 / (columns - 1) as f32;
+    let low = (position.floor() as usize).min(values.len() - 1);
+    let high = (low + 1).min(values.len() - 1);
+    let fraction = position - low as f32;
+    let left = finite(values[low]).clamp(0.0, 1.0);
+    let right = finite(values[high]).clamp(0.0, 1.0);
+    left + (right - left) * fraction
+}
+
+/// 每个终端列在 `samples` 上线性取一个样本。
+fn sample_at(samples: &[f32], column: usize, columns: usize) -> f32 {
+    let Some(first) = samples.first() else {
+        return 0.0;
+    };
+    if columns <= 1 || samples.len() == 1 {
+        return finite(*first).clamp(-1.0, 1.0);
+    }
+    let index = column * (samples.len() - 1) / (columns - 1);
+    finite(samples[index]).clamp(-1.0, 1.0)
+}
+
+/// sample 值映射到点行坐标（0 = 顶部，`total_dots - 1` = 底部）。
+fn waveform_dot(value: f32, total_dots: usize) -> usize {
+    let scaled = ((1.0 - value) * 0.5 * total_dots as f32).round() as usize;
+    scaled.min(total_dots.saturating_sub(1))
+}
+
+/// 一个格子内 `top..=bottom` 点行的位，左右两个子列都点亮。
+fn braille_range_bits(top: usize, bottom: usize) -> u16 {
+    (top..=bottom).fold(0, |bits, row| bits | BRAILLE_LEFT[row] | BRAILLE_RIGHT[row])
+}
+
+/// 无点的格子用普通空格，避免 U+2800（Braille 空白）被当成可见内容。
+fn braille_cell(bits: u16) -> char {
+    if bits == 0 { ' ' } else { braille_char(bits) }
+}
+
+/// `0x2800 + bits` 即 Braille 点阵字符；点位按位或后不会越界。
+fn braille_char(bits: u16) -> char {
+    char::from_u32(0x2800 + u32::from(bits)).unwrap_or('\u{2800}')
+}
+
+/// 清空 area：必须写空格覆盖上一帧字符，只改样式会留下残影。
+fn clear_cells(frame: &mut ratatui::Frame, area: Rect, background: Color) {
+    let blank = " ".repeat(usize::from(area.width));
+    let style = Style::default().bg(background);
+    let buffer: &mut Buffer = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        buffer.set_string(area.x, y, &blank, style);
     }
 }
 

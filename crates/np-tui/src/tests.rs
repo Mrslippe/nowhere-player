@@ -124,6 +124,14 @@ fn waveform_mode_draws_braille_points() {
         })
         .count();
     assert!(braille > 4, "waveform braille cells: {braille}");
+    let area = player_visual_area_at(80, 40);
+    let buffer = terminal.backend().buffer();
+    for x in area.x..area.right() {
+        assert!(
+            visual_column(buffer, x, area).chars().any(|ch| ch != ' '),
+            "waveform 第 {x} 列整列空点"
+        );
+    }
 }
 
 #[test]
@@ -168,8 +176,8 @@ fn visual_mode_cycles_all_seven_and_round_trips_ids() {
     assert_eq!(crate::visual_from_env("bogus"), None);
 }
 
-fn player_visual_area() -> ratatui::layout::Rect {
-    let [_, player, _] = layout_areas(ratatui::layout::Rect::new(0, 0, 72, 24));
+fn player_visual_area_at(width: u16, height: u16) -> ratatui::layout::Rect {
+    let [_, player, _] = layout_areas(ratatui::layout::Rect::new(0, 0, width, height));
     ratatui::layout::Rect {
         x: player.x + 1,
         y: player.y + 1,
@@ -178,8 +186,15 @@ fn player_visual_area() -> ratatui::layout::Rect {
     }
 }
 
-fn visual_cell_counts(app: &App, buffer: &ratatui::buffer::Buffer) -> (usize, usize, usize) {
-    let area = player_visual_area();
+fn player_visual_area() -> ratatui::layout::Rect {
+    player_visual_area_at(72, 24)
+}
+
+fn visual_cell_counts_at(
+    app: &App,
+    buffer: &ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+) -> (usize, usize, usize) {
     let mut visible = 0;
     let mut faint = 0;
     let mut accent = 0;
@@ -198,6 +213,29 @@ fn visual_cell_counts(app: &App, buffer: &ratatui::buffer::Buffer) -> (usize, us
         }
     }
     (visible, faint, accent)
+}
+
+fn visual_cell_counts(app: &App, buffer: &ratatui::buffer::Buffer) -> (usize, usize, usize) {
+    visual_cell_counts_at(app, buffer, player_visual_area())
+}
+
+/// 一个测试列上每个终端格子的符号；Braille 字符占一格。
+fn visual_column(buffer: &ratatui::buffer::Buffer, x: u16, area: ratatui::layout::Rect) -> String {
+    (area.y..area.bottom())
+        .map(|y| buffer[(x, y)].symbol())
+        .collect()
+}
+
+/// 直接在 TestBackend 上画一个独立 area，避免 Player 标题 / Info 行遮挡。
+fn braille_visual_buffer(
+    width: u16,
+    height: u16,
+    paint: impl FnOnce(&mut ratatui::Frame, ratatui::layout::Rect),
+) -> ratatui::buffer::Buffer {
+    let area = ratatui::layout::Rect::new(0, 0, width, height);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| paint(frame, area)).unwrap();
+    terminal.backend().buffer().clone()
 }
 
 #[test]
@@ -237,6 +275,131 @@ fn all_visual_modes_render_signals_at_72x24() {
 }
 
 #[test]
+fn braille_spectrum_constant_level_fills_every_column_uniformly() {
+    let palette = Palette::default_dark();
+    let values = vec![0.5f32; 16];
+    let area = ratatui::layout::Rect::new(0, 0, 66, 19);
+    let buffer = braille_visual_buffer(66, 19, |frame, area| {
+        let fill = "X".repeat(usize::from(area.width));
+        for y in area.y..area.bottom() {
+            frame
+                .buffer_mut()
+                .set_string(area.x, y, &fill, ratatui::style::Style::default());
+        }
+        crate::visuals::draw_spectrum_braille(frame, area, &values, &palette);
+    });
+
+    let expected = visual_column(&buffer, area.x, area);
+    assert!(
+        !expected.contains('X'),
+        "清空 area 必须写空格，不能残留上一帧字符"
+    );
+    let glyphs: Vec<char> = expected.chars().collect();
+    assert_eq!(
+        glyphs.iter().filter(|glyph| **glyph != ' ').count(),
+        10,
+        "0.5 × 76 点 = 38 点，应覆盖 9 个满格 + 1 个半格"
+    );
+    assert!(glyphs[..9].iter().all(|glyph| *glyph == ' '));
+    assert_eq!(glyphs[9], '\u{28E4}', "半格只填底部两个点行");
+    assert!(glyphs[10..].iter().all(|glyph| *glyph == '\u{28FF}'));
+    for x in area.x..area.right() {
+        assert_eq!(
+            visual_column(&buffer, x, area),
+            expected,
+            "第 {x} 列高度 / 点模式与首列不一致"
+        );
+        assert_eq!(buffer[(x, area.bottom() - 1)].fg, palette.accent);
+    }
+}
+
+#[test]
+fn braille_waveform_constant_level_fills_every_column() {
+    let palette = Palette::default_dark();
+    let samples = vec![0.5f32; 256];
+    let area = ratatui::layout::Rect::new(0, 0, 66, 19);
+    let buffer = braille_visual_buffer(66, 19, |frame, area| {
+        let fill = "X".repeat(usize::from(area.width));
+        for y in area.y..area.bottom() {
+            frame
+                .buffer_mut()
+                .set_string(area.x, y, &fill, ratatui::style::Style::default());
+        }
+        crate::visuals::draw_waveform_braille(frame, area, &samples, &palette);
+    });
+
+    let expected = visual_column(&buffer, area.x, area);
+    assert!(
+        !expected.contains('X'),
+        "清空 area 必须写空格，不能残留上一帧字符"
+    );
+    let glyphs: Vec<char> = expected.chars().collect();
+    // 0.5 映射到 y = round((1 - 0.5) × 0.5 × 76) = 19，即第 4 格最后一行。
+    assert!(glyphs[..4].iter().all(|glyph| *glyph == ' '));
+    assert_eq!(glyphs[4], '\u{28C0}', "常量波形只应点亮一个点行");
+    assert!(glyphs[5..].iter().all(|glyph| *glyph == ' '));
+    for x in area.x..area.right() {
+        assert_eq!(
+            visual_column(&buffer, x, area),
+            expected,
+            "第 {x} 列没有点或高度不一致"
+        );
+        assert_eq!(buffer[(x, area.y + 4)].fg, palette.accent);
+    }
+}
+
+#[test]
+fn braille_waveform_silent_draws_faint_center_line() {
+    let palette = Palette::default_dark();
+    let samples = vec![0.0f32; 256];
+    let area = ratatui::layout::Rect::new(0, 0, 66, 19);
+    let buffer = braille_visual_buffer(66, 19, |frame, area| {
+        crate::visuals::draw_waveform_braille(frame, area, &samples, &palette);
+    });
+
+    let expected = visual_column(&buffer, area.x, area);
+    let glyphs: Vec<char> = expected.chars().collect();
+    // 0 映射到 y = 38：第 9 格第 3 个点行，左右子列都点。
+    assert!(glyphs[..9].iter().all(|glyph| *glyph == ' '));
+    assert_eq!(glyphs[9], '\u{2824}', "静音中心线缺失");
+    assert!(glyphs[10..].iter().all(|glyph| *glyph == ' '));
+    for x in area.x..area.right() {
+        assert_eq!(visual_column(&buffer, x, area), expected);
+        assert_eq!(
+            buffer[(x, area.y + 9)].fg,
+            palette.faint,
+            "静音中心线应为 faint"
+        );
+    }
+}
+
+#[test]
+fn all_visual_modes_render_signals_at_60x20_without_panicking() {
+    use ratatui::Terminal;
+
+    let mut app = App::new();
+    app.spectrum = (0..16).map(|index| 0.15 + index as f32 * 0.05).collect();
+    app.waveform = (0..2048).map(|index| (index as f32 * 0.05).sin()).collect();
+    app.stereo_left = app.waveform.clone();
+    app.stereo_right = app.waveform.iter().map(|value| -value).collect();
+    let audio = TuiAudio::empty();
+    let area = player_visual_area_at(60, 20);
+    for mode in VisualMode::ALL {
+        app.visual_mode = mode;
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &audio))
+            .unwrap();
+        let (visible, _, accent) = visual_cell_counts_at(&app, terminal.backend().buffer(), area);
+        assert!(
+            visible > 8,
+            "{mode:?} 在 60×20 下视觉区几乎为空：{visible} 格"
+        );
+        assert!(accent > 0, "{mode:?} 在 60×20 下缺少 accent 主体");
+    }
+}
+
+#[test]
 fn braille_spectrum_has_more_points_than_one_block_row() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -261,6 +424,14 @@ fn braille_spectrum_has_more_points_than_one_block_row() {
         })
         .count();
     assert!(braille > 4, "braille cells: {braille}");
+    let area = player_visual_area_at(80, 40);
+    let buffer = terminal.backend().buffer();
+    for x in area.x..area.right() {
+        assert!(
+            visual_column(buffer, x, area).chars().any(|ch| ch != ' '),
+            "spectrum 第 {x} 列整列空点"
+        );
+    }
 }
 
 #[cfg(windows)]
