@@ -125,7 +125,10 @@ pub(crate) struct Renderer {
     step: f32,
     /// Apply the `v^3` software volume (false = hardware owns the volume).
     software_gain: bool,
+    /// Fade envelope only (pause / seek / fade-in); tap sees this.
     gain: f32,
+    /// Software volume envelope, applied to the device buffer after the tap.
+    volume_gain: f32,
     /// Last seek generation that was fully resumed.
     handled_epoch: u64,
     /// Seek generation currently fading out / waiting for the decoder.
@@ -143,6 +146,11 @@ impl Renderer {
         tap: Option<crate::tap::SampleTapWriter>,
     ) -> Self {
         let fade_frames = sample_rate as f32 * FADE_MS as f32 / 1000.0;
+        let volume_gain = if software_gain {
+            f32::from_bits(shared.gain.load(Ordering::Relaxed))
+        } else {
+            1.0
+        };
         Self {
             consumer,
             shared,
@@ -150,6 +158,7 @@ impl Renderer {
             step: 1.0 / fade_frames,
             software_gain,
             gain: 0.0,
+            volume_gain,
             handled_epoch: 0,
             fade_epoch: None,
             tap,
@@ -158,8 +167,20 @@ impl Renderer {
 
     fn render(&mut self, out: &mut [f32]) {
         self.render_inner(out);
+        // Tap before software volume: visualizers must not change with volume.
+        // Fade is already applied, so pause/seek still visibly decays.
         if let Some(tap) = &self.tap {
             tap.write_interleaved(out, self.channels);
+        }
+        if self.software_gain {
+            let target = f32::from_bits(self.shared.gain.load(Ordering::Relaxed));
+            for frame in 0..out.len() / self.channels {
+                let start = frame * self.channels;
+                for sample in &mut out[start..start + self.channels] {
+                    *sample *= self.volume_gain;
+                }
+                self.volume_gain = next_gain(self.volume_gain, target, self.step);
+            }
         }
         if self.shared.output_muted.load(Ordering::Acquire) {
             out.fill(0.0);
@@ -232,15 +253,9 @@ impl Renderer {
     fn render_playback(&mut self, out: &mut [f32], frames: usize) {
         let shared = &self.shared;
         let playing = shared.playing.load(Ordering::Relaxed);
-        let target = if playing {
-            if self.software_gain {
-                f32::from_bits(shared.gain.load(Ordering::Relaxed))
-            } else {
-                1.0
-            }
-        } else {
-            0.0
-        };
+        // `gain` is the fade envelope only; software volume is applied after
+        // the tap in `render`.
+        let target = if playing { 1.0 } else { 0.0 };
         if !playing && self.gain <= 0.0 {
             out.fill(0.0);
             return;
@@ -687,6 +702,28 @@ mod tests {
         (renderer, producer, shared)
     }
 
+    fn renderer_with_tap(
+        capacity_frames: usize,
+    ) -> (
+        Renderer,
+        RingProducer,
+        Arc<Shared>,
+        crate::tap::SampleTapHandle,
+    ) {
+        let (producer, consumer) = ring::spsc(capacity_frames * CHANNELS);
+        let shared = Arc::new(Shared::new());
+        let (tap_writer, tap) = crate::tap::create(RATE);
+        let renderer = Renderer::new(
+            consumer,
+            Arc::clone(&shared),
+            CHANNELS,
+            RATE,
+            true,
+            Some(tap_writer),
+        );
+        (renderer, producer, shared, tap)
+    }
+
     fn push(producer: &mut RingProducer, frames: usize) {
         let ones = vec![1.0f32; frames * CHANNELS];
         assert_eq!(producer.push(&ones), ones.len());
@@ -807,6 +844,69 @@ mod tests {
     fn posterity_ring_is_intact(producer: &mut RingProducer) {
         // 2000 - 700 (play) + 2000 - 576 (pause fade) = 2724 frames left.
         assert_eq!(producer.occupied(), 2724 * CHANNELS);
+    }
+
+    #[test]
+    fn tap_is_pre_volume_while_output_is_post_volume() {
+        let (mut loud, mut loud_producer, loud_shared, loud_tap) = renderer_with_tap(4096);
+        let (mut quiet, mut quiet_producer, quiet_shared, quiet_tap) = renderer_with_tap(4096);
+        push(&mut loud_producer, 2000);
+        push(&mut quiet_producer, 2000);
+        loud_shared.playing.store(true, Ordering::Release);
+        quiet_shared.playing.store(true, Ordering::Release);
+        quiet_shared
+            .gain
+            .store(gain_for_volume(0.25).to_bits(), Ordering::Release);
+
+        // Let fade-in and the volume ramp settle before measuring peaks.
+        let mut warm = vec![0.0f32; 700 * CHANNELS];
+        loud.render(&mut warm);
+        quiet.render(&mut warm);
+
+        let mut loud_out = vec![0.0f32; 700 * CHANNELS];
+        let mut quiet_out = vec![0.0f32; 700 * CHANNELS];
+        loud.render(&mut loud_out);
+        quiet.render(&mut quiet_out);
+
+        let out_peak = |samples: &[f32]| {
+            samples
+                .iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()))
+        };
+        let loud_peak = out_peak(&loud_out);
+        let quiet_peak = out_peak(&quiet_out);
+        assert!(loud_peak > 0.0);
+        assert!(
+            quiet_peak < loud_peak * 0.1,
+            "software volume must reach the output: {quiet_peak} vs {loud_peak}"
+        );
+
+        let mut loud_tap_samples = vec![0.0f32; 700];
+        let mut quiet_tap_samples = vec![0.0f32; 700];
+        loud_tap.latest(&mut loud_tap_samples);
+        quiet_tap.latest(&mut quiet_tap_samples);
+        let tap_peak = out_peak(&loud_tap_samples);
+        assert!(tap_peak > 0.0);
+        assert!(
+            (out_peak(&quiet_tap_samples) - tap_peak).abs() < 1.0e-6,
+            "tap must not include software volume"
+        );
+    }
+
+    #[test]
+    fn mute_volume_keeps_the_tap_alive() {
+        let (mut renderer, mut producer, shared, tap) = renderer_with_tap(4096);
+        push(&mut producer, 2000);
+        shared.playing.store(true, Ordering::Release);
+        shared.gain.store(0.0f32.to_bits(), Ordering::Release);
+        shared.output_muted.store(true, Ordering::Release);
+
+        let mut out = vec![0.0f32; 700 * CHANNELS];
+        renderer.render(&mut out);
+        assert!(out.iter().all(|sample| *sample == 0.0));
+        let mut tap_out = vec![0.0f32; 700];
+        tap.latest(&mut tap_out);
+        assert!(tap_out.iter().any(|sample| *sample != 0.0));
     }
 
     #[test]
