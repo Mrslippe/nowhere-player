@@ -22,6 +22,8 @@ use np_core::SettingValue;
 pub(crate) struct SettingsEdit {
     pub(crate) index: usize,
     pub(crate) draft: SettingValue,
+    /// 进入编辑态时的主题 id → 显示名；让草稿也能显示用户主题名称。
+    theme_names: Vec<(String, String)>,
 }
 
 /// 设置页浮层状态：当前选择行与可选编辑草稿。
@@ -57,10 +59,11 @@ impl SettingsEditor {
         self.edit.take().is_some()
     }
 
-    fn start_edit(&mut self, draft: SettingValue) {
+    fn start_edit(&mut self, draft: SettingValue, theme_names: Vec<(String, String)>) {
         self.edit = Some(SettingsEdit {
             index: self.selected,
             draft,
+            theme_names,
         });
     }
 
@@ -149,7 +152,7 @@ impl SettingsEditor {
         let field = fields.get(edit.index)?;
         Some((
             edit.index,
-            draft_text(field, &edit.draft, theme_id, theme_name),
+            draft_text(field, &edit.draft, theme_id, theme_name, &edit.theme_names),
         ))
     }
 }
@@ -192,7 +195,17 @@ pub(crate) fn begin_settings_edit(
         SettingsKind::Bool => adjust_setting(app, 1, player, settings, theme),
         _ => {
             let draft = current_value(&field, player, settings, &app.theme_id, app.visual_mode);
-            app.settings_editor.start_edit(draft);
+            let theme_names = if field.kind == SettingsKind::Theme {
+                theme
+                    .list()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|entry| (entry.id, entry.name))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            app.settings_editor.start_edit(draft, theme_names);
             paint_draft_row(app);
             Ok(())
         }
@@ -504,6 +517,7 @@ fn draft_text(
     value: &SettingValue,
     theme_id: &str,
     theme_name: &str,
+    theme_names: &[(String, String)],
 ) -> String {
     let text = match field.kind {
         SettingsKind::Category => String::new(),
@@ -516,8 +530,12 @@ fn draft_text(
             _ => "·".to_owned(),
         },
         SettingsKind::Theme => match value {
-            SettingValue::Str(id) if id == theme_id => theme_name.to_owned(),
-            SettingValue::Str(id) => id.clone(),
+            SettingValue::Str(id) => theme_names
+                .iter()
+                .find(|(candidate, _)| candidate == id)
+                .map(|(_, name)| name.clone())
+                .or_else(|| (id.as_str() == theme_id).then(|| theme_name.to_owned()))
+                .unwrap_or_else(|| id.clone()),
             _ => theme_name.to_owned(),
         },
         SettingsKind::Bool => bool_text(matches!(value, SettingValue::Bool(true))),

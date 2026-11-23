@@ -2025,7 +2025,7 @@ fn settings_page_lists_editable_fields_by_category() {
 fn settings_tree_collapses_and_expands_categories() {
     let (settings, dir) = settings_page_fixture();
     let collapsed = BTreeSet::from(["category:播放".to_owned()]);
-    let page = crate::settings_page::settings_page_with(&settings, &collapsed);
+    let page = crate::settings_page::settings_page_with(&settings, &collapsed, "MilkGreen");
     assert_eq!(page.view.rows.len(), 16);
     assert_eq!(page.view.rows[0], vec!["▸ 播放 (2)", ""]);
     assert!(
@@ -2036,7 +2036,8 @@ fn settings_tree_collapses_and_expands_categories() {
     );
     assert!(page.fields.iter().any(|field| field.key == "category:播放"));
 
-    let expanded = crate::settings_page::settings_page_with(&settings, &BTreeSet::new());
+    let expanded =
+        crate::settings_page::settings_page_with(&settings, &BTreeSet::new(), "MilkGreen");
     assert_eq!(expanded.view.rows.len(), 18);
     assert_eq!(expanded.view.rows[0], vec!["▾ 播放 (2)", ""]);
     assert_eq!(expanded.view.rows[1], vec!["  音量", "100%"]);
@@ -2047,6 +2048,51 @@ fn settings_tree_collapses_and_expands_categories() {
             .any(|field| field.key == "playback.volume")
     );
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn settings_page_shows_current_theme_name_instead_of_id() {
+    let (settings, dir) = settings_page_fixture();
+    settings
+        .set_and_save("theme.id", np_core::SettingValue::Str("eclipse".to_owned()))
+        .unwrap();
+    let page = crate::settings_page::settings_page_with(&settings, &BTreeSet::new(), "七海nanami");
+    let row = page
+        .view
+        .rows
+        .iter()
+        .find(|row| row[0].trim() == "主题")
+        .expect("theme row");
+    assert_eq!(row[1], "七海nanami");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn theme_edit_shows_display_names_for_non_current_entries() {
+    let (mut app, settings, audio, theme, root) = settings_fixture();
+    let themes = root.join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(
+        themes.join("eclipse.json"),
+        r#"{"id":"eclipse","name":"七海nanami","contract":1}"#,
+    )
+    .unwrap();
+
+    app.row_index = settings_field_row(&app, "theme.id");
+    crate::settings_editor::begin_settings_edit(&mut app, &audio, &settings, &theme).unwrap();
+    assert_eq!(app.views[0].rows[app.row_index][1], "‹ MilkGreen ›");
+
+    assert!(crate::settings_editor::handle_settings_edit_key(
+        KeyCode::Left,
+        &mut app,
+        &audio,
+        &theme,
+        &settings,
+    ));
+    assert_eq!(app.views[0].rows[app.row_index][1], "‹ 七海nanami ›");
+    assert_eq!(app.theme_id, "milkgreen");
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

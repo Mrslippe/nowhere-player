@@ -84,13 +84,14 @@ const CATEGORIES: [CategorySpec; 5] = [
 /// 测试与快照用包装：默认全部展开。
 #[cfg(test)]
 pub(crate) fn settings_page(settings: &SettingsHandle) -> SettingsPage {
-    settings_page_with(settings, &BTreeSet::new())
+    settings_page_with(settings, &BTreeSet::new(), "MilkGreen")
 }
 
 /// 生成可见行；`rows` 与 `fields` 一一对齐，分类行也是伪字段。
 pub(crate) fn settings_page_with(
     settings: &SettingsHandle,
     collapsed: &BTreeSet<String>,
+    theme_name: &str,
 ) -> SettingsPage {
     let mut rows = Vec::new();
     let mut fields = Vec::new();
@@ -113,7 +114,7 @@ pub(crate) fn settings_page_with(
         for &(field_key, label, kind) in entries {
             rows.push(vec![
                 format!("  {label}"),
-                settings_value_text(settings, field_key, kind),
+                settings_value_text(settings, field_key, kind, theme_name),
             ]);
             fields.push(SettingsField {
                 key: field_key.to_owned(),
@@ -210,7 +211,12 @@ pub(crate) fn live_buffer_ms(settings: &SettingsHandle) -> u64 {
     }
 }
 
-fn settings_value_text(settings: &SettingsHandle, key: &str, kind: SettingsKind) -> String {
+fn settings_value_text(
+    settings: &SettingsHandle,
+    key: &str,
+    kind: SettingsKind,
+    theme_name: &str,
+) -> String {
     match kind {
         SettingsKind::Category => String::new(),
         SettingsKind::Volume => {
@@ -233,10 +239,12 @@ fn settings_value_text(settings: &SettingsHandle, key: &str, kind: SettingsKind)
             let id = settings
                 .get_str(key)
                 .unwrap_or_else(|| "milkgreen".to_owned());
-            if id == "milkgreen" {
-                "MilkGreen".to_owned()
+            if settings.theme_id().as_deref() == Some(id.as_str()) {
+                theme_name.to_owned()
             } else {
-                id
+                np_core::theme::BuiltinTheme::find(&id)
+                    .map(|theme| theme.name.to_owned())
+                    .unwrap_or(id)
             }
         }
         SettingsKind::Bool => bool_text(settings.get_bool(key).unwrap_or_else(

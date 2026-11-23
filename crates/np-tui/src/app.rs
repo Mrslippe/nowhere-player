@@ -310,10 +310,10 @@ impl App {
         self.queue_marker = player.queue_list().ok().and_then(|view| view.index);
         let search = ViewData::titled("搜索");
         let live = ViewData::titled("直播");
-        let settings_page = settings_page_with(settings, &self.settings_collapsed);
-        self.settings_fields = settings_page.fields;
+        let page = settings_page_with(settings, &self.settings_collapsed, &self.theme_name);
+        self.settings_fields = page.fields;
         self.settings_editor = SettingsEditor::new();
-        let settings_view = settings_page.view;
+        let settings_view = page.view;
         let playlists = library.playlist_list().unwrap_or_default();
         let playlist_children: Vec<ViewData> = playlists
             .iter()
@@ -358,7 +358,7 @@ impl App {
     pub(crate) fn refresh_settings_view(&mut self, settings: &SettingsHandle) {
         let previous = self.settings_fields.get(self.row_index);
         let key = previous.map(|field| field.key.clone());
-        let page = settings_page_with(settings, &self.settings_collapsed);
+        let page = settings_page_with(settings, &self.settings_collapsed, &self.theme_name);
         self.settings_fields = page.fields;
         if let Some(index) = self
             .view_kind
