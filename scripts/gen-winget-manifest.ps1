@@ -46,7 +46,7 @@ function YamlQuote([string]$value) {
 }
 $url = YamlQuote $InstallerUrl
 $publisherUrlLine = if ($PublisherUrl) { "PublisherUrl: $(YamlQuote $PublisherUrl)" } else { "" }
-$homepageLine = if ($Homepage) { "Homepage: $(YamlQuote $Homepage)" } else { "" }
+$homepageLine = if ($Homepage) { "PackageUrl: $(YamlQuote $Homepage)" } else { "" }
 
 $versionYaml = @"
 # yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
